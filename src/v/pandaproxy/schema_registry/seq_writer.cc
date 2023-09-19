@@ -228,6 +228,85 @@ ss::future<bool> seq_writer::write_config(
     });
 }
 
+ss::future<std::optional<bool>> seq_writer::do_delete_config(
+  subject sub, model::offset write_at, seq_writer& seq) {
+    vlog(plog.debug, "delete config sub={} offset={}", sub, write_at);
+
+    try {
+        co_await seq._store.get_compatibility(sub, default_to_global::no);
+    } catch (const exception&) {
+        // subject config already blank
+        co_return false;
+    }
+
+    std::vector<seq_marker> sequences{
+      co_await _store.get_subject_config_written_at(sub)};
+
+    storage::record_batch_builder rb{
+      model::record_batch_type::raft_data, model::offset{0}};
+
+    std::vector<config_key> keys;
+    for (auto s : sequences) {
+        vlog(
+          plog.debug,
+          "Deleting config: tombstoning config_key for sub={} at {}",
+          sub,
+          s);
+
+        switch (s.key_type) {
+        case seq_marker_key_type::config: {
+            auto key = config_key{.seq{s.seq}, .node{s.node}, .sub{sub}};
+            keys.push_back(key);
+            rb.add_raw_kv(to_json_iobuf(std::move(key)), std::nullopt);
+        } break;
+        default:
+            vassert(false, "Unexpected key type: {}", s.key_type);
+        }
+    }
+
+    auto ts_batch = std::move(rb).build();
+    kafka::partition_produce_response res
+      = co_await _client.local().produce_record_batch(
+        model::schema_registry_internal_tp, std::move(ts_batch));
+
+    if (res.error_code != kafka::error_code::none) {
+        vlog(
+          plog.error,
+          "Error writing to subject topic: {} {}",
+          res.error_code,
+          res.error_message);
+        throw kafka::exception(res.error_code, *res.error_message);
+    }
+
+    auto applier = consume_to_store(seq._store, seq);
+    auto offset = res.base_offset;
+    for (const auto& k : keys) {
+        co_await applier.apply(offset, k, std::nullopt);
+        seq.advance_offset_inner(offset);
+        offset++;
+    }
+
+    auto key = config_key{.seq{write_at}, .node{seq._node_id}, .sub{sub}};
+    auto batch = as_record_batch(key, std::nullopt);
+    auto success = co_await seq.produce_and_check(write_at, std::move(batch));
+    if (success) {
+        auto applier = consume_to_store(seq._store, seq);
+        co_await applier.apply(write_at, key, std::nullopt);
+        seq.advance_offset_inner(write_at);
+        co_return true;
+    } else {
+        // Pass up a None, our caller's cue to retry
+        co_return std::nullopt;
+    }
+}
+
+ss::future<bool> seq_writer::delete_config(subject sub) {
+    return sequenced_write(
+      [this, sub{std::move(sub)}](model::offset write_at, seq_writer& seq) {
+          return do_delete_config(sub, write_at, seq);
+      });
+}
+
 /// Impermanent delete: update a version with is_deleted=true
 ss::future<std::optional<bool>> seq_writer::do_delete_subject_version(
   subject sub,

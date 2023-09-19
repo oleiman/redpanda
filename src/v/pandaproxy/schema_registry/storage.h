@@ -1112,7 +1112,12 @@ template<typename Key, typename Value>
 model::record_batch as_record_batch(Key key, Value val) {
     storage::record_batch_builder rb{
       model::record_batch_type::raft_data, model::offset{0}};
-    rb.add_raw_kv(to_json_iobuf(std::move(key)), to_json_iobuf(std::move(val)));
+    if constexpr (std::is_same_v<Value, std::nullopt_t>) {
+        rb.add_raw_kv(to_json_iobuf(std::move(key)), val);
+    } else {
+        rb.add_raw_kv(
+          to_json_iobuf(std::move(key)), to_json_iobuf(std::move(val)));
+    }
     return std::move(rb).build();
 }
 

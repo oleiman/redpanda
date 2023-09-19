@@ -241,6 +241,31 @@ public:
         }
     }
 
+    /// \brief Return the seq_marker write history of a subject, but only
+    /// config_keys
+    ///
+    /// \return A vector (possibly empty)
+    result<std::vector<seq_marker>>
+    get_subject_config_written_at(const subject& sub) const {
+        auto sub_it = BOOST_OUTCOME_TRYX(
+          get_subject_iter(sub, include_deleted::yes));
+
+        if (sub_it->second.written_at.empty()) {
+            return not_found(sub);
+        }
+
+        std::vector<seq_marker> result;
+        std::copy_if(
+          std::begin(sub_it->second.written_at),
+          std::end(sub_it->second.written_at),
+          std::back_inserter(result),
+          [](const auto& sm) {
+              return sm.key_type == seq_marker_key_type::config;
+          });
+
+        return std::move(result);
+    }
+
     /// \brief Return the seq_marker write history of a version.
     ///
     /// \return A vector with at least one element

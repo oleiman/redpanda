@@ -12,6 +12,8 @@
 #include "security/acl.h"
 #include "vassert.h"
 
+
+#include <chrono>
 #include <memory>
 #include <string_view>
 
@@ -27,6 +29,10 @@ public:
     virtual bool failed() const = 0;
     virtual const acl_principal& principal() const = 0;
     virtual ss::future<result<bytes>> authenticate(bytes) = 0;
+    virtual std::optional<std::chrono::milliseconds>
+    credential_expires_in_ms() const {
+        return std::nullopt;
+    }
 };
 
 /*
@@ -63,6 +69,9 @@ public:
     }
 
     const acl_principal& principal() const { return _mechanism->principal(); }
+    std::optional<std::chrono::milliseconds> credential_expires_in_ms() const {
+        return _mechanism->credential_expires_in_ms();
+    }
 
     bool handshake_v0() const { return _handshake_v0; }
     void set_handshake_v0() { _handshake_v0 = true; }

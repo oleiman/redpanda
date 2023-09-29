@@ -122,6 +122,11 @@ ss::future<> connection_context::process_one_request() {
     }
     _server.handler_probe(h->key).add_bytes_received(sz.value());
 
+    vlog(
+      klog.trace,
+      "SASL session_lifetime_ms: {}",
+      sasl() ? sasl()->session_lifetime_ms() : -1);
+
     try {
         co_return co_await dispatch_method_once(
           std::move(h.value()), sz.value());
@@ -131,6 +136,10 @@ ss::future<> connection_context::process_one_request() {
           "Error while processing request from {} - {}",
           conn->addr,
           e.what());
+        conn->shutdown_input();
+    } catch (const sasl_session_expired_exception& e) {
+        vlog(
+          klog.warn, "SASL session expired for {} - {}", conn->addr, e.what());
         conn->shutdown_input();
     } catch (const std::bad_alloc&) {
         // In general, dispatch_method_once does not throw, but bad_allocs are

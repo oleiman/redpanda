@@ -12,6 +12,7 @@
 #include "security/acl.h"
 #include "vassert.h"
 
+#include <seastar/core/lowres_clock.hh>
 
 #include <chrono>
 #include <memory>
@@ -39,6 +40,8 @@ public:
  * SASL server protocol manager.
  */
 class sasl_server final {
+    using clock_type = ss::lowres_clock;
+
 public:
     enum class sasl_state {
         initial,
@@ -48,13 +51,37 @@ public:
         failed,
     };
 
-    explicit sasl_server(sasl_state state)
-      : _state(state) {}
+    explicit sasl_server(
+      sasl_state state,
+      std::chrono::milliseconds conn_max_reauth = std::chrono::milliseconds{0})
+      : _state(state)
+      , _conn_max_reauth_ms(conn_max_reauth) {}
 
     sasl_state state() const { return _state; }
     void set_state(sasl_state state) { _state = state; }
 
     bool complete() const { return _state == sasl_state::complete; }
+    bool expired() const {
+        return _conn_max_reauth_ms > std::chrono::milliseconds{0}
+               && clock_type::now() > _session_expiry;
+    }
+
+    void set_expiry(std::optional<std::chrono::milliseconds> cred_expiry_ms) {
+        auto offset = cred_expiry_ms
+                        ? (std::min(_conn_max_reauth_ms, *cred_expiry_ms))
+                        : _conn_max_reauth_ms;
+        _session_expiry = clock_type::now() + offset;
+    }
+
+    int64_t session_lifetime_ms() const {
+        using namespace std::chrono_literals;
+        if (_conn_max_reauth_ms == 0ms) {
+            return 0;
+        }
+        return std::chrono::duration_cast<std::chrono::milliseconds>(
+                 _session_expiry - clock_type::now())
+          .count();
+    }
 
     bool has_mechanism() const { return bool(_mechanism); }
     sasl_mechanism& mechanism() { return *_mechanism; }
@@ -80,6 +107,8 @@ private:
     sasl_state _state;
     std::unique_ptr<sasl_mechanism> _mechanism;
     bool _handshake_v0{false};
+    std::chrono::milliseconds _conn_max_reauth_ms{0};
+    clock_type::time_point _session_expiry{};
 };
 
 // inline because the function is pretty small and clang complains about

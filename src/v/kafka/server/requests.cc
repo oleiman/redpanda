@@ -249,6 +249,14 @@ process_result_stages process_request(
   request_context&& ctx,
   ss::smp_service_group g,
   const session_resources& sres) {
+    auto& key = ctx.header().key;
+
+    if (
+      unlikely(ctx.sasl() && ctx.sasl()->complete() && ctx.sasl()->expired())
+      && key != sasl_handshake_handler::api::key
+      && key != sasl_authenticate_handler::api::key) {
+        throw sasl_session_expired_exception("Session expired");
+    }
     /*
      * requests are handled as normal when auth is disabled. otherwise no
      * request is handled until the auth process has completed.
@@ -265,8 +273,6 @@ process_result_stages process_request(
                 return f;
             }));
     }
-
-    auto& key = ctx.header().key;
 
     if (key == sasl_handshake_handler::api::key) {
         return process_result_stages::single_stage(ctx.respond(

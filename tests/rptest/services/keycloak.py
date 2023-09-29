@@ -53,7 +53,8 @@ class KeycloakAdminClient:
                  server_url,
                  realm,
                  username=KC_ADMIN,
-                 password=KC_ADMIN_PASSWORD):
+                 password=KC_ADMIN_PASSWORD,
+                 access_token_lifespan=20):
         self.logger = logger
         self.logger.debug(f"KeycloakAdminClient for {server_url}")
         self.kc_admin = KeycloakAdmin(
@@ -62,10 +63,12 @@ class KeycloakAdminClient:
             password=password,
             realm_name='master',
         )
-        self.kc_admin.create_realm(payload={
-            'realm': realm,
-            'enabled': True,
-        })
+        self.kc_admin.create_realm(
+            payload={
+                'realm': realm,
+                'enabled': True,
+                'accessTokenLifespan': access_token_lifespan,
+            })
         self.kc_admin.realm_name = realm
 
     def config(self, server_url, username, password, realm):
@@ -196,7 +199,7 @@ class KeycloakService(Service):
     def alive(self, node):
         return len(self.pids(node)) > 0
 
-    def start_node(self, node, **kwargs):
+    def start_node(self, node, access_token_lifespan=300, **kwargs):
         self.logger.debug("Starting Keycloak service")
 
         node.account.ssh(f"touch {KC_LOG_FILE}", allow_fail=False)
@@ -213,6 +216,7 @@ class KeycloakService(Service):
             realm=self.realm,
             username=f'{KC_ADMIN}',
             password=f'{KC_ADMIN_PASSWORD}',
+            access_token_lifespan=access_token_lifespan,
         )
 
     def stop_node(self, node, clean_shutdown=True):

@@ -35,6 +35,12 @@ class PythonLibrdkafka:
         self._algorithm = algorithm
         self._tls_cert = tls_cert
         self._oauth_config = oauth_config
+        # TODO(oren): maybe track per actual client?
+        self._oauth_count = 0
+
+    @property
+    def oauth_count(self):
+        return self._oauth_count
 
     def brokers(self):
         client = AdminClient(self._get_config())
@@ -146,6 +152,7 @@ class PythonLibrdkafka:
             self._redpanda.logger.info(
                 f"response status: {resp.status_code}, body: {resp.content}")
             token = resp.json()
+            self._oauth_count += 1
             return token['access_token'], time.time() + float(
                 token['expires_in'])
         except Exception as e:

@@ -31,11 +31,17 @@ public:
         return _principal;
     }
 
+    std::optional<std::chrono::milliseconds>
+    credential_expires_in_ms() const override {
+        return _cred_expires_in;
+    }
+
 private:
     friend std::ostream&
     operator<<(std::ostream& os, oidc_authenticator::state const s);
 
     security::acl_principal _principal;
+    std::optional<std::chrono::milliseconds> _cred_expires_in;
     state _state{state::init};
     class impl;
     std::unique_ptr<impl> _impl;

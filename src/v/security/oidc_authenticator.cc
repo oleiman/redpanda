@@ -17,6 +17,8 @@
 #include "security/logger.h"
 #include "vlog.h"
 
+#include <seastar/core/lowres_clock.hh>
+
 #include <boost/algorithm/string/split.hpp>
 #include <boost/outcome/success_failure.hpp>
 #include <cryptopp/base64.h>
@@ -48,9 +50,13 @@ public:
 
     ss::future<result<void>> authenticate(bytes auth_bytes);
     const security::acl_principal& principal() const { return _principal; }
+    std::optional<std::chrono::milliseconds> credential_expires_in_ms() {
+        return _cred_expires_in;
+    }
 
 private:
     ss::future<result<void>> extract_principal(bytes auth_bytes);
+    std::optional<std::chrono::milliseconds> _cred_expires_in;
     security::acl_principal _principal;
 };
 
@@ -75,6 +81,7 @@ ss::future<result<bytes>> oidc_authenticator::authenticate(bytes auth_bytes) {
         co_return res.assume_error();
     }
     _principal = _impl->principal();
+    _cred_expires_in = _impl->credential_expires_in_ms();
     _state = state::complete;
     co_return bytes{};
 }
@@ -141,6 +148,18 @@ oidc_authenticator::impl::extract_principal(bytes auth_bytes) {
         return val;
     };
 
+    // NOTE(oren): This will be superceded by Ben's JWT library
+    const auto get_numeric_member =
+      [](auto const& doc, std::string_view name) -> std::optional<int> {
+        if (auto it = doc.FindMember(name.data()); it == doc.MemberEnd()) {
+            return std::nullopt;
+        } else if (!it->value.IsInt()) {
+            return std::nullopt;
+        } else {
+            return it->value.GetInt();
+        }
+    };
+
     json::Document jose_payload;
     if (jose_payload.Parse(jose_payload_str).HasParseError()) {
         vlog(seclog.debug, "invalid jwt payload");
@@ -153,7 +172,32 @@ oidc_authenticator::impl::extract_principal(bytes auth_bytes) {
         co_return errc::invalid_credentials;
     }
 
+    auto exp = get_numeric_member(jose_payload, "exp");
+    if (!exp) {
+        vlog(seclog.debug, "empty exp");
+        co_return errc::invalid_credentials;
+    }
+
     _principal = acl_principal{principal_type::user, ss::sstring(sub)};
+
+    // The exp claim is a unix timestamp from the client, we want a ms
+    // offset for a local steady_clock, so we make a best effort to
+    // calculate that here. Clock synchronization is not of great concern
+    // since a) token lifetimes will generally be in the tens of hours and
+    // b) session termination is performed opportunistically. That is, we
+    // never proactively terminate a connection due to token expiry; rather,
+    // expired connections are terminated on the next non-authn message
+    // after the expiry time. Additionally, the common case is for a client
+    // to reauthenticate before the token actually expires.
+    _cred_expires_in = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::seconds(*exp)
+      - std::chrono::duration_cast<std::chrono::seconds>(
+        ss::lowres_system_clock::now().time_since_epoch()));
+    vlog(
+      seclog.debug,
+      "OAUTHBEARER token expires in {}ms",
+      _cred_expires_in->count());
+
     co_return outcome::success();
 }
 

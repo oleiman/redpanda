@@ -90,6 +90,11 @@ public:
         return _mechanism->authenticate(std::move(data));
     }
 
+    void reset() {
+        set_state(sasl_state::initial);
+        _mechanism = nullptr;
+    }
+
     void set_mechanism(std::unique_ptr<sasl_mechanism> m) {
         vassert(!_mechanism, "Cannot change mechanism");
         _mechanism = std::move(m);

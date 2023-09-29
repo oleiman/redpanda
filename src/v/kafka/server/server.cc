@@ -393,10 +393,16 @@ ss::future<response_ptr> sasl_authenticate_handler::handle(
         auto result = co_await ctx.sasl()->authenticate(
           std::move(request.data.auth_bytes));
         if (likely(result)) {
+            ctx.sasl()->set_expiry(ctx.sasl()->credential_expires_in_ms());
+            vlog(
+              klog.warn,
+              "session_lifetime_ms: {}",
+              ctx.sasl()->session_lifetime_ms());
             sasl_authenticate_response_data data{
               .error_code = error_code::none,
               .error_message = std::nullopt,
               .auth_bytes = std::move(result.value()),
+              .session_lifetime_ms = ctx.sasl()->session_lifetime_ms(),
             };
             co_return co_await ctx.respond(
               sasl_authenticate_response(std::move(data)));

@@ -91,7 +91,8 @@ public:
     }
 
     void set_mechanism(std::unique_ptr<sasl_mechanism> m) {
-        vassert(!_mechanism, "Cannot change mechanism");
+        // TODO(oren): tidy
+        // vassert(!_mechanism, "Cannot change mechanism");
         _mechanism = std::move(m);
     }
 

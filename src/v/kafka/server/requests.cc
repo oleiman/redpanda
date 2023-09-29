@@ -257,6 +257,17 @@ process_result_stages process_request(
       && key != sasl_authenticate_handler::api::key) {
         throw sasl_session_expired_exception("Session expired");
     }
+
+    // This is a client-driven reauthentication
+    if (unlikely(
+          ctx.sasl() && ctx.sasl()->complete()
+          && key == sasl_handshake_handler::api::key)) {
+        vlog(
+          klog.debug,
+          "SASL reauthentication detected - resetting authn server");
+        ctx.sasl()->set_state(security::sasl_server::sasl_state::initial);
+    }
+
     /*
      * requests are handled as normal when auth is disabled. otherwise no
      * request is handled until the auth process has completed.

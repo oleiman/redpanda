@@ -1287,7 +1287,13 @@ struct consume_to_store {
         try {
             vlog(plog.debug, "Applying: {}", key);
             if (!val) {
-                co_await _store.clear_compatibility(*key.sub);
+                co_await _store.clear_compatibility(
+                  seq_marker{
+                    .seq = key.seq,
+                    .node = key.node,
+                    .version{invalid_schema_version}, // Not applicable
+                    .key_type = seq_marker_key_type::config},
+                  *key.sub);
             } else if (key.sub) {
                 co_await _store.set_compatibility(
                   seq_marker{

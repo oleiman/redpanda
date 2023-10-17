@@ -131,7 +131,7 @@ public:
       seq_marker marker, subject sub, compatibility_level compatibility);
 
     ///\brief Clear the compatibility level for a subject.
-    ss::future<bool> clear_compatibility(subject sub);
+    ss::future<bool> clear_compatibility(seq_marker marker, subject sub);
 
     ///\brief Check if the provided schema is compatible with the subject and
     /// version, according the the current compatibility.

@@ -494,9 +494,19 @@ public:
     }
 
     ///\brief Clear the compatibility level for a subject.
-    result<bool> clear_compatibility(const subject& sub) {
+    result<bool> clear_compatibility(seq_marker marker, const subject& sub) {
         auto sub_it = BOOST_OUTCOME_TRYX(
           get_subject_iter(sub, include_deleted::yes));
+        auto& markers = sub_it->second.written_at;
+        markers.erase(
+          std::remove_if(
+            markers.begin(),
+            markers.end(),
+            [marker](auto sm) {
+                return sm.key_type == marker.key_type && sm.seq && marker.seq
+                       && *sm.seq == *marker.seq;
+            }),
+          markers.end());
         return std::exchange(sub_it->second.compatibility, std::nullopt)
                != std::nullopt;
     }

@@ -315,6 +315,11 @@ struct seq_marker {
     schema_version version;
     seq_marker_key_type key_type{seq_marker_key_type::invalid};
 
+    bool operator==(const seq_marker& other) {
+        return key_type == other.key_type && seq == other.seq
+               && ode == other.node;
+    }
+
     friend std::ostream& operator<<(std::ostream& os, const seq_marker& v);
 };
 

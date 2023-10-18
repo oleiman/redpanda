@@ -246,7 +246,7 @@ ss::future<std::optional<bool>> seq_writer::do_delete_config(
       model::record_batch_type::raft_data, model::offset{0}};
 
     std::vector<config_key> keys;
-    for (auto s : sequences) {
+    for (const auto& s : sequences) {
         vlog(
           plog.debug,
           "Deleting config: tombstoning config_key for sub={} at {}",

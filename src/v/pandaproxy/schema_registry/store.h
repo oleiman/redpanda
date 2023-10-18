@@ -498,15 +498,9 @@ public:
         auto sub_it = BOOST_OUTCOME_TRYX(
           get_subject_iter(sub, include_deleted::yes));
         auto& markers = sub_it->second.written_at;
-        markers.erase(
-          std::remove_if(
-            markers.begin(),
-            markers.end(),
-            [marker](auto sm) {
-                return sm.key_type == marker.key_type && sm.seq && marker.seq
-                       && *sm.seq == *marker.seq;
-            }),
-          markers.end());
+        std::erase_if(markers.begin(), markers.end(), [marker](const auto& sm) {
+            return marker == sm;
+        });
         return std::exchange(sub_it->second.compatibility, std::nullopt)
                != std::nullopt;
     }

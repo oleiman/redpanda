@@ -53,9 +53,17 @@ public:
 
     /// Produces to the audit topic, internal partitioner assigns partitions
     /// to the batches provided. Blocks if semaphore is exhausted.
-    ss::future<> produce(std::vector<kafka::client::record_essence>);
+    ss::future<>
+    produce(std::vector<kafka::client::record_essence>, audit_probe& probe);
 
     bool is_initialized() const { return _is_initialized; }
+
+    double percent_full() const {
+        auto max_avail
+          = config::shard_local_cfg().audit_client_max_buffer_size();
+        return 100.0
+               * (1.0 - (static_cast<double>(_send_sem.available_units()) / static_cast<double>(max_avail)));
+    }
 
 private:
     ss::future<> configure();
@@ -102,6 +110,10 @@ public:
 
     /// Returns true if _client has a value
     bool is_enabled() const { return _client != nullptr; }
+
+    double percent_full() const {
+        return is_enabled() ? _client->percent_full() : 0.0;
+    }
 
 private:
     ss::future<> do_toggle(bool enabled);
@@ -305,8 +317,8 @@ ss::future<> audit_client::shutdown() {
     co_await _gate.close();
 }
 
-ss::future<>
-audit_client::produce(std::vector<kafka::client::record_essence> records) {
+ss::future<> audit_client::produce(
+  std::vector<kafka::client::record_essence> records, audit_probe& probe) {
     /// TODO: Produce with acks=1, atm -1 is hardcoded into client
     const auto records_size = [](const auto& records) {
         std::size_t size = 0;
@@ -326,12 +338,21 @@ audit_client::produce(std::vector<kafka::client::record_essence> records) {
         ssx::spawn_with_gate(
           _gate,
           [this,
+           &probe,
            units = std::move(units),
            records = std::move(records)]() mutable {
               return _client
                 .produce_records(
                   model::kafka_audit_logging_topic, std::move(records))
                 .discard_result()
+                .then_wrapped([&probe](ss::future<> fut) {
+                    if (fut.failed()) {
+                        probe.audit_error();
+                    } else {
+                        probe.audit_event();
+                    }
+                    return fut;
+                })
                 .handle_exception_type(
                   [](const kafka::client::partition_error& ex) {
                       /// TODO: Possible optimization to retry with different
@@ -380,7 +401,8 @@ audit_sink::produce(std::vector<kafka::client::record_essence> records) {
     /// No locks/gates since the calls to this method are done in controlled
     /// context of other synchronization primitives
     vassert(_client, "produce() called on a null client");
-    co_await _client->produce(std::move(records));
+    co_await _client->produce(std::move(records), _audit_mgr->probe());
+    _audit_mgr->probe().audit_event();
 }
 
 void audit_sink::toggle(bool enabled) {
@@ -445,21 +467,25 @@ audit_log_manager::audit_log_manager(
   , _audit_event_types(
       config::shard_local_cfg().audit_enabled_event_types.bind())
   , _controller(controller)
-  , _config(client_config) {
+  , _config(client_config)
+  , _probe(std::make_unique<audit_probe>()) {
     if (ss::this_shard_id() == audit_client::shard_id) {
         _sink = std::make_unique<audit_sink>(this, controller, client_config);
     }
+
+    _probe->setup_metrics(*this);
 
     _drain_timer.set_callback([this] {
         ssx::spawn_with_gate(_gate, [this]() {
             return ss::get_units(_active_drain, 1)
               .then([this](auto units) mutable {
                   return drain()
-                    .handle_exception([](std::exception_ptr e) {
+                    .handle_exception([&probe = probe()](std::exception_ptr e) {
                         vlog(
                           adtlog.warn,
                           "Exception in audit_log_manager fiber: {}",
                           e);
+                        probe.audit_error();
                     })
                     .finally([this, units = std::move(units)] {
                         _drain_timer.arm(_queue_drain_interval_ms());
@@ -541,6 +567,17 @@ ss::future<> audit_log_manager::resume() {
     });
 }
 
+double audit_log_manager::client_percent_full() const {
+    vassert(
+      ss::this_shard_id() == audit_client::shard_id,
+      "Must be called on audit client shard");
+    return _sink->percent_full();
+}
+
+ss::shard_id audit_log_manager::client_shard_id() const {
+    return audit_client::shard_id;
+}
+
 bool audit_log_manager::is_client_enabled() const {
     vassert(
       ss::this_shard_id() == audit_client::shard_id,
@@ -554,6 +591,7 @@ bool audit_log_manager::do_enqueue_audit_event(
     auto it = map.find(msg->key());
     if (it == map.end()) {
         if (_queue.size() >= _max_queue_elements_per_shard()) {
+            probe().audit_error();
             return false;
         }
         auto& list = _queue.get<underlying_list>();

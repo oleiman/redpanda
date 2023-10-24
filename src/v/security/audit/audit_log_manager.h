@@ -14,6 +14,7 @@
 #include "kafka/client/types.h"
 #include "model/timeout_clock.h"
 #include "net/types.h"
+#include "security/audit/probe.h"
 #include "security/audit/schemas/schemas.h"
 #include "security/audit/types.h"
 #include "ssx/semaphore.h"
@@ -104,6 +105,24 @@ public:
     /// Note does not include records already sent to client
     size_t pending_events() const { return _queue.size(); };
 
+    /// Returns the portion of event queue capacity currently occupied by
+    /// pending events, as a percentage.
+    double percent_full() const {
+        return 100.0 * static_cast<double>(pending_events())
+               / static_cast<double>(_max_queue_elements_per_shard());
+    }
+
+    /// Returns the portion of kafka::client buffer capacity occupied by
+    /// outstanding produce calls, as a percentage
+    ///
+    /// NOTE: in practice, % full of a send semaphore internal to the client
+    /// wrapper
+    double client_percent_full() const;
+
+    ss::shard_id client_shard_id() const;
+
+    audit_probe& probe() { return *_probe; }
+
     /// Returns true if the internal kafka client is allocated
     ///
     /// NOTE: Only works on shard_id{0}, use in unit tests
@@ -177,6 +196,7 @@ private:
     /// Other references
     cluster::controller* _controller;
     kafka::client::configuration& _config;
+    std::unique_ptr<audit_probe> _probe;
 };
 
 } // namespace security::audit

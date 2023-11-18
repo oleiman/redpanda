@@ -1,6 +1,7 @@
 import json
 import os
 import requests
+import tempfile
 
 from ducktape.services.service import Service
 from ducktape.utils.util import wait_until
@@ -11,8 +12,13 @@ KC_INSTALL_DIR = os.path.join('/', 'opt', 'keycloak')
 KC_DATA_DIR = os.path.join(KC_INSTALL_DIR, 'data')
 KC_VAULT_DIR = os.path.join(KC_DATA_DIR, 'vault')
 KC_BIN_DIR = os.path.join(KC_INSTALL_DIR, 'bin')
+KC_CONF_DIR = os.path.join(KC_INSTALL_DIR, 'conf')
 KC = os.path.join(KC_BIN_DIR, 'kc.sh')
 KCADM = os.path.join(KC_BIN_DIR, 'kcadm.sh')
+KC_CFG = os.path.join(KC_CONF_DIR, 'keycloak.conf')
+KC_TLS_KEY_FILE = os.path.join(KC_CONF_DIR, 'key.pem')
+KC_TLS_CRT_FILE = os.path.join(KC_CONF_DIR, 'crt.pem')
+KC_TLS_TRUST_STORE_FILE = os.path.join(KC_CONF_DIR, 'ca.crt')
 KC_ADMIN = 'admin'
 KC_ADMIN_PASSWORD = 'admin'
 KC_ROOT_LOG_LEVEL = 'INFO'
@@ -28,13 +34,50 @@ START_CMD_TMPL = """
 LAUNCH_JBOSS_IN_BACKGROUND=1 \
 KEYCLOAK_ADMIN={admin} \
 KEYCLOAK_ADMIN_PASSWORD={pw} \
-{kc} start-dev --http-port={port} --hostname={host} --hostname-port={port} --http-enabled=true --proxy=passthrough \
---log="{log_handler}" --log-file="{logfile}" --log-level="{log_level}" &
+{kc} start-dev
 """
 
 OIDC_CONFIG_TMPL = """\
 http://{host}:{port}/realms/{realm}/.well-known/openid-configuration\
 """
+
+DEFAULT_CONFIG = {
+    'http-port': KC_PORT,
+    'hostname': None,
+    'hostname-port': KC_PORT,
+    'http-enabled': True,
+    'proxy': 'passthrough',
+    'log': KC_LOG_HANDLER,
+    'log-file': KC_LOG_FILE,
+    'log-level': KC_ROOT_LOG_LEVEL,
+}
+
+
+class KeycloakConfigWriter:
+    _cfg = DEFAULT_CONFIG.copy()
+
+    def __init__(self, fname: str = KC_CFG, extra_cfg: dict = {}):
+        self._cfg.update(extra_cfg)
+        self._fname = fname
+        self._dir = tempfile.TemporaryDirectory()
+
+    @property
+    def rep(self):
+        return json.dumps(self._cfg)
+
+    def write(self, node):
+        try:
+            node.account.mkdirs(self._fname)
+        except:
+            pass
+        tmp_f = os.path.join(self._dir.name, 'tmp.conf')
+        with open(tmp_f, 'w') as f:
+            for k, v in self._cfg.items():
+                if v is None:
+                    continue
+                f.write(f"{k}={str(v).lower() if type(v) is bool else v}\n")
+
+        node.account.copy_to(tmp_f, self._fname)
 
 
 class OAuthConfig:
@@ -166,12 +209,7 @@ class KeycloakService(Service):
     def _start_cmd(self, node):
         cmd = START_CMD_TMPL.format(admin=KC_ADMIN,
                                     pw=KC_ADMIN_PASSWORD,
-                                    kc=KC,
-                                    port=self.http_port,
-                                    log_handler=KC_LOG_HANDLER,
-                                    logfile=KC_LOG_FILE,
-                                    log_level=self.log_level,
-                                    host=self.host(node))
+                                    kc=KC)
         self.logger.debug(f"KC START CMD: {cmd}")
         return cmd
 
@@ -209,12 +247,23 @@ class KeycloakService(Service):
                    node,
                    access_token_lifespan_s=DEFAULT_AT_LIFESPAN_S,
                    **kwargs):
-        self.logger.debug("Starting Keycloak service")
+
+        cfg_writer = KeycloakConfigWriter(
+            extra_cfg={
+                'hostname': self.host(node),
+                'hostname-port': self.http_port,
+                'http-port': self.http_port,
+                'log-level': self.log_level,
+            })
+        cfg_writer.write(node)
 
         node.account.ssh(f"touch {KC_LOG_FILE}", allow_fail=False)
 
+        self.logger.debug(f"Starting Keycloak service {cfg_writer.rep}")
+
         with node.account.monitor_log(KC_LOG_FILE) as monitor:
-            node.account.ssh_capture(self._start_cmd(node), allow_fail=False)
+            node.account.ssh_capture(f"nohup {self._start_cmd(node)}",
+                                     allow_fail=False)
             monitor.wait_until("Running the server in", timeout_sec=120)
 
         self.logger.debug(f"Keycloak PIDs: {self.pids(node)}")

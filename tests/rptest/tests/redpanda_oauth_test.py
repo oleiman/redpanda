@@ -16,14 +16,17 @@ from rptest.clients.kafka_cli_tools import KafkaCliTools, AuthorizationError
 from rptest.services.redpanda import LoggingConfig, PandaproxyConfig, SchemaRegistryConfig, SecurityConfig, make_redpanda_service
 from rptest.services.keycloak import DEFAULT_REALM, DEFAULT_AT_LIFESPAN_S, KeycloakService
 from rptest.services.cluster import cluster
+from rptest.services.tls import TLSCertManager  #TLSChainCACertManager,
 from rptest.tests.sasl_reauth_test import get_sasl_metrics, REAUTH_METRIC, EXPIRATION_METRIC
 from rptest.util import expect_exception
+from rptest.tests.tls_metrics_test import FaketimeTLSProvider
 
 import requests
 import time
 from keycloak import KeycloakOpenID
 from urllib.parse import urlparse
 import json
+import socket
 
 CLIENT_ID = 'myapp'
 TOKEN_AUDIENCE = 'account'
@@ -50,12 +53,19 @@ class RedpandaOIDCTestBase(Test):
                  http_authentication=["BASIC", "OIDC"],
                  sasl_max_reauth_ms=None,
                  access_token_lifespan=DEFAULT_AT_LIFESPAN_S,
+                 use_ssl=True,
                  **kwargs):
         super(RedpandaOIDCTestBase, self).__init__(test_context, **kwargs)
         self.produce_messages = []
         self.produce_errors = []
+        self.tls = None
+        provider = None
+        if use_ssl:
+            self.tls = TLSCertManager(self.logger)
+            provider = FaketimeTLSProvider(self.tls)
+
         num_brokers = num_nodes - 1
-        self.keycloak = KeycloakService(test_context)
+        self.keycloak = KeycloakService(test_context, tls=provider)
         kc_node = self.keycloak.nodes[0]
         try:
             self.keycloak.start_node(
@@ -66,35 +76,62 @@ class RedpandaOIDCTestBase(Test):
             assert False, "Keycloak failed to start"
 
         security = SecurityConfig()
+        security.require_client_auth = True
         security.enable_sasl = True
         security.sasl_mechanisms = sasl_mechanisms
         security.http_authentication = http_authentication
+        security.tls_provider = provider
 
         pandaproxy_config = PandaproxyConfig()
         pandaproxy_config.authn_method = 'http_basic'
+        pandaproxy_config.require_client_auth = True
 
         schema_reg_config = SchemaRegistryConfig()
         schema_reg_config.authn_method = 'http_basic'
+        schema_reg_config.require_client_auth = True
 
         self.redpanda = make_redpanda_service(
             test_context,
             num_brokers,
             extra_rp_conf={
-                "oidc_discovery_url": self.keycloak.get_discovery_url(kc_node),
-                "oidc_token_audience": TOKEN_AUDIENCE,
-                "kafka_sasl_max_reauth_ms": sasl_max_reauth_ms,
+                "oidc_discovery_url":
+                self.keycloak.get_discovery_url(kc_node, use_ssl=use_ssl),
+                "oidc_token_audience":
+                TOKEN_AUDIENCE,
+                "kafka_sasl_max_reauth_ms":
+                sasl_max_reauth_ms,
             },
             security=security,
             pandaproxy_config=pandaproxy_config,
             schema_registry_config=schema_reg_config,
             log_config=log_config)
 
+        # self.redpanda.set_security_settings(security)
+
+        self.client_cert = None
+        if use_ssl:
+            assert self.tls is not None
+            self.client_cert = self.tls.create_cert(socket.gethostname(),
+                                                    common_name="user",
+                                                    name="user")
+            schema_reg_config.client_key = self.client_cert.key
+            schema_reg_config.client_crt = self.client_cert.crt
+            pandaproxy_config.client_key = self.client_cert.key
+            pandaproxy_config.client_crt = self.client_cert.crt
+
+            self.redpanda.set_schema_registry_settings(schema_reg_config)
+            self.redpanda.set_pandaproxy_settings(pandaproxy_config)
+
         self.su_username, self.su_password, self.su_algorithm = self.redpanda.SUPERUSER_CREDENTIALS
 
-        self.rpk = RpkTool(self.redpanda,
-                           username=self.su_username,
-                           password=self.su_password,
-                           sasl_mechanism=self.su_algorithm)
+        self.rpk = RpkTool(
+            self.redpanda,
+            username=self.su_username,
+            password=self.su_password,
+            sasl_mechanism=self.su_algorithm,
+            tls_cert=self.client_cert,
+            tls_enabled=use_ssl,
+        )
 
     def setUp(self):
         self.produce_messages.clear()
@@ -103,7 +140,10 @@ class RedpandaOIDCTestBase(Test):
         self.redpanda.start()
 
 
-class RedpandaOIDCTest(RedpandaOIDCTestBase):
+class RedpandaOIDCTestMethods(RedpandaOIDCTestBase):
+    def __init__(self, test_context, **kwargs):
+        super(RedpandaOIDCTestMethods, self).__init__(test_context, **kwargs)
+
     @cluster(num_nodes=4)
     def test_init(self):
         kc_node = self.keycloak.nodes[0]
@@ -134,7 +174,8 @@ class RedpandaOIDCTest(RedpandaOIDCTestBase):
         assert cfg.token_endpoint is not None
         k_client = PythonLibrdkafka(self.redpanda,
                                     algorithm='OAUTHBEARER',
-                                    oauth_config=cfg)
+                                    oauth_config=cfg,
+                                    tls_cert=self.client_cert)
         producer = k_client.get_producer()
 
         # Explicit poll triggers OIDC token flow. Required for librdkafka
@@ -155,37 +196,70 @@ class RedpandaOIDCTest(RedpandaOIDCTestBase):
             client_id=cfg.client_id,
             client_secret_key=cfg.client_secret,
             realm_name=DEFAULT_REALM,
-            verify=True)
+            verify=False)
         token = openid.token(grant_type="client_credentials")
+
+        cert = None
+        ca_cert = True
+        scheme = 'http'
+        if self.client_cert is not None:
+            scheme = 'https'
+            cert = (self.client_cert.crt, self.client_cert.key)
+            ca_cert = self.client_cert.ca.crt
 
         def check_pp_topics():
             response = requests.get(
                 url=
-                f'http://{self.redpanda.nodes[0].account.hostname}:8082/topics',
+                f'{scheme}://{self.redpanda.nodes[0].account.hostname}:8082/topics',
                 headers={
                     'Accept': 'application/vnd.kafka.v2+json',
                     'Content-Type': 'application/vnd.kafka.v2+json',
                     'Authorization': f'Bearer {token["access_token"]}'
                 },
-                timeout=5)
+                timeout=10,
+                cert=cert,
+                verify=ca_cert)
             return response.status_code == requests.codes.ok and set(
                 response.json()) == expected_topics
 
         def check_sr_subjects():
             response = requests.get(
                 url=
-                f'http://{self.redpanda.nodes[0].account.hostname}:8081/subjects',
+                f'{scheme}://{self.redpanda.nodes[0].account.hostname}:8081/subjects',
                 headers={
                     'Accept': 'application/vnd.schemaregistry.v1+json',
                     'Authorization': f'Bearer {token["access_token"]}'
                 },
-                timeout=5)
+                timeout=10,
+                cert=cert,
+                verify=ca_cert)
             return response.status_code == requests.codes.ok and response.json(
             ) == []
 
-        wait_until(check_pp_topics, timeout_sec=5)
+        wait_until(check_pp_topics, timeout_sec=10)
 
-        wait_until(check_sr_subjects, timeout_sec=5)
+        wait_until(check_sr_subjects, timeout_sec=10)
+
+
+class RedpandaOIDCTest(RedpandaOIDCTestMethods):
+    def __init__(self, test_context, **kwargs):
+        super(RedpandaOIDCTest, self).__init__(test_context,
+                                               use_ssl=False,
+                                               **kwargs)
+
+
+class RedpandaOIDCTlsTest(RedpandaOIDCTestMethods):
+    def __init__(self, test_context, **kwargs):
+        super(RedpandaOIDCTlsTest, self).__init__(test_context,
+                                                  use_ssl=True,
+                                                  **kwargs)
+
+
+class JavaClientOIDCTest(RedpandaOIDCTestBase):
+    def __init__(self, test_context, **kwargs):
+        super(JavaClientOIDCTest, self).__init__(test_context,
+                                                 use_ssl=False,
+                                                 **kwargs)
 
     @cluster(num_nodes=4)
     def test_java_client(self):
@@ -264,6 +338,7 @@ class OIDCReauthTest(RedpandaOIDCTestBase):
         super().__init__(test_context,
                          sasl_max_reauth_ms=self.MAX_REAUTH_MS,
                          access_token_lifespan=self.TOKEN_LIFESPAN_S,
+                         use_ssl=False,
                          **kwargs)
 
     @cluster(num_nodes=4)

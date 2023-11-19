@@ -53,7 +53,7 @@ class RedpandaOIDCTestBase(Test):
                  http_authentication=["BASIC", "OIDC"],
                  sasl_max_reauth_ms=None,
                  access_token_lifespan=DEFAULT_AT_LIFESPAN_S,
-                 use_ssl=True,
+                 use_ssl=False,
                  **kwargs):
         super(RedpandaOIDCTestBase, self).__init__(test_context, **kwargs)
         self.produce_messages = []
@@ -243,9 +243,7 @@ class RedpandaOIDCTestMethods(RedpandaOIDCTestBase):
 
 class RedpandaOIDCTest(RedpandaOIDCTestMethods):
     def __init__(self, test_context, **kwargs):
-        super(RedpandaOIDCTest, self).__init__(test_context,
-                                               use_ssl=False,
-                                               **kwargs)
+        super(RedpandaOIDCTest, self).__init__(test_context, **kwargs)
 
 
 class RedpandaOIDCTlsTest(RedpandaOIDCTestMethods):

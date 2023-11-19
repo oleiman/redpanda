@@ -7,6 +7,8 @@ from typing import Optional
 from ducktape.services.service import Service
 from ducktape.utils.util import wait_until
 
+# from rptest.services.redpanda import RedpandaService
+
 from keycloak import KeycloakAdmin
 
 KC_INSTALL_DIR = os.path.join('/', 'opt', 'keycloak')
@@ -16,16 +18,20 @@ KC_BIN_DIR = os.path.join(KC_INSTALL_DIR, 'bin')
 KC_CONF_DIR = os.path.join(KC_INSTALL_DIR, 'conf')
 KC = os.path.join(KC_BIN_DIR, 'kc.sh')
 KCADM = os.path.join(KC_BIN_DIR, 'kcadm.sh')
-KC_CFG = os.path.join(KC_CONF_DIR, 'keycloak.conf')
+KC_CFG = 'keycloak.conf'
 KC_TLS_KEY_FILE = os.path.join(KC_CONF_DIR, 'key.pem')
 KC_TLS_CRT_FILE = os.path.join(KC_CONF_DIR, 'crt.pem')
-KC_TLS_TRUST_STORE_FILE = os.path.join(KC_CONF_DIR, 'ca.crt')
+KC_TLS_CA_CRT_FILE = os.path.join(KC_CONF_DIR, 'ca.crt')
+KC_TLS_TRUST_STORE = os.path.join(KC_CONF_DIR, 'kcTrustStore')
 KC_ADMIN = 'admin'
 KC_ADMIN_PASSWORD = 'admin'
 KC_ROOT_LOG_LEVEL = 'INFO'
 KC_LOG_HANDLER = 'console,file'
 KC_LOG_FILE = '/var/log/kc.log'
 KC_PORT = 8080
+# NOTE(oren): This had to be opened explicitly in CDT cluster config,
+# so a change here will require a corresponding change in vtools
+
 KC_HTTPS_PORT = 8443
 
 DEFAULT_REALM = 'demorealm'
@@ -58,10 +64,11 @@ DEFAULT_CONFIG = {
 class KeycloakConfigWriter:
     _cfg = DEFAULT_CONFIG.copy()
 
-    def __init__(self, fname: str = KC_CFG, extra_cfg: dict = {}):
+    def __init__(self, dir: str = KC_CONF_DIR, extra_cfg: dict = {}):
         self._cfg.update(extra_cfg)
-        self._fname = fname
-        self._dir = tempfile.TemporaryDirectory()
+        self._dir = dir
+        self._fname = os.path.join(self._dir, KC_CFG)
+        self._tmpdir = tempfile.TemporaryDirectory()
 
     @property
     def rep(self):
@@ -69,10 +76,10 @@ class KeycloakConfigWriter:
 
     def write(self, node):
         try:
-            node.account.mkdirs(self._fname)
+            node.account.mkdirs(self._dir)
         except:
             pass
-        tmp_f = os.path.join(self._dir.name, 'tmp.conf')
+        tmp_f = os.path.join(self._tmpdir.name, KC_CFG)
         with open(tmp_f, 'w') as f:
             for k, v in self._cfg.items():
                 if v is None:
@@ -206,6 +213,8 @@ class KeycloakService(Service):
         if self.tls_provider is not None:
             self.https_port = https_port
         self._admin = None
+        self._is_cdt = context.globals.get("dedicated_nodes", None) is not None
+        self._is_cdt = False
 
     @property
     def admin(self):
@@ -266,8 +275,16 @@ class KeycloakService(Service):
         cert = self.tls_provider.create_broker_cert(self, node)
         node.account.copy_to(cert.crt, KC_TLS_CRT_FILE)
         node.account.copy_to(cert.key, KC_TLS_KEY_FILE)
-        node.account.copy_to(cert.ca.crt, KC_TLS_TRUST_STORE_FILE)
-        return KC_TLS_CRT_FILE, KC_TLS_KEY_FILE, KC_TLS_TRUST_STORE_FILE
+        node.account.copy_to(cert.ca.crt, KC_TLS_CA_CRT_FILE)
+        for f in [KC_TLS_CRT_FILE, KC_TLS_KEY_FILE, KC_TLS_CA_CRT_FILE]:
+            node.account.ssh(f"chmod 755 {f}", allow_fail=False)
+        node.account.ssh(
+            f"keytool -import -file {KC_TLS_CA_CRT_FILE} -alias rpCA -keystore {KC_TLS_TRUST_STORE} -storepass passwd -noprompt",
+            allow_fail=False)
+        node.account.ssh(
+            f"cp {KC_TLS_CA_CRT_FILE} /usr/local/share/ca-certificates")
+        node.account.ssh(f"update-ca-certificates")
+        return KC_TLS_CRT_FILE, KC_TLS_KEY_FILE, KC_TLS_TRUST_STORE
 
     def start_node(self,
                    node,
@@ -286,7 +303,8 @@ class KeycloakService(Service):
                 'log-level': self.log_level,
                 'https-certificate-file': cert,
                 'https-certificate-key-file': key,
-                'https-certificate-trust-store-file': ca,
+                'https-trust-store-file': ca,
+                'https-trust-store-password': 'passwd',
                 'https-port': self.https_port,
             })
         cfg_writer.write(node)
@@ -298,7 +316,7 @@ class KeycloakService(Service):
         with node.account.monitor_log(KC_LOG_FILE) as monitor:
             node.account.ssh_capture(f"nohup {self._start_cmd(node)}",
                                      allow_fail=False)
-            monitor.wait_until("Running the server in", timeout_sec=120)
+            monitor.wait_until("Running the server in", timeout_sec=30)
 
         self.logger.debug(f"Keycloak PIDs: {self.pids(node)}")
 
@@ -331,3 +349,8 @@ class KeycloakService(Service):
         # TODO: this might be overly aggressive
         node.account.ssh(f"rm -rf {KC_LOG_FILE}")
         node.account.ssh(f"rm -rf /opt/keycloak/data/*", allow_fail=False)
+        # node.account.ssh(
+        #     f"rm -f {KC_TLS_CRT_FILE} {KC_TLS_KEY_FILE}  {KC_TLS_CA_CRT_FILE} {KC_TLS_TRUST_STORE}"
+        # )
+        node.account.ssh(f"rm -f {KC_TLS_TRUST_STORE}")
+        node.account.ssh(f"update-ca-certificates")

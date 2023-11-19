@@ -9,6 +9,8 @@
  */
 #include "security/oidc_service.h"
 
+#include "config/configuration.h"
+#include "config/node_config.h"
 #include "http/client.h"
 #include "security/jwt.h"
 #include "security/logger.h"
@@ -34,11 +36,33 @@ ss::future<ss::sstring> make_request(std::string_view url_view) {
     auto is_https = url.scheme == "https";
     std::optional<ss::sstring> tls_host;
     ss::shared_ptr<ss::tls::certificate_credentials> creds;
+    std::cout << "scheme: " << url.scheme
+              << (is_https ? " IS HTTPS" : " NOT HTTPS") << std::endl;
     if (is_https) {
         tls_host.emplace(url.host);
-        ss::tls::credentials_builder builder;
-        builder.set_client_auth(ss::tls::client_auth::NONE);
+        auto builder = (co_await config::node()
+                          .kafka_api_tls()
+                          .at(0)
+                          .config.get_credentials_builder())
+                         .value_or(ss::tls::credentials_builder{});
+
+        // ss::tls::credentials_builder builder;
         co_await builder.set_system_trust();
+
+        // ss::tls::credentials_builder builder;
+        // builder.set_client_auth(ss::tls::client_auth::NONE);
+        // auto ts_file
+        //   =
+        //   config::node().kafka_api_tls().at(0).config.get_truststore_file();
+        // if (ts_file.has_value()) {
+        //     std::cout << "TRUST FILE: " << ts_file.value() << std::endl;
+        //     co_await builder.set_x509_trust_file(
+        //       ts_file.value(), ss::tls::x509_crt_format::PEM);
+        // } else {
+        //     std::cout << "SYSTEM TRUST" << std::endl;
+        //     co_await builder.set_system_trust();
+        // }
+
         creds = builder.build_certificate_credentials();
         creds->set_dn_verification_callback([](
                                               ss::tls::session_type type,
@@ -52,6 +76,7 @@ ss::future<ss::sstring> make_request(std::string_view url_view) {
               issuer);
         });
     }
+
     http::client client{net::base_transport::configuration{
       .server_addr = {url.host, url.port},
       .credentials = creds,

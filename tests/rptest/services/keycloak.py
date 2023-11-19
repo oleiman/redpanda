@@ -2,6 +2,7 @@ import json
 import os
 import requests
 import tempfile
+from typing import Optional
 
 from ducktape.services.service import Service
 from ducktape.utils.util import wait_until
@@ -25,6 +26,7 @@ KC_ROOT_LOG_LEVEL = 'INFO'
 KC_LOG_HANDLER = 'console,file'
 KC_LOG_FILE = '/var/log/kc.log'
 KC_PORT = 8080
+KC_HTTPS_PORT = 8443
 
 DEFAULT_REALM = 'demorealm'
 
@@ -38,7 +40,7 @@ KEYCLOAK_ADMIN_PASSWORD={pw} \
 """
 
 OIDC_CONFIG_TMPL = """\
-http://{host}:{port}/realms/{realm}/.well-known/openid-configuration\
+{scheme}://{host}:{port}/realms/{realm}/.well-known/openid-configuration\
 """
 
 DEFAULT_CONFIG = {
@@ -85,10 +87,12 @@ class OAuthConfig:
                  client_id,
                  client_secret,
                  token_endpoint,
+                 ca_cert=None,
                  scopes=['openid']):
         self.client_id = client_id
         self.client_secret = client_secret
         self.token_endpoint = token_endpoint
+        self.ca_cert = ca_cert
         self.scopes = scopes
 
 
@@ -188,13 +192,19 @@ class KeycloakService(Service):
 
     def __init__(self,
                  context,
-                 port=KC_PORT,
-                 realm=DEFAULT_REALM,
-                 log_level=KC_ROOT_LOG_LEVEL):
+                 port: int = KC_PORT,
+                 https_port: int = KC_HTTPS_PORT,
+                 realm: str = DEFAULT_REALM,
+                 log_level: str = KC_ROOT_LOG_LEVEL,
+                 tls=None):
         super(KeycloakService, self).__init__(context, num_nodes=1)
         self.realm = realm
         self.http_port = port
         self.log_level = log_level
+        self.tls_provider = tls
+        self.https_port = None
+        if self.tls_provider is not None:
+            self.https_port = https_port
         self._admin = None
 
     @property
@@ -216,13 +226,18 @@ class KeycloakService(Service):
     def host(self, node):
         return node.account.hostname
 
-    def get_discovery_url(self, node):
-        return OIDC_CONFIG_TMPL.format(host=self.host(node),
-                                       port=self.http_port,
-                                       realm=self.realm)
+    def get_discovery_url(self, node, use_ssl=False):
+        return OIDC_CONFIG_TMPL.format(
+            scheme='https' if use_ssl else 'http',
+            host=self.host(node),
+            port=self.https_port if use_ssl else self.http_port,
+            realm=self.realm)
 
-    def get_token_endpoint(self, node):
-        oidc_config = requests.get(self.get_discovery_url(node=node)).json()
+    def get_token_endpoint(self, node, use_ssl=False):
+        ca_cert = self.tls_provider.ca.crt if self.tls_provider is not None else True
+        oidc_config = requests.get(self.get_discovery_url(node=node,
+                                                          use_ssl=use_ssl),
+                                   verify=ca_cert).json()
         return oidc_config['token_endpoint']
 
     def login_admin_user(self, node, username, password):
@@ -234,8 +249,10 @@ class KeycloakService(Service):
 
     def generate_oauth_config(self, node, client_id):
         secret = self.admin.get_client_secret(client_id)
-        token_endpoint = self.get_token_endpoint(node)
-        return OAuthConfig(client_id, secret, token_endpoint)
+        use_ssl = self.tls_provider is not None
+        ca_cert = self.tls_provider.ca.crt if self.tls_provider is not None else None
+        token_endpoint = self.get_token_endpoint(node, use_ssl=use_ssl)
+        return OAuthConfig(client_id, secret, token_endpoint, ca_cert=ca_cert)
 
     def pids(self, node):
         return node.account.java_pids('quarkus')
@@ -243,17 +260,34 @@ class KeycloakService(Service):
     def alive(self, node):
         return len(self.pids(node)) > 0
 
+    def setup_tls(self, node) -> tuple[str | None, str | None, str | None]:
+        if self.tls_provider is None:
+            return None, None, None
+        cert = self.tls_provider.create_broker_cert(self, node)
+        node.account.copy_to(cert.crt, KC_TLS_CRT_FILE)
+        node.account.copy_to(cert.key, KC_TLS_KEY_FILE)
+        node.account.copy_to(cert.ca.crt, KC_TLS_TRUST_STORE_FILE)
+        return KC_TLS_CRT_FILE, KC_TLS_KEY_FILE, KC_TLS_TRUST_STORE_FILE
+
     def start_node(self,
                    node,
                    access_token_lifespan_s=DEFAULT_AT_LIFESPAN_S,
                    **kwargs):
 
+        cert, key, ca = self.setup_tls(node)
+
+        hostname_port = self.https_port if self.https_port is not None else self.http_port
+
         cfg_writer = KeycloakConfigWriter(
             extra_cfg={
                 'hostname': self.host(node),
-                'hostname-port': self.http_port,
+                'hostname-port': hostname_port,
                 'http-port': self.http_port,
                 'log-level': self.log_level,
+                'https-certificate-file': cert,
+                'https-certificate-key-file': key,
+                'https-certificate-trust-store-file': ca,
+                'https-port': self.https_port,
             })
         cfg_writer.write(node)
 

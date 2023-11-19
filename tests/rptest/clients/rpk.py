@@ -328,7 +328,7 @@ class RpkTool:
             ",".join(operations), resource, resource_name, "--brokers",
             self._redpanda.brokers(), "--user", username, "--password",
             password, "--sasl-mechanism", mechanism
-        ]
+        ] + self._kafka_conn_settings()
         return self._run(cmd)
 
     def allow_principal(self, principal, operations, resource, resource_name):

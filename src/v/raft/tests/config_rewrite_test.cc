@@ -49,7 +49,8 @@
 
 using namespace std::chrono_literals;
 
-static ss::sstring data_dir = "/home/mmaslanka/dev/support/schemas_data";
+static ss::sstring data_dir
+  = "/home/orenleiman/incidents/interrupt-432-obsidian/data";
 SEASTAR_THREAD_TEST_CASE(rewrite_raft_configuration) {
     ss::sharded<features::feature_table> ft;
     storage::api st_api(

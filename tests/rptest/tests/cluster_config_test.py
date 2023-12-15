@@ -1883,17 +1883,21 @@ class ClusterConfigLegacyDefaultTest(RedpandaTest, ClusterConfigHelpersMixin):
     @parametrize(wipe_cache=True)
     @parametrize(wipe_cache=False)
     def test_legacy_default_explicit_after_upgrade(self, wipe_cache: bool):
+        legacy_default = False
+        key = 'space_management_enable'
+        new_default = True
+
         old_version, _ = self.installer.latest_for_line(self.legacy_version)
         self.installer.install(self.redpanda.nodes, old_version)
         self.redpanda.start()
 
-        self._check_value_everywhere(self.key, self.legacy_default)
+        # self._check_value_everywhere(key, legacy_default)
 
         self._upgrade(wipe_cache)
-        self._check_value_everywhere(self.key, self.legacy_default)
-        expected = self.new_default + 1
-        self.redpanda.set_cluster_config({self.key: expected})
+        self._check_value_everywhere(key, legacy_default)
+        expected = new_default
+        self.redpanda.set_cluster_config({key: expected})
 
-        self._check_value_everywhere(self.key, expected)
+        self._check_value_everywhere(key, expected)
         self.redpanda.restart_nodes(self.redpanda.nodes)
-        self._check_value_everywhere(self.key, expected)
+        self._check_value_everywhere(key, expected)

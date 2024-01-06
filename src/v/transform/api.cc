@@ -37,6 +37,7 @@
 #include "transform/txn_reader.h"
 #include "wasm/api.h"
 #include "wasm/cache.h"
+#include "wasm/logger.h"
 
 #include <seastar/core/circular_buffer.hh>
 #include <seastar/core/lowres_clock.hh>
@@ -628,7 +629,8 @@ service::create_engine(model::transform_metadata meta) {
     if (!factory) {
         co_return ss::shared_ptr<wasm::engine>(nullptr);
     }
-    co_return co_await (*factory)->make_engine();
+    co_return co_await (*factory)->make_engine(
+      std::make_unique<wasm::logger>(meta.name, &tlog));
 }
 
 ss::future<
@@ -660,7 +662,7 @@ service::get_factory(model::transform_metadata meta) {
         co_return ss::foreign_ptr<ss::shared_ptr<wasm::factory>>(nullptr);
     }
     auto factory = co_await _runtime->make_factory(
-      std::move(meta), std::move(result).value(), &tlog);
+      std::move(meta), std::move(result).value());
     co_return ss::make_foreign(factory);
 }
 

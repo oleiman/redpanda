@@ -18,6 +18,7 @@
 #include "serde/rw/scalar.h"
 #include "test_utils/test.h"
 #include "wasm/api.h"
+#include "wasm/logger.h"
 #include "wasm/schema_registry.h"
 #include "wasm/transform_probe.h"
 

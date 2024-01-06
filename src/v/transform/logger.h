@@ -18,4 +18,5 @@
 namespace transform {
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 extern ss::logger tlog;
+
 } // namespace transform

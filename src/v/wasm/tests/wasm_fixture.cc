@@ -179,12 +179,14 @@ void WasmTestFixture::load_wasm(const std::string& path) {
     for (auto& chunk : wasm_file) {
         buf.append(std::move(chunk));
     }
-    _factory
-      = _runtime->make_factory(_meta, std::move(buf), &dummy_logger).get();
+    _factory = _runtime->make_factory(_meta, std::move(buf)).get();
     if (_engine) {
         _engine->stop().get();
     }
-    _engine = _factory->make_engine().get();
+    _engine = _factory
+                ->make_engine(
+                  std::make_unique<wasm::logger>(_meta.name, &dummy_logger))
+                .get();
     _engine->start().get();
 }
 

@@ -246,4 +246,38 @@ private:
     iobuf _data;
 };
 
+struct transform_log_event
+  : serde::envelope<
+      transform_log_event,
+      serde::version<0>,
+      serde::compat_version<0>> {
+    using clock_type = std::chrono::system_clock;
+    transform_log_event() = default;
+    transform_log_event(
+      node_id source,
+      clock_type::time_point ts,
+      ss::log_level level,
+      iobuf message)
+      : source_id(source)
+      , ts(ts.time_since_epoch() / std::chrono::milliseconds(1))
+      , level(level)
+      , message(std::move(message)) {}
+
+    // TODO(oren): defaults
+    node_id source_id;
+    // TODO(oren): timestamp type?
+    clock_type::duration::rep ts{};
+    ss::log_level level{ss::log_level::info};
+    iobuf message;
+
+    friend bool
+    operator==(const transform_log_event&, const transform_log_event&)
+      = default;
+
+    // friend std::ostream& operator<<(std::ostream&, const
+    // transform_log_event&);
+
+    auto serde_fields() { return std::tie(source_id, ts, message, level); }
+};
+
 } // namespace model

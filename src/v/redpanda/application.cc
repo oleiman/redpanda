@@ -110,6 +110,7 @@
 #include "storage/directories.h"
 #include "syschecks/syschecks.h"
 #include "transform/api.h"
+#include "transform/log_manager.h"
 #include "transform/rpc/client.h"
 #include "transform/rpc/service.h"
 #include "transform/transform_offsets_stm.h"

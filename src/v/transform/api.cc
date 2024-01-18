@@ -29,6 +29,7 @@
 #include "ssx/future-util.h"
 #include "transform/commit_batcher.h"
 #include "transform/io.h"
+#include "transform/log_manager.h"
 #include "transform/logger.h"
 #include "transform/rpc/client.h"
 #include "transform/rpc/deps.h"
@@ -419,6 +420,10 @@ service::service(
 service::~service() = default;
 
 ss::future<> service::start() {
+    _log_manager = std::make_unique<log_manager>(
+      _self, &_rpc_client->local(), &_topic_table->local());
+    co_await _log_manager->start();
+
     _batcher = std::make_unique<commit_batcher<ss::lowres_clock>>(
       config::shard_local_cfg().data_transforms_commit_interval_ms.bind(),
       std::make_unique<rpc_offset_committer>(&_rpc_client->local()));
@@ -437,6 +442,7 @@ ss::future<> service::start() {
         _batcher.get()));
     co_await _batcher->start();
     co_await _manager->start();
+
     register_notifications();
 }
 
@@ -518,6 +524,10 @@ ss::future<> service::stop() {
     }
     if (_batcher) {
         co_await _batcher->stop();
+    }
+
+    if (_log_manager) {
+        co_await _log_manager->stop();
     }
 }
 
@@ -630,7 +640,8 @@ service::create_engine(model::transform_metadata meta) {
         co_return ss::shared_ptr<wasm::engine>(nullptr);
     }
     co_return co_await (*factory)->make_engine(
-      std::make_unique<wasm::logger>(meta.name, &tlog));
+      std::make_unique<transform::logger>(
+        meta.name, &tlog, _log_manager.get()));
 }
 
 ss::future<

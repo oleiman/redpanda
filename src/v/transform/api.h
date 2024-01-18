@@ -107,6 +107,7 @@ private:
     std::unique_ptr<commit_batcher<ss::lowres_clock>> _batcher;
     std::vector<ss::deferred_action<ss::noncopyable_function<void()>>>
       _notification_cleanups;
+    std::unique_ptr<log_manager> _log_manager{nullptr};
 };
 
 } // namespace transform

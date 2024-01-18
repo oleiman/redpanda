@@ -44,6 +44,11 @@
             "name": "offset_fetch",
             "input_type": "offset_fetch_request",
             "output_type": "offset_fetch_response"
+        },
+        {
+            "name": "append_transform_logs",
+            "input_type": "append_log_event_request",
+            "output_type": "append_log_event_reply"
         }
     ]
 }

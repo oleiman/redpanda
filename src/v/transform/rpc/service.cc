@@ -37,6 +37,7 @@
 #include <seastar/core/semaphore.hh>
 
 #include <algorithm>
+#include <chrono>
 #include <iterator>
 #include <memory>
 #include <system_error>
@@ -334,6 +335,31 @@ local_service::offset_fetch(offset_fetch_request request) {
       *shard, ntp, request);
 }
 
+ss::future<result<void, cluster::errc>> local_service::append_transform_logs(
+  model::transform_name name,
+  ss::chunked_fifo<model::transform_log_event> events,
+  model::timeout_clock::duration timeout) {
+    storage::record_batch_builder b(
+      model::record_batch_type::raft_data, model::offset(0));
+    using namespace std::chrono_literals;
+    for (auto& le : events) {
+        std::vector<model::record_header> headers;
+        headers.push_back(make_header("level", fmt::format("{}", le.level)));
+        headers.push_back(make_header("timestamp", std::to_string(le.ts)));
+        headers.push_back(make_header("node", fmt::format("{}", le.source_id)));
+        b.add_raw_kw(
+          make_iobuf(name), std::move(le.message), std::move(headers));
+    }
+    ss::chunked_fifo<model::record_batch> batches;
+    batches.push_back(std::move(b).build());
+    auto r = co_await produce(
+      model::transform_log_internal_ntp, std::move(batches), timeout);
+    if (r.has_error()) {
+        co_return r.error();
+    }
+    co_return cluster::errc::success;
+}
+
 ss::future<produce_reply>
 network_service::produce(produce_request req, ::rpc::streaming_context&) {
     auto results = co_await _service->local().produce(
@@ -388,6 +414,16 @@ ss::future<generate_report_reply> network_service::generate_report(
   generate_report_request, ::rpc::streaming_context&) {
     auto report = co_await _service->local().compute_node_local_report();
     co_return generate_report_reply(std::move(report));
+}
+
+ss::future<append_log_event_reply> network_service::append_transform_logs(
+  append_log_event_request req, ::rpc::streaming_context&) {
+    auto res = co_await _service->local().append_transform_logs(
+      std::move(req.name), std::move(req.events), req.timeout);
+    if (res.has_error()) {
+        co_return append_log_event_reply{res.error()};
+    }
+    co_return append_log_event_reply{cluster::errc::success};
 }
 
 } // namespace transform::rpc

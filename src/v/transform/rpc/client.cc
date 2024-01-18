@@ -806,6 +806,126 @@ client::generate_remote_report(model::node_id node) {
     co_return std::move(resp).value().report;
 }
 
+ss::future<result<void, cluster::errc>> client::append_transform_logs(
+  model::transform_name name,
+  ss::chunked_fifo<model::transform_log_event> events,
+  model::timeout_clock::duration timeout) {
+    // TODO(oren): retry. requires diff data organization (chunked_fifo can't be
+    // copied)
+    co_return co_await do_append_transform_logs_once(
+      std::move(name), std::move(events), timeout);
+}
+
+ss::future<result<void, cluster::errc>> client::do_append_transform_logs_once(
+  model::transform_name name,
+  ss::chunked_fifo<model::transform_log_event> events,
+  model::timeout_clock::duration timeout) {
+    //
+    auto leader = co_await compute_transform_logs_ntp_leader(name);
+    if (!leader.has_value()) {
+        co_return cluster::errc::not_leader;
+    }
+    vlog(
+      log.trace,
+      "do_append_transform_logs_once_request(node={}): N={}",
+      leader.value(),
+      events.size());
+    auto reply = co_await (
+      leader == _self
+        ? do_local_append_transform_logs(
+          std::move(name), std::move(events), timeout)
+        : do_remote_append_transform_logs(
+          leader.value(), std::move(name), std::move(events), timeout));
+    vlog(
+      log.trace,
+      "do_append_transform_logs_once_response(node={}): {}",
+      leader.value(),
+      reply.has_error() ? reply.error() : cluster::errc::success);
+    co_return reply;
+}
+
+ss::future<result<void, cluster::errc>> client::do_local_append_transform_logs(
+  model::transform_name name,
+  ss::chunked_fifo<model::transform_log_event> events,
+  model::timeout_clock::duration timeout) {
+    // co_return cluster::errc::success;
+    return _local_service->local().append_transform_logs(
+      std::move(name), std::move(events), timeout);
+}
+ss::future<result<void, cluster::errc>> client::do_remote_append_transform_logs(
+  model::node_id node,
+  model::transform_name name,
+  ss::chunked_fifo<model::transform_log_event> events,
+  model::timeout_clock::duration timeout) {
+    auto resp
+      = co_await _connections->local()
+          .with_node_client<impl::transform_rpc_client_protocol>(
+            _self,
+            ss::this_shard_id(),
+            node,
+            timeout,
+            [timeout, name = std::move(name), events = std::move(events)](
+              impl::transform_rpc_client_protocol proto) mutable {
+                return proto.append_transform_logs(
+                  append_log_event_request{
+                    std::move(name), std::move(events), timeout},
+                  ::rpc::client_opts(model::timeout_clock::now() + timeout));
+            })
+          .then(&::rpc::get_ctx_data<append_log_event_reply>);
+    if (resp.has_error()) {
+        co_return map_errc(resp.assume_error());
+    }
+    auto reply = resp.value();
+    co_return reply.ec;
+}
+
+// TODO(oren): factor this out I reckon, though helpful to leave here for now in
+// case it changes drastically
+ss::future<std::optional<model::node_id>>
+client::compute_transform_logs_ntp_leader(const model::transform_name& name) {
+    // TODO(oren): use calculated partition instead of just straight ntp (always
+    // partition 0)!
+    auto leader = _leaders->get_leader_node(model::transform_log_internal_ntp);
+    if (!leader.has_value()) {
+        if (_topic_metadata->find_topic_cfg(
+              model::topic_namespace_view(model::transform_log_internal_ntp))) {
+            co_return std::nullopt;
+        }
+        bool success = co_await try_create_transform_logs_topic();
+        if (!success) {
+            co_return std::nullopt;
+        }
+        leader = _leaders->get_leader_node(model::transform_log_internal_ntp);
+    }
+    co_return leader;
+}
+ss::future<bool> client::try_create_transform_logs_topic() {
+    //
+    cluster::topic_properties topic_props;
+    constexpr size_t transform_logs_max_bytes = 10_MiB;
+    topic_props.batch_max_bytes = transform_logs_max_bytes;
+    // TODO(oren): TBD
+    topic_props.retention_bytes = tristate<size_t>();
+    topic_props.retention_local_target_bytes = tristate<size_t>();
+    // TODO(oren): 1 day
+    topic_props.retention_duration = tristate<std::chrono::milliseconds>(
+      std::chrono::milliseconds(1000 * 60 * 60 * 24));
+    topic_props.retention_local_target_ms
+      = tristate<std::chrono::milliseconds>();
+    topic_props.cleanup_policy_bitflags
+      = model::cleanup_policy_bitflags::deletion;
+    // TODO(oren): update with calculated partition
+    auto fut = co_await ss::coroutine::as_future<cluster::errc>(
+      _topic_creator->create_topic(
+        model::topic_namespace_view(model::transform_log_internal_nt),
+        1,
+        std::move(topic_props)));
+    cluster::errc ec = fut.get();
+    // TODO(oren): warnings on other errors perhaps
+    co_return ec == cluster::errc::success
+      || ec == cluster::errc::topic_already_exists;
+}
+
 template<typename Func>
 std::invoke_result_t<Func> client::retry(Func&& func) {
     return retry_with_backoff(std::forward<Func>(func), &_as);

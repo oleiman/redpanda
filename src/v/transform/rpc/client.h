@@ -69,6 +69,11 @@ public:
     ss::future<result<iobuf, cluster::errc>>
     load_wasm_binary(model::offset, model::timeout_clock::duration timeout);
 
+    ss::future<result<void, cluster::errc>> append_transform_logs(
+      model::transform_name name,
+      ss::chunked_fifo<model::transform_log_event>,
+      model::timeout_clock::duration timeout);
+
     ss::future<result<model::partition_id, cluster::errc>>
       find_coordinator(model::transform_offsets_key);
 
@@ -148,6 +153,24 @@ private:
       do_remote_offset_commit(model::node_id, offset_commit_request);
     ss::future<offset_fetch_response>
       do_remote_offset_fetch(model::node_id, offset_fetch_request);
+
+    ss::future<result<void, cluster::errc>> do_append_transform_logs_once(
+      model::transform_name name,
+      ss::chunked_fifo<model::transform_log_event>,
+      model::timeout_clock::duration timeout);
+    ss::future<result<void, cluster::errc>> do_local_append_transform_logs(
+      model::transform_name name,
+      ss::chunked_fifo<model::transform_log_event>,
+      model::timeout_clock::duration timeout);
+    ss::future<result<void, cluster::errc>> do_remote_append_transform_logs(
+      model::node_id,
+      model::transform_name name,
+      ss::chunked_fifo<model::transform_log_event>,
+      model::timeout_clock::duration timeout);
+
+    ss::future<std::optional<model::node_id>>
+    compute_transform_logs_ntp_leader(const model::transform_name& name);
+    ss::future<bool> try_create_transform_logs_topic();
 
     template<typename Func>
     std::invoke_result_t<Func> retry(Func&&);

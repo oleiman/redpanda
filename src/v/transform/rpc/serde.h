@@ -417,4 +417,49 @@ struct generate_report_reply
 
     model::cluster_transform_report report;
 };
+
+struct append_log_event_request
+  : serde::envelope<
+      append_log_event_request,
+      serde::version<0>,
+      serde::compat_version<0>> {
+    using rpc_adl_exempt = std::true_type;
+    // TODO(oren): any need for default constructor
+    append_log_event_request() = default;
+    append_log_event_request(
+      model::transform_name name,
+      ss::chunked_fifo<model::transform_log_event> e,
+      model::timeout_clock::duration t)
+      : name(std::move(name))
+      , events(std::move(e))
+      , timeout(t) {}
+
+    auto serde_fields() { return std::tie(events, timeout); }
+
+    // friend std::ostream&
+    // operator<<(std::ostream&, const store_wasm_binary_request&);
+
+    model::transform_name name;
+    ss::chunked_fifo<model::transform_log_event> events;
+    model::timeout_clock::duration timeout{};
+};
+
+struct append_log_event_reply
+  : serde::envelope<
+      append_log_event_reply,
+      serde::version<0>,
+      serde::compat_version<0>> {
+    using rpc_adl_exempt = std::true_type;
+
+    append_log_event_reply() = default;
+    explicit append_log_event_reply(cluster::errc e)
+      : ec(e) {}
+
+    auto serde_fields() { return std::tie(ec); }
+
+    cluster::errc ec = cluster::errc::success;
+
+    // friend std::ostream&
+    // operator<<(std::ostream&, const append_log_event_reply&);
+};
 } // namespace transform::rpc

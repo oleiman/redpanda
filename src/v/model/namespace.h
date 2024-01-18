@@ -72,6 +72,18 @@ inline const model::ntp wasm_binaries_internal_ntp(
   model::topic("wasm_binaries"),
   model::partition_id(0));
 
+inline const model::topic
+  transform_log_internal_topic("__redpanda.transform_logs");
+
+inline const model::topic_namespace transform_log_internal_nt(
+  model::kafka_namespace, model::transform_log_internal_topic);
+
+// TODO(oren): remove
+inline const model::ntp transform_log_internal_ntp(
+  model::kafka_namespace,
+  model::topic("__redpanda.transform_logs"),
+  model::partition_id(0));
+
 inline bool is_user_topic(topic_namespace_view tp_ns) {
     return tp_ns.ns == kafka_namespace
            && tp_ns.tp != kafka_consumer_offsets_topic

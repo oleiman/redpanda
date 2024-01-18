@@ -12,6 +12,7 @@
 #include "cluster/fwd.h"
 #include "model/fundamental.h"
 #include "model/record_batch_reader.h"
+#include "rpc/types.h"
 #include "transform/rpc/deps.h"
 #include "transform/rpc/rpc_service.h"
 #include "transform/rpc/serde.h"
@@ -51,6 +52,11 @@ public:
       find_coordinator(find_coordinator_request);
     ss::future<offset_commit_response> offset_commit(offset_commit_request);
     ss::future<offset_fetch_response> offset_fetch(offset_fetch_request);
+
+    ss::future<result<void, cluster::errc>> append_transform_logs(
+      model::transform_name name,
+      ss::chunked_fifo<model::transform_log_event> events,
+      model::timeout_clock::duration timeout);
 
     ss::future<model::cluster_transform_report> compute_node_local_report();
 
@@ -106,6 +112,9 @@ public:
 
     ss::future<generate_report_reply> generate_report(
       generate_report_request, ::rpc::streaming_context&) override;
+
+    ss::future<append_log_event_reply> append_transform_logs(
+      append_log_event_request, ::rpc::streaming_context&) override;
 
 private:
     ss::sharded<local_service>* _service;

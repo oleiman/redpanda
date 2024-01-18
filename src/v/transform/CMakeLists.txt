@@ -17,6 +17,7 @@ v_cc_library(
     commit_batcher.cc
     txn_reader.cc
     transform_offsets_stm.cc
+    log_manager.cc
   DEPS
     v::wasm
     v::model

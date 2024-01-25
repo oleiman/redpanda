@@ -14,8 +14,11 @@
 #include "bytes/iobuf.h"
 #include "json/document.h"
 
+#include <string>
+
 namespace transform::logging::testing {
 
 json::Document parse_json(iobuf resp);
+std::string get_message_body(iobuf);
 
 } // namespace transform::logging::testing

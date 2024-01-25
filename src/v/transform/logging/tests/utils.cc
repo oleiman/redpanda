@@ -27,4 +27,9 @@ json::Document parse_json(iobuf resp) {
     return doc;
 }
 
+std::string get_message_body(iobuf msg) {
+    auto doc = parse_json(std::move(msg));
+    return {doc["body"].GetString()};
+}
+
 } // namespace transform::logging::testing

@@ -38,15 +38,16 @@ class fake_client final : public transform::logging::client {
 public:
     fake_client() = default;
 
-    ss::future<> write(
-      model::partition_id pid,
-      ss::chunked_fifo<io::json_batch> events) override {
-        while (!events.empty()) {
-            auto evs = std::move(events.front());
-            events.pop_front();
-            _pid_event_counts[pid] += evs.events.size();
+    ss::future<>
+    write(model::partition_id pid, io::json_batches batches) override {
+        while (!batches.empty()) {
+            auto events = std::move(batches.front());
+            batches.pop_front();
+            _pid_event_counts[pid] += events.events.size();
             std::move(
-              evs.events.begin(), evs.events.end(), std::back_inserter(_logs));
+              events.events.begin(),
+              events.events.end(),
+              std::back_inserter(_logs));
         }
 
         return ss::now();

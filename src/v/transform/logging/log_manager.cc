@@ -115,20 +115,19 @@ manager<ClockType>::concurrent_serialize_log_events() {
           auto pid = _client->compute_output_partition(nv);
 
           return do_serialize_log_events(nv, std::move(events))
-            .then(
-              [name = n, pid, &result](auto ev_json) mutable -> ss::future<> {
-                  auto [it, _] = result.try_emplace(pid, json_batch_fifo_t{});
-                  it->second.emplace_back(
-                    model::transform_name{std::move(name)}, std::move(ev_json));
-                  return ss::now();
-              });
+            .then([name = n, pid, &result](auto ev_json) -> ss::future<> {
+                auto [it, _] = result.try_emplace(pid, io::json_batches{});
+                it->second.emplace_back(
+                  model::transform_name{std::move(name)}, std::move(ev_json));
+                return ss::now();
+            });
       });
     co_return std::make_pair(std::move(result), n_events);
 }
 
 template<typename ClockType>
-ss::future<> manager<ClockType>::do_flush(
-  model::partition_id pid, json_batch_fifo_t events) {
+ss::future<>
+manager<ClockType>::do_flush(model::partition_id pid, io::json_batches events) {
     // TODO(oren): it might be a good idea to cap the amount of serialized
     // log data in flight at one time.
     // maybe batching actually happens here

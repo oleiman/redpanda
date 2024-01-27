@@ -25,6 +25,8 @@ struct json_batch {
     model::transform_name name;
     ss::chunked_fifo<iobuf> events;
 };
+using json_batches = ss::chunked_fifo<json_batch>;
+
 } // namespace io
 
 class client {
@@ -37,8 +39,7 @@ public:
     virtual ~client() = default;
 
     // TODO(oren): consider a return code here. but is it actionable?
-    virtual ss::future<>
-      write(model::partition_id, ss::chunked_fifo<io::json_batch>) = 0;
+    virtual ss::future<> write(model::partition_id, io::json_batches) = 0;
 
     virtual model::partition_id
     compute_output_partition(model::transform_name_view name)

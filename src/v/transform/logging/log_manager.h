@@ -107,14 +107,13 @@ private:
     ss::future<ss::chunked_fifo<iobuf>>
       do_serialize_log_events(model::transform_name_view, log_event_queue_t);
 
-    using json_batch_fifo_t = ss::chunked_fifo<io::json_batch>;
     using json_batch_table_t
-      = absl::flat_hash_map<model::partition_id, json_batch_fifo_t>;
+      = absl::flat_hash_map<model::partition_id, io::json_batches>;
 
     ss::future<std::pair<json_batch_table_t, size_t>>
     concurrent_serialize_log_events();
 
-    ss::future<> do_flush(model::partition_id, json_batch_fifo_t q);
+    ss::future<> do_flush(model::partition_id, io::json_batches q);
 };
 
 } // namespace transform::logging

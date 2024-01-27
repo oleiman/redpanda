@@ -17,6 +17,16 @@
 
 namespace transform::logging {
 
+namespace io {
+struct json_batch {
+    json_batch(model::transform_name n, ss::chunked_fifo<iobuf> e)
+      : name(std::move(n))
+      , events(std::move(e)) {}
+    model::transform_name name;
+    ss::chunked_fifo<iobuf> events;
+};
+} // namespace io
+
 class client {
 public:
     client() = default;
@@ -28,6 +38,10 @@ public:
 
     // TODO(oren): consider a return code here. but is it actionable?
     virtual ss::future<>
-    write(model::transform_name_view name, ss::chunked_fifo<iobuf>) = 0;
+      write(model::partition_id, ss::chunked_fifo<io::json_batch>) = 0;
+
+    virtual model::partition_id
+    compute_output_partition(model::transform_name_view name)
+      = 0;
 };
 } // namespace transform::logging

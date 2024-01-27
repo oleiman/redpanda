@@ -18,13 +18,16 @@
 #include "transform/logging/io.h"
 #include "transform/logging/logger.h"
 
+#include <seastar/core/condition-variable.hh>
 #include <seastar/core/smp.hh>
+#include <seastar/coroutine/as_future.hh>
 
 namespace transform::logging {
 namespace {
 // totally arbitrary. will be easier to assess once there's actual I/O in the
 // flush fibers
 constexpr int FLUSH_MAX_CONCURRENCY = 10;
+using namespace std::chrono_literals;
 } // namespace
 
 template<typename ClockType>
@@ -40,9 +43,12 @@ manager<ClockType>::manager(
   , _buffer_limit_bytes(bc)
   , _buffer_low_water_mark(_buffer_limit_bytes / lwm_denom)
   , _flush_interval_ms(std::move(fi))
+  , _flush_jitter(_flush_interval_ms(), 50ms)
   , _buffer_sem(_buffer_limit_bytes, "Log manager buffer semaphore") {
-    _flush_timer.set_callback(
-      [this]() { ssx::spawn_with_gate(_gate, [this]() { return flush(); }); });
+    _flush_interval_ms.watch([this]() {
+        _flush_jitter = simple_time_jitter<ClockType>{
+          _flush_interval_ms(), 50ms};
+    });
 }
 
 template<typename ClockType>
@@ -50,15 +56,15 @@ manager<ClockType>::~manager() = default;
 
 template<typename ClockType>
 ss::future<> manager<ClockType>::start() {
-    _as = ss::abort_source{};
-    _flush_timer.arm(_flush_interval_ms());
+    ssx::spawn_with_gate(
+      _gate, [this]() -> ss::future<> { return flusher_fiber(); });
     return ss::now();
 }
 
 template<typename ClockType>
 ss::future<> manager<ClockType>::stop() {
-    _flush_timer.cancel();
     _as.request_abort();
+    _flush_signal.broken();
     if (!_gate.is_closed()) {
         co_await _gate.close();
     }
@@ -88,7 +94,7 @@ ss::future<ss::chunked_fifo<iobuf>> manager<ClockType>::do_serialize_log_events(
 
 template<typename ClockType>
 ss::future<std::pair<typename manager<ClockType>::json_batch_table_t, size_t>>
-manager<ClockType>::concurrent_serialize_log_buffers() {
+manager<ClockType>::concurrent_serialize_log_events() {
     size_t n_events = 0;
     json_batch_table_t result{};
     co_await ss::max_concurrent_for_each(
@@ -133,7 +139,7 @@ ss::future<> manager<ClockType>::do_flush(
 
 template<typename ClockType>
 ss::future<> manager<ClockType>::flush() {
-    auto [pre_batches, tot] = co_await concurrent_serialize_log_buffers();
+    auto [pre_batches, tot] = co_await concurrent_serialize_log_events();
 
     co_await ss::max_concurrent_for_each(
       pre_batches,
@@ -144,8 +150,24 @@ ss::future<> manager<ClockType>::flush() {
       });
 
     vlog(tlg_log.trace, "Processed {} log events", tot);
-    if (!_as.abort_requested()) {
-        _flush_timer.arm(_flush_interval_ms());
+    co_return;
+}
+
+template<typename ClockType>
+ss::future<> manager<ClockType>::flusher_fiber() {
+    while (!_as.abort_requested()) {
+        try {
+            // the duration overload passes now() + dur to the timepoint
+            // overload, but the now() calculation is tied to an underlying
+            // clock type, so it doesn't work with ss::manual_clock. the
+            // timepoint overload template has a clocktype parameter, so we use
+            // that one to get the behavior we want for testing
+            co_await _flush_signal.wait(_flush_jitter());
+        } catch (const ss::broken_condition_variable&) {
+            break;
+        } catch (const ss::condition_variable_timed_out&) {
+        }
+        co_await flush();
     }
     co_return;
 }
@@ -225,10 +247,8 @@ void manager<ClockType>::enqueue_log(
       event{_self, event::clock_type::now(), level, std::move(*b)},
       std::move(*units));
 
-    // if the timer is not armed, we're either shutting down or there's a flush
-    // in progress. in either case, don't bother expediting a flush.
-    if (check_lwm() && _flush_timer.armed()) {
-        _flush_timer.rearm(ClockType::now());
+    if (check_lwm()) {
+        _flush_signal.signal();
     }
 }
 

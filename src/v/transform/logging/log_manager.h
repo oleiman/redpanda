@@ -13,6 +13,7 @@
 
 #include "config/property.h"
 #include "model/transform.h"
+#include "random/simple_time_jitter.h"
 #include "ssx/semaphore.h"
 #include "transform/logging/event.h"
 #include "transform/logging/io.h"
@@ -59,6 +60,7 @@ private:
     static constexpr double lwm_denom = 10;
 
     ss::future<> flush();
+    ss::future<> flusher_fiber();
     bool check_lwm() const;
 
     model::node_id _self;
@@ -67,11 +69,12 @@ private:
     size_t _buffer_limit_bytes;
     ssize_t _buffer_low_water_mark;
     config::binding<std::chrono::milliseconds> _flush_interval_ms;
+    simple_time_jitter<ClockType> _flush_jitter;
     ssx::semaphore _buffer_sem;
 
-    ss::gate _gate;
-    ss::abort_source _as;
-    ss::timer<ClockType> _flush_timer;
+    ss::gate _gate{};
+    ss::abort_source _as{};
+    ss::condition_variable _flush_signal{};
 
     struct log_event {
         log_event() = delete;
@@ -83,7 +86,7 @@ private:
     };
     // per @rockwood
     // TODO(oren): Evaluate (and probably substitute) `chunked_vector` once it
-    // merges
+    // lands
     using log_event_queue_t = ss::chunked_fifo<log_event>;
     struct string_hash {
         using is_transparent = void;
@@ -109,7 +112,7 @@ private:
       = absl::flat_hash_map<model::partition_id, json_batch_fifo_t>;
 
     ss::future<std::pair<json_batch_table_t, size_t>>
-    concurrent_serialize_log_buffers();
+    concurrent_serialize_log_events();
 
     ss::future<> do_flush(model::partition_id, json_batch_fifo_t q);
 };

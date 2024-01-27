@@ -71,6 +71,9 @@ private:
 class TransformLogManagerTest : public ::testing::Test {
 public:
     void SetUp() override {
+        if (_manager) {
+            stop_manager();
+        }
         auto sink = std::make_unique<fake_client>();
         _client = sink.get();
         _manager = std::make_unique<manager_t>(
@@ -80,12 +83,6 @@ public:
           _line_limit.bind(),
           _flush_ms.bind());
         start_manager();
-    }
-
-    void SetUp(size_t buffer_capacity, size_t line_max) {
-        set_buffer_limit(buffer_capacity);
-        set_line_limit(line_max);
-        SetUp();
     }
 
     void TearDown() override {
@@ -116,14 +113,20 @@ public:
 
     const ss::chunked_fifo<iobuf>& logs() const { return _client->logs(); }
 
-    std::chrono::milliseconds flush_interval() { return _flush_ms(); }
+    std::chrono::milliseconds flush_interval() {
+        // NOTE(oren): jitter amount is hard-coded into the manager
+        return _flush_ms() + 50ms;
+    }
 
     void advance_clock(std::optional<ss::manual_clock::duration> dur = {}) {
         ss::manual_clock::advance(dur.value_or(flush_interval()));
         tests::drain_task_queue().get();
     }
 
-    ss::sstring last_log_msg() {
+    std::optional<ss::sstring> last_log_msg() {
+        if (logs().empty()) {
+            return std::nullopt;
+        }
         return testing::get_message_body(logs().back().copy());
     }
 
@@ -159,8 +162,7 @@ TEST_F(TransformLogManagerTest, EnqueueLogs) {
     EXPECT_EQ(logs().size(), 2);
 
     auto msg = last_log_msg();
-    EXPECT_TRUE(msg.find("again") != ss::sstring::npos);
-    EXPECT_THAT(msg, ::testing::HasSubstr("again"));
+    EXPECT_THAT(msg.value_or(""), ::testing::HasSubstr("again"));
 }
 
 TEST_F(TransformLogManagerTest, LogsDroppedAtShutdown) {
@@ -275,7 +277,7 @@ TEST_F(TransformLogManagerTest, MessageTruncation) {
 
     enqueue_log(ss::sstring(line_max * 2, 'x'));
     advance_clock();
-    EXPECT_EQ(last_log_msg().length(), line_max);
+    EXPECT_EQ(last_log_msg()->length(), line_max);
 
     // test that truncation occurs _after_ control char escaping
     ss::sstring in_msg(line_max, char{0x7f});
@@ -285,8 +287,8 @@ TEST_F(TransformLogManagerTest, MessageTruncation) {
     enqueue_log(in_msg);
     advance_clock();
     auto msg = last_log_msg();
-    EXPECT_EQ(msg.length(), line_max);
-    EXPECT_EQ(msg, escaped.substr(0, line_max));
+    EXPECT_EQ(msg->length(), line_max);
+    EXPECT_EQ(msg.value_or(""), escaped.substr(0, line_max));
 }
 
 TEST_F(TransformLogManagerTest, IllegalMessages) {

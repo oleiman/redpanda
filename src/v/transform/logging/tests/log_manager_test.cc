@@ -24,20 +24,46 @@ namespace {
 using namespace std::chrono_literals;
 using manager_t = transform::logging::manager<ss::manual_clock>;
 
-class fake_client : public transform::logging::client {
+auto get_random_transform_names(size_t n) {
+    std::vector<model::transform_name> names{};
+    names.reserve(n);
+
+    for (size_t i = 0; i < n; ++i) {
+        names.push_back(testing::random_transform_name());
+    }
+    return names;
+}
+
+class fake_client final : public transform::logging::client {
 public:
     fake_client() = default;
 
-    ss::future<>
-    write(model::transform_name_view, ss::chunked_fifo<iobuf> events) override {
-        std::move(events.begin(), events.end(), std::back_inserter(_logs));
+    ss::future<> write(
+      model::partition_id pid,
+      ss::chunked_fifo<io::json_batch> events) override {
+        while (!events.empty()) {
+            auto evs = std::move(events.front());
+            events.pop_front();
+            _pid_event_counts[pid] += evs.events.size();
+            std::move(
+              evs.events.begin(), evs.events.end(), std::back_inserter(_logs));
+        }
+
         return ss::now();
+    }
+
+    model::partition_id
+    compute_output_partition(model::transform_name_view name) override {
+        size_t h = std::hash<model::transform_name>{}(
+          model::transform_name{name().data(), name().size()});
+        return model::partition_id{static_cast<int>(h % 4)};
     }
 
     const ss::chunked_fifo<iobuf>& logs() const { return _logs; }
 
 private:
     ss::chunked_fifo<iobuf> _logs;
+    absl::flat_hash_map<model::partition_id, size_t> _pid_event_counts;
 };
 
 } // namespace
@@ -83,7 +109,9 @@ public:
 
     void enqueue_log(std::string_view msg) {
         enqueue_log(
-          ss::log_level::info, model::transform_name_view{"foo"}, msg);
+          ss::log_level::info,
+          model::transform_name_view{testing::random_transform_name()()},
+          msg);
     }
 
     const ss::chunked_fifo<iobuf>& logs() const { return _client->logs(); }
@@ -157,19 +185,14 @@ TEST_F(TransformLogManagerTest, LargeBuffer) {
     set_line_limit(line_max);
     SetUp();
 
-    static const std::vector<ss::sstring> names{
-      "foo",
-      "bar",
-      "baz",
-      "qux",
-    };
+    auto names = get_random_transform_names(10);
 
     auto N = buf_cap / line_max;
 
     for (int i = 0; i < N; ++i) {
         enqueue_log(
           ss::log_level::info,
-          model::transform_name_view{names.at(i % names.size())},
+          model::transform_name_view{names.at(i % names.size())()},
           ss::sstring(line_max, 'x'));
     }
 
@@ -187,19 +210,14 @@ TEST_F(TransformLogManagerTest, BufferLimits) {
     set_line_limit(line_max);
     SetUp();
 
-    static const std::vector<ss::sstring> names{
-      "foo",
-      "bar",
-      "baz",
-      "qux",
-    };
+    auto names = get_random_transform_names(10);
 
     // some logs will get dropped due to buffer limit semaphore
     // irrespective of transform name
     for (int i = 0; i < line_cap * 2; ++i) {
         enqueue_log(
           ss::log_level::info,
-          model::transform_name_view{names.at(i % 3)},
+          model::transform_name_view{names.at(i % names.size())()},
           ss::sstring(line_max * 2, 'x'));
     }
 
@@ -210,7 +228,7 @@ TEST_F(TransformLogManagerTest, BufferLimits) {
     for (int i = 0; i < line_cap; ++i) {
         enqueue_log(
           ss::log_level::info,
-          model::transform_name_view{names.at(i % names.size())},
+          model::transform_name_view{names.at(i % names.size())()},
           ss::sstring(line_max * 2, 'x'));
     }
 
@@ -276,8 +294,10 @@ TEST_F(TransformLogManagerTest, IllegalMessages) {
     const std::array<char, 8> control_char_msg{
       'f', 'o', 'o', 0x01, 0x02, 0x03, 0x04, 0x00};
 
+    auto name = testing::random_transform_name();
+
     enqueue_log(
-      ss::log_level::info, model::transform_name_view{"foo"}, bad_utf8_msg);
+      ss::log_level::info, model::transform_name_view{name()}, bad_utf8_msg);
 
     // invalid UTF-8 message is dropped
     advance_clock();
@@ -285,7 +305,7 @@ TEST_F(TransformLogManagerTest, IllegalMessages) {
 
     enqueue_log(
       ss::log_level::info,
-      model::transform_name_view{"foo"},
+      model::transform_name_view{name()},
       control_char_msg.data());
 
     // control char message is properly escaped

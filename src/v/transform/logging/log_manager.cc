@@ -62,15 +62,13 @@ ss::future<> manager<ClockType>::stop() {
     if (!_gate.is_closed()) {
         co_await _gate.close();
     }
-    // TODO(oren): last gasp
-    // ticket: https://github.com/redpanda-data/core-internal/issues/1036
-    // co_return co_await flush();
 }
 
 template<typename ClockType>
-ss::future<>
-manager<ClockType>::do_flush(model::transform_name_view name, queue_t events) {
+ss::future<ss::chunked_fifo<iobuf>> manager<ClockType>::do_serialize_log_events(
+  model::transform_name_view name, log_event_queue_t events) {
     ss::chunked_fifo<iobuf> ev_json;
+    ev_json.reserve(events.size());
 
     while (!events.empty()) {
         auto e = std::move(events.front());
@@ -83,35 +81,66 @@ manager<ClockType>::do_flush(model::transform_name_view name, queue_t events) {
         // messages all at once
         co_await ss::maybe_yield();
     }
-
     // semaphore units for the primary buffer are free at this point.
 
+    co_return std::move(ev_json);
+}
+
+template<typename ClockType>
+ss::future<std::pair<typename manager<ClockType>::json_batch_table_t, size_t>>
+manager<ClockType>::concurrent_serialize_log_buffers() {
+    size_t n_events = 0;
+    json_batch_table_t result{};
+    co_await ss::max_concurrent_for_each(
+      _log_event_queues,
+      FLUSH_MAX_CONCURRENCY,
+      [this, &result, &n_events](auto& pr) mutable -> ss::future<> {
+          auto& [n, q] = pr;
+          if (q.empty()) {
+              return ss::now();
+          }
+          // immediately swap in an empty queue. semaphore units associated
+          // with buffered events are not returned until the corresponding
+          // event is serialized.
+          auto events = std::exchange(q, log_event_queue_t{});
+
+          n_events += events.size();
+          model::transform_name_view nv{n};
+          auto pid = _client->compute_output_partition(nv);
+
+          return do_serialize_log_events(nv, std::move(events))
+            .then(
+              [name = n, pid, &result](auto ev_json) mutable -> ss::future<> {
+                  auto [it, _] = result.try_emplace(pid, json_batch_fifo_t{});
+                  it->second.emplace_back(
+                    model::transform_name{std::move(name)}, std::move(ev_json));
+                  return ss::now();
+              });
+      });
+    co_return std::make_pair(std::move(result), n_events);
+}
+
+template<typename ClockType>
+ss::future<> manager<ClockType>::do_flush(
+  model::partition_id pid, json_batch_fifo_t events) {
     // TODO(oren): it might be a good idea to cap the amount of serialized
     // log data in flight at one time.
+    // maybe batching actually happens here
 
-    co_await _client->write(name, std::move(ev_json));
+    co_await _client->write(pid, std::move(events));
     co_return;
 }
 
 template<typename ClockType>
 ss::future<> manager<ClockType>::flush() {
-    size_t tot = 0;
-    // TODO(oren): how much parallelism? any at all?
-    co_await ss::max_concurrent_for_each(
-      _event_queue,
-      FLUSH_MAX_CONCURRENCY,
-      [this, &tot](auto& pr) -> ss::future<> {
-          auto& [n, q] = pr;
-          if (q.empty()) {
-              return ss::now();
-          }
-          tot += q.size();
+    auto [pre_batches, tot] = co_await concurrent_serialize_log_buffers();
 
-          // immediately swap in an empty queue. semaphore units associated
-          // with buffered events are not returned until the corresponding
-          // event is serialized.
-          auto ev = std::exchange(q, queue_t{});
-          return do_flush(model::transform_name_view{n}, std::move(ev));
+    co_await ss::max_concurrent_for_each(
+      pre_batches,
+      FLUSH_MAX_CONCURRENCY,
+      [this](auto& pr) mutable -> ss::future<> {
+          auto& [pid, evs] = pr;
+          return do_flush(pid, std::move(evs));
       });
 
     vlog(tlg_log.trace, "Processed {} log events", tot);
@@ -151,10 +180,10 @@ void manager<ClockType>::enqueue_log(
     };
 
     auto get_queue = [this](std::string_view name) {
-        auto res = _event_queue.find(name);
-        if (res == _event_queue.end()) {
-            auto [it, ins] = _event_queue.emplace(
-              ss::sstring{name.data(), name.size()}, queue_t{});
+        auto res = _log_event_queues.find(name);
+        if (res == _log_event_queues.end()) {
+            auto [it, ins] = _log_event_queues.emplace(
+              ss::sstring{name.data(), name.size()}, log_event_queue_t{});
             if (ins) {
                 return it;
             }
@@ -165,7 +194,7 @@ void manager<ClockType>::enqueue_log(
     };
 
     auto it = get_queue(transform_name);
-    if (it == _event_queue.end()) {
+    if (it == _log_event_queues.end()) {
         vlog(tlg_log.warn, "Failed to enqueue transform log: Buffer error");
         return;
     }

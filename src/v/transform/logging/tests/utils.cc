@@ -15,6 +15,7 @@
 #include "json/istreamwrapper.h"
 
 #include <istream>
+#include <random>
 
 namespace transform::logging::testing {
 
@@ -30,6 +31,24 @@ json::Document parse_json(iobuf resp) {
 std::string get_message_body(iobuf msg) {
     auto doc = parse_json(std::move(msg));
     return {doc["body"].GetString()};
+}
+
+model::transform_name random_transform_name(size_t len) {
+    static const std::string chrs{
+      "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"};
+    static std::random_device rd;
+    static std::mt19937 gen(rd());
+    static std::uniform_int_distribution<> dist(
+      0, static_cast<int>(chrs.size() - 1));
+
+    std::string rand_str{};
+    rand_str.reserve(len);
+
+    for (size_t i = 0; i < len; ++i) {
+        rand_str.push_back(chrs[dist(gen)]);
+    }
+
+    return model::transform_name{std::move(rand_str)};
 }
 
 } // namespace transform::logging::testing

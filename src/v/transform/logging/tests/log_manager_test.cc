@@ -114,19 +114,16 @@ public:
 
     const ss::chunked_fifo<iobuf>& logs() const { return _client->logs(); }
 
-    std::chrono::milliseconds flush_interval() {
-        // NOTE(oren): jitter amount is hard-coded into the manager
-        return _flush_ms() + 50ms;
-    }
+    std::chrono::milliseconds flush_interval() { return _flush_ms(); }
 
     void advance_clock(std::optional<ss::manual_clock::duration> dur = {}) {
         ss::manual_clock::advance(dur.value_or(flush_interval()));
         tests::drain_task_queue().get();
     }
 
-    std::optional<ss::sstring> last_log_msg() {
+    ss::sstring last_log_msg() {
         if (logs().empty()) {
-            return std::nullopt;
+            return ss::sstring{};
         }
         return testing::get_message_body(logs().back().copy());
     }
@@ -162,8 +159,7 @@ TEST_F(TransformLogManagerTest, EnqueueLogs) {
     advance_clock();
     EXPECT_EQ(logs().size(), 2);
 
-    auto msg = last_log_msg();
-    EXPECT_THAT(msg.value_or(""), ::testing::HasSubstr("again"));
+    EXPECT_THAT(last_log_msg(), ::testing::HasSubstr("again"));
 }
 
 TEST_F(TransformLogManagerTest, LogsDroppedAtShutdown) {
@@ -278,7 +274,7 @@ TEST_F(TransformLogManagerTest, MessageTruncation) {
 
     enqueue_log(ss::sstring(line_max * 2, 'x'));
     advance_clock();
-    EXPECT_EQ(last_log_msg()->length(), line_max);
+    EXPECT_EQ(last_log_msg().length(), line_max);
 
     // test that truncation occurs _after_ control char escaping
     ss::sstring in_msg(line_max, char{0x7f});
@@ -288,8 +284,8 @@ TEST_F(TransformLogManagerTest, MessageTruncation) {
     enqueue_log(in_msg);
     advance_clock();
     auto msg = last_log_msg();
-    EXPECT_EQ(msg->length(), line_max);
-    EXPECT_EQ(msg.value_or(""), escaped.substr(0, line_max));
+    EXPECT_EQ(msg.length(), line_max);
+    EXPECT_EQ(msg, escaped.substr(0, line_max));
 }
 
 TEST_F(TransformLogManagerTest, IllegalMessages) {
@@ -317,6 +313,42 @@ TEST_F(TransformLogManagerTest, IllegalMessages) {
 
     auto msg = testing::get_message_body(logs().front().copy());
     EXPECT_EQ(msg, replace_control_chars_in_string(control_char_msg.data()));
+}
+
+TEST_F(TransformLogManagerTest, ConfigTuning) {
+    constexpr size_t lim1 = 16;
+    constexpr size_t lim2 = lim1 / 2;
+
+    constexpr std::chrono::milliseconds flush_ms1{200ms};
+    constexpr std::chrono::milliseconds flush_ms2{500ms};
+
+    set_line_limit(lim1);
+    set_flush_interval(flush_ms1);
+    SetUp();
+
+    enqueue_log(ss::sstring(lim1 * 2, 'x'));
+    advance_clock(flush_ms1);
+    EXPECT_EQ(logs().size(), 1);
+    EXPECT_EQ(last_log_msg().size(), lim1);
+
+    // decrease line limit and increase flush interval
+    set_line_limit(lim2);
+    set_flush_interval(flush_ms2);
+    advance_clock(flush_ms1);
+
+    enqueue_log(ss::sstring(lim1, 'x'));
+
+    // this should NOT trigger a flush
+    advance_clock(flush_ms1);
+    EXPECT_EQ(logs().size(), 1);
+    EXPECT_EQ(last_log_msg().size(), lim1);
+
+    // this SHOULD trigger a flush as flush_ms2 elapsed since
+    advance_clock(flush_ms2 - flush_ms1);
+    // now we've flushed, and the log that was still buffered should
+    // reflect the new line limit
+    EXPECT_EQ(logs().size(), 2);
+    EXPECT_EQ(last_log_msg().size(), lim2);
 }
 
 } // namespace transform::logging

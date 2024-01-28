@@ -51,15 +51,14 @@ public:
       std::unique_ptr<client>,
       size_t buffer_cap,
       config::binding<size_t> line_limit,
-      config::binding<std::chrono::milliseconds> flush_interval);
+      config::binding<std::chrono::milliseconds> flush_interval,
+      std::optional<typename ClockType::duration> jitter = {});
 
     ss::future<> start();
     ss::future<> stop();
 
     void enqueue_log(
       ss::log_level lvl, model::transform_name_view, std::string_view message);
-
-    auto& queues() { return _log_event_queues; }
 
 private:
     // TODO(oren): make configurable?
@@ -75,19 +74,15 @@ private:
     ss::gate _gate{};
     ss::abort_source _as{};
 
-    struct log_event {
-        log_event() = delete;
-        explicit log_event(event event, ssx::semaphore_units units)
+    struct buffer_entry {
+        buffer_entry() = delete;
+        explicit buffer_entry(event event, ssx::semaphore_units units)
           : event(std::move(event))
           , units(std::move(units)) {}
         event event;
         ssx::semaphore_units units;
     };
 
-    // per @rockwood
-    // TODO(oren): Evaluate (and probably substitute) `chunked_vector` once it
-    // lands
-    using log_event_queue_t = ss::chunked_fifo<log_event>;
     struct string_hash {
         using is_transparent = void;
         [[nodiscard]] size_t operator()(std::string_view txt) const {
@@ -97,13 +92,17 @@ private:
             return std::hash<ss::sstring>{}(txt);
         }
     };
-    absl::flat_hash_map<
-      ss::sstring,
-      log_event_queue_t,
-      string_hash,
-      std::equal_to<>>
-      _log_event_queues;
+    // per @rockwood
+    // TODO(oren): Evaluate (and probably substitute) `chunked_vector` once it
+    // lands
+    using buffer_t = ss::chunked_fifo<buffer_entry>;
+    absl::flat_hash_map<ss::sstring, buffer_t, string_hash, std::equal_to<>>
+      _log_buffers;
 
+    auto& buffers() { return _log_buffers; }
+
+    // TODO(oren): rough edge here
+    friend class detail::flusher<ClockType>;
     std::unique_ptr<detail::flusher<ClockType>> _flusher{};
 };
 

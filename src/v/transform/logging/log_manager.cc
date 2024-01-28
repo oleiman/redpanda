@@ -20,6 +20,7 @@
 #include "transform/logging/logger.h"
 
 #include <seastar/core/condition-variable.hh>
+#include <seastar/core/manual_clock.hh>
 #include <seastar/core/smp.hh>
 #include <seastar/coroutine/as_future.hh>
 
@@ -39,18 +40,18 @@ public:
       manager<ClockType>* mgr,
       ss::abort_source* as,
       std::unique_ptr<transform::logging::client> c,
-      config::binding<std::chrono::milliseconds> fi)
+      config::binding<std::chrono::milliseconds> fi,
+      ClockType::duration jitter)
       : _mgr(mgr)
       , _as(as)
       , _client(std::move(c))
       , _flush_interval_ms(std::move(fi))
-      , _flush_jitter(_flush_interval_ms(), 50ms) {
-        _flush_interval_ms.watch([this]() {
+      , _flush_jitter(_flush_interval_ms(), jitter) {
+        _flush_interval_ms.watch([this, jitter]() {
             _flush_jitter = simple_time_jitter<ClockType>{
-              _flush_interval_ms(), 50ms};
+              _flush_interval_ms(), jitter};
         });
     }
-
     ss::future<> start(ss::gate& gate) {
         ssx::spawn_with_gate(
           gate, [this]() -> ss::future<> { return flush_loop(); });
@@ -71,7 +72,12 @@ public:
                 // clock type, so it doesn't work with ss::manual_clock. the
                 // timepoint overload template has a clocktype parameter, so we
                 // use that one to get the behavior we want for testing
-                co_await _flush_signal.wait(_flush_jitter());
+                if constexpr (std::is_same_v<ClockType, ss::manual_clock>) {
+                    co_await _flush_signal.wait(
+                      ClockType::now() + _flush_jitter.base_duration());
+                } else {
+                    co_await _flush_signal.wait(_flush_jitter());
+                }
             } catch (const ss::broken_condition_variable&) {
                 break;
             } catch (const ss::condition_variable_timed_out&) {
@@ -86,7 +92,7 @@ public:
         absl::flat_hash_map<model::partition_id, io::json_batches> batches{};
 
         co_await ss::max_concurrent_for_each(
-          _mgr->queues(),
+          _mgr->buffers(),
           FLUSH_MAX_CONCURRENCY,
           [this, &batches, &n_events](auto& pr) {
               auto& [n, q] = pr;
@@ -158,7 +164,6 @@ private:
     manager<ClockType>* _mgr = nullptr;
     ss::abort_source* _as = nullptr;
     ss::condition_variable _flush_signal{};
-    // ss::condition_variable* _flush_signal = nullptr;
     std::unique_ptr<transform::logging::client> _client{};
     config::binding<std::chrono::milliseconds> _flush_interval_ms;
     simple_time_jitter<ClockType> _flush_jitter;
@@ -175,14 +180,15 @@ manager<ClockType>::manager(
   std::unique_ptr<client> c,
   size_t bc,
   config::binding<size_t> ll,
-  config::binding<std::chrono::milliseconds> fi)
+  config::binding<std::chrono::milliseconds> fi,
+  std::optional<typename ClockType::duration> jitter)
   : _self(self)
   , _line_limit_bytes(std::move(ll))
   , _buffer_limit_bytes(bc)
   , _buffer_low_water_mark(_buffer_limit_bytes / lwm_denom)
   , _buffer_sem(_buffer_limit_bytes, "Log manager buffer semaphore")
   , _flusher(std::make_unique<detail::flusher<ClockType>>(
-      this, &_as, std::move(c), std::move(fi))) {}
+      this, &_as, std::move(c), std::move(fi), jitter.value_or(50ms))) {}
 
 template<typename ClockType>
 manager<ClockType>::~manager() = default;
@@ -231,10 +237,10 @@ void manager<ClockType>::enqueue_log(
     };
 
     auto get_queue = [this](std::string_view name) {
-        auto res = _log_event_queues.find(name);
-        if (res == _log_event_queues.end()) {
-            auto [it, ins] = _log_event_queues.emplace(
-              ss::sstring{name.data(), name.size()}, log_event_queue_t{});
+        auto res = _log_buffers.find(name);
+        if (res == _log_buffers.end()) {
+            auto [it, ins] = _log_buffers.emplace(
+              ss::sstring{name.data(), name.size()}, buffer_t{});
             if (ins) {
                 return it;
             }
@@ -245,7 +251,7 @@ void manager<ClockType>::enqueue_log(
     };
 
     auto it = get_queue(transform_name);
-    if (it == _log_event_queues.end()) {
+    if (it == _log_buffers.end()) {
         vlog(tlg_log.warn, "Failed to enqueue transform log: Buffer error");
         return;
     }

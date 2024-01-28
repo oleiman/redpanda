@@ -99,10 +99,6 @@ private:
     absl::flat_hash_map<ss::sstring, buffer_t, string_hash, std::equal_to<>>
       _log_buffers;
 
-    auto& buffers() { return _log_buffers; }
-
-    // TODO(oren): rough edge here
-    friend class detail::flusher<ClockType>;
     std::unique_ptr<detail::flusher<ClockType>> _flusher{};
 };
 

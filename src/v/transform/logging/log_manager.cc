@@ -37,13 +37,11 @@ class flusher {
 public:
     flusher() = delete;
     explicit flusher(
-      manager<ClockType>* mgr,
       ss::abort_source* as,
       std::unique_ptr<transform::logging::client> c,
       config::binding<std::chrono::milliseconds> fi,
       ClockType::duration jitter)
-      : _mgr(mgr)
-      , _as(as)
+      : _as(as)
       , _client(std::move(c))
       , _flush_interval_ms(std::move(fi))
       , _flush_jitter(_flush_interval_ms(), jitter) {
@@ -52,9 +50,11 @@ public:
               _flush_interval_ms(), jitter};
         });
     }
-    ss::future<> start(ss::gate& gate) {
+
+    template<typename BuffersT>
+    ss::future<> start(ss::gate& gate, BuffersT* bufs) {
         ssx::spawn_with_gate(
-          gate, [this]() -> ss::future<> { return flush_loop(); });
+          gate, [this, bufs]() -> ss::future<> { return flush_loop(bufs); });
         return ss::now();
     }
 
@@ -64,7 +64,7 @@ public:
         return ss::now();
     }
 
-    ss::future<> flush_loop() {
+    ss::future<> flush_loop(auto* bufs) {
         while (!_as->abort_requested()) {
             try {
                 // the duration overload passes now() + dur to the timepoint
@@ -82,19 +82,22 @@ public:
                 break;
             } catch (const ss::condition_variable_timed_out&) {
             }
-            co_await flush();
+            co_await flush(bufs);
         }
         co_return;
     }
 
-    ss::future<> flush() {
+    ss::future<> flush(auto* bufs) {
         size_t n_events = 0;
         absl::flat_hash_map<model::partition_id, io::json_batches> batches{};
 
+        if (bufs == nullptr) {
+            vlog(tlg_log.error, "Missing buffers");
+            co_return;
+        }
+
         co_await ss::max_concurrent_for_each(
-          _mgr->buffers(),
-          FLUSH_MAX_CONCURRENCY,
-          [this, &batches, &n_events](auto& pr) {
+          *bufs, FLUSH_MAX_CONCURRENCY, [this, &batches, &n_events](auto& pr) {
               auto& [n, q] = pr;
               if (q.empty()) {
                   return ss::now();
@@ -161,7 +164,6 @@ public:
     }
 
 private:
-    manager<ClockType>* _mgr = nullptr;
     ss::abort_source* _as = nullptr;
     ss::condition_variable _flush_signal{};
     std::unique_ptr<transform::logging::client> _client{};
@@ -188,14 +190,14 @@ manager<ClockType>::manager(
   , _buffer_low_water_mark(_buffer_limit_bytes / lwm_denom)
   , _buffer_sem(_buffer_limit_bytes, "Log manager buffer semaphore")
   , _flusher(std::make_unique<detail::flusher<ClockType>>(
-      this, &_as, std::move(c), std::move(fi), jitter.value_or(50ms))) {}
+      &_as, std::move(c), std::move(fi), jitter.value_or(50ms))) {}
 
 template<typename ClockType>
 manager<ClockType>::~manager() = default;
 
 template<typename ClockType>
 ss::future<> manager<ClockType>::start() {
-    return _flusher->start(_gate);
+    return _flusher->template start<>(_gate, &_log_buffers);
 }
 
 template<typename ClockType>

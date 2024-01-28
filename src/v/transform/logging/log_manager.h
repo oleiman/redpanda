@@ -13,7 +13,6 @@
 
 #include "config/property.h"
 #include "model/transform.h"
-#include "random/simple_time_jitter.h"
 #include "ssx/semaphore.h"
 #include "transform/logging/event.h"
 #include "transform/logging/io.h"
@@ -26,6 +25,11 @@
 #include <utility>
 
 namespace transform::logging {
+
+namespace detail {
+template<typename ClockType>
+class flusher;
+}
 
 template<typename ClockType = ss::lowres_clock>
 class manager {
@@ -55,26 +59,21 @@ public:
     void enqueue_log(
       ss::log_level lvl, model::transform_name_view, std::string_view message);
 
+    auto& queues() { return _log_event_queues; }
+
 private:
     // TODO(oren): make configurable?
     static constexpr double lwm_denom = 10;
-
-    ss::future<> flush();
-    ss::future<> flusher_fiber();
     bool check_lwm() const;
 
     model::node_id _self;
-    std::unique_ptr<transform::logging::client> _client;
     config::binding<size_t> _line_limit_bytes;
     size_t _buffer_limit_bytes;
     ssize_t _buffer_low_water_mark;
-    config::binding<std::chrono::milliseconds> _flush_interval_ms;
-    simple_time_jitter<ClockType> _flush_jitter;
     ssx::semaphore _buffer_sem;
 
     ss::gate _gate{};
     ss::abort_source _as{};
-    ss::condition_variable _flush_signal{};
 
     struct log_event {
         log_event() = delete;
@@ -84,6 +83,7 @@ private:
         event event;
         ssx::semaphore_units units;
     };
+
     // per @rockwood
     // TODO(oren): Evaluate (and probably substitute) `chunked_vector` once it
     // lands
@@ -104,16 +104,7 @@ private:
       std::equal_to<>>
       _log_event_queues;
 
-    ss::future<ss::chunked_fifo<iobuf>>
-      do_serialize_log_events(model::transform_name_view, log_event_queue_t);
-
-    using json_batch_table_t
-      = absl::flat_hash_map<model::partition_id, io::json_batches>;
-
-    ss::future<std::pair<json_batch_table_t, size_t>>
-    concurrent_serialize_log_events();
-
-    ss::future<> do_flush(model::partition_id, io::json_batches q);
+    std::unique_ptr<detail::flusher<ClockType>> _flusher{};
 };
 
 } // namespace transform::logging

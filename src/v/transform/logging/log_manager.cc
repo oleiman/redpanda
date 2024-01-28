@@ -26,7 +26,6 @@
 
 namespace transform::logging {
 namespace {
-constexpr int FLUSH_MAX_CONCURRENCY = 10;
 using namespace std::chrono_literals;
 } // namespace
 
@@ -34,20 +33,21 @@ namespace detail {
 
 template<typename ClockType>
 class flusher {
+    static constexpr ClockType::duration jitter_amt{50ms};
+    static constexpr int MAX_CONCURRENCY = 10;
+
 public:
     flusher() = delete;
     explicit flusher(
       ss::abort_source* as,
       std::unique_ptr<transform::logging::client> c,
-      config::binding<std::chrono::milliseconds> fi,
-      ClockType::duration jitter)
+      config::binding<std::chrono::milliseconds> fi)
       : _as(as)
       , _client(std::move(c))
-      , _flush_interval_ms(std::move(fi))
-      , _flush_jitter(_flush_interval_ms(), jitter) {
-        _flush_interval_ms.watch([this, jitter]() {
-            _flush_jitter = simple_time_jitter<ClockType>{
-              _flush_interval_ms(), jitter};
+      , _interval_ms(std::move(fi))
+      , _jitter(_interval_ms(), jitter_amt) {
+        _interval_ms.watch([this]() {
+            _jitter = simple_time_jitter<ClockType>{_interval_ms(), jitter_amt};
         });
     }
 
@@ -58,9 +58,10 @@ public:
         return ss::now();
     }
 
-    void wakeup() { _flush_signal.signal(); }
+    void wakeup() { _wakeup_signal.signal(); }
+
     ss::future<> stop() {
-        _flush_signal.broken();
+        _wakeup_signal.broken();
         return ss::now();
     }
 
@@ -73,10 +74,10 @@ public:
                 // timepoint overload template has a clocktype parameter, so we
                 // use that one to get the behavior we want for testing
                 if constexpr (std::is_same_v<ClockType, ss::manual_clock>) {
-                    co_await _flush_signal.wait(
-                      ClockType::now() + _flush_jitter.base_duration());
+                    co_await _wakeup_signal.wait(
+                      ClockType::now() + _jitter.base_duration());
                 } else {
-                    co_await _flush_signal.wait(_flush_jitter());
+                    co_await _wakeup_signal.wait(_jitter());
                 }
             } catch (const ss::broken_condition_variable&) {
                 break;
@@ -97,7 +98,7 @@ public:
         }
 
         co_await ss::max_concurrent_for_each(
-          *bufs, FLUSH_MAX_CONCURRENCY, [this, &batches, &n_events](auto& pr) {
+          *bufs, MAX_CONCURRENCY, [this, &batches, &n_events](auto& pr) {
               auto& [n, q] = pr;
               if (q.empty()) {
                   return ss::now();
@@ -122,9 +123,7 @@ public:
           });
 
         co_await ss::max_concurrent_for_each(
-          batches,
-          FLUSH_MAX_CONCURRENCY,
-          [this](auto& pr) mutable -> ss::future<> {
+          batches, MAX_CONCURRENCY, [this](auto& pr) mutable -> ss::future<> {
               auto& [pid, evs] = pr;
               return do_flush(pid, std::move(evs));
           });
@@ -165,10 +164,10 @@ public:
 
 private:
     ss::abort_source* _as = nullptr;
-    ss::condition_variable _flush_signal{};
     std::unique_ptr<transform::logging::client> _client{};
-    config::binding<std::chrono::milliseconds> _flush_interval_ms;
-    simple_time_jitter<ClockType> _flush_jitter;
+    config::binding<std::chrono::milliseconds> _interval_ms;
+    simple_time_jitter<ClockType> _jitter;
+    ss::condition_variable _wakeup_signal{};
 };
 
 template class flusher<ss::lowres_clock>;
@@ -182,15 +181,14 @@ manager<ClockType>::manager(
   std::unique_ptr<client> c,
   size_t bc,
   config::binding<size_t> ll,
-  config::binding<std::chrono::milliseconds> fi,
-  std::optional<typename ClockType::duration> jitter)
+  config::binding<std::chrono::milliseconds> fi)
   : _self(self)
   , _line_limit_bytes(std::move(ll))
   , _buffer_limit_bytes(bc)
   , _buffer_low_water_mark(_buffer_limit_bytes / lwm_denom)
   , _buffer_sem(_buffer_limit_bytes, "Log manager buffer semaphore")
   , _flusher(std::make_unique<detail::flusher<ClockType>>(
-      &_as, std::move(c), std::move(fi), jitter.value_or(50ms))) {}
+      &_as, std::move(c), std::move(fi))) {}
 
 template<typename ClockType>
 manager<ClockType>::~manager() = default;

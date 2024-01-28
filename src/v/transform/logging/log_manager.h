@@ -51,8 +51,7 @@ public:
       std::unique_ptr<client>,
       size_t buffer_cap,
       config::binding<size_t> line_limit,
-      config::binding<std::chrono::milliseconds> flush_interval,
-      std::optional<typename ClockType::duration> jitter = {});
+      config::binding<std::chrono::milliseconds> flush_interval);
 
     ss::future<> start();
     ss::future<> stop();

@@ -15,6 +15,7 @@
 #include "model/transform.h"
 #include "ssx/semaphore.h"
 #include "transform/logging/event.h"
+#include "transform/logging/fwd.h"
 #include "transform/logging/io.h"
 #include "utils/absl_sstring_hash.h"
 #include "wasm/logger.h"
@@ -133,7 +134,10 @@ private:
     // lands
     using buffer_t = ss::chunked_fifo<buffer_entry>;
     absl::btree_map<ss::sstring, buffer_t, sstring_less> _log_buffers;
+    absl::btree_map<ss::sstring, std::unique_ptr<logger_probe>, sstring_less>
+      _logger_probes;
 
+    std::unique_ptr<manager_probe> _probe{};
     std::unique_ptr<detail::flusher<ClockType>> _flusher{};
 };
 

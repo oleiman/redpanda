@@ -930,3 +930,41 @@ class RBACEndToEndTest(RBACTestBase):
         roles = RolesList.from_response(self.superuser_admin.list_roles())
 
         assert len(roles) == 1, f"Wrong number of roles {str(roles)}"
+
+
+class RolePersistenceTest(RBACTestBase):
+    @cluster(num_nodes=3)
+    def test_role_survives_restart(self):
+        admin = self.superuser_admin
+
+        names = [
+            'a',
+            'b',
+            'c',
+            'd',
+            'e',
+            'f',
+        ]
+
+        for n in names:
+            admin.create_role(role=n)
+
+        last_name = names[-1]
+
+        r = wait_until_result(
+            lambda: Role.from_response(admin.get_role(role=last_name)),
+            timeout_sec=10,
+            backoff_sec=1,
+            retry_on_exc=True)
+
+        assert r.name == last_name
+
+        self.redpanda.restart_nodes(self.redpanda.nodes)
+
+        for n in names:
+            r = wait_until_result(
+                lambda: Role.from_response(admin.get_role(role=n)),
+                timeout_sec=10,
+                backoff_sec=1,
+                retry_on_exc=True)
+            assert r.name == n

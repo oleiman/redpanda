@@ -23,6 +23,7 @@ from confluent_kafka import KafkaError, KafkaException
 
 from rptest.services.cluster import cluster
 from rptest.services.admin import Admin
+from rptest.clients.kafka_cli_tools import KafkaCliTools
 from rptest.clients.rpk import RpkTool, RpkException
 from rptest.services.redpanda import RESTART_LOG_ALLOW_LIST, LoggingConfig, MetricsEndpoint
 from rptest.tests.redpanda_test import RedpandaTest
@@ -1294,3 +1295,26 @@ class ManyTopicsTest(RedpandaTest):
             f"swarm_nodes='''{', '.join([str(num) for num in hwms])}'''"
 
         return
+
+    @cluster(num_nodes=10)
+    def test_many_topics_config(self):
+        """Test how Redpanda behaves when attempting to describe the configs
+        of all the topics in a 40k topic cluster and how it behaves when altering
+        the configs of said topics
+        """
+        tsm = TopicScaleProfileManager()
+        profile = tsm.get_profile("topic_profile_t40k_p1")
+
+        # Start kafka
+        self.redpanda.start()
+
+        # Do create topics stage
+        topic_prefixes, pnode_topic_count, cnode_topic_count = self._stage_create_topics_adjusted(
+            profile)
+
+        self.logger.debug(f'topic_prefixes: {topic_prefixes}')
+        self.logger.debug(f'pnode_topic_count: {pnode_topic_count}')
+        self.logger.debug(f'cnode_topic_count: {cnode_topic_count}')
+
+        client = KafkaCliTools(self.redpanda)
+        output = client.describe_topics()

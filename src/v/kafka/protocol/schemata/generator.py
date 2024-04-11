@@ -473,6 +473,10 @@ override_member_container = {
     'creatable_topic_result': 'chunked_vector',
     'describe_configs_resource_result': 'chunked_vector',
     'describe_configs_result': 'chunked_vector',
+    'incremental_alterable_config': 'chunked_vector',
+    'incremental_alter_configs_resource': 'chunked_vector',
+    'alter_configs_resource': 'chunked_vector',
+    'alterable_config': 'chunked_vector',
 }
 
 
@@ -1066,6 +1070,7 @@ class Field:
                 yield override_member_container[name]
             else:
                 yield "std::vector"
+                # yield "chunked_vector"
         if self.nullable():
             assert default_value is None  # not supported
             yield "std::optional"

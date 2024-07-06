@@ -16,6 +16,7 @@
 
 #include <chrono>
 #include <cstddef>
+#include <expected>
 #include <functional>
 #include <optional>
 #include <ranges>
@@ -212,5 +213,117 @@ using on_record_written_callback
  * ```
  */
 [[noreturn]] void on_record_written(const on_record_written_callback& callback);
+
+namespace sr {
+enum class schema_format {
+    avro = 0,
+    protobuf = 1,
+    json = 2,
+};
+
+using schema_id = int32_t;
+using schema_version = int32_t;
+
+// TODO(oren): maybe a whole class w/ accessors?
+struct reference {
+    std::string name;
+    std::string subject;
+    schema_version version;
+
+private:
+    friend bool operator==(const reference&, const reference&) = default;
+};
+
+class schema {
+public:
+    using refs_c = std::vector<reference>;
+    schema(std::string _schema, schema_format format, refs_c refs)
+      : _schema(std::move(_schema))
+      , _format(format)
+      , _references(std::move(refs)) {}
+
+    static schema
+    new_avro(std::string schema, std::optional<refs_c> refs = std::nullopt) {
+        return {
+          std::move(schema),
+          schema_format::avro,
+          std::move(refs).value_or(refs_c{})};
+    }
+
+    static schema new_protobuf(
+      std::string schema, std::optional<refs_c> refs = std::nullopt) {
+        return {
+          std::move(schema),
+          schema_format::protobuf,
+          std::move(refs).value_or(refs_c{})};
+    }
+
+    [[nodiscard]] std::string_view get_schema() const { return _schema; }
+    [[nodiscard]] schema_format get_format() const { return _format; }
+    [[nodiscard]] const refs_c& get_references() const { return _references; }
+
+private:
+    friend bool operator==(const schema&, const schema&) = default;
+
+    std::string _schema;
+    schema_format _format;
+    refs_c _references;
+};
+
+class subject_schema {
+public:
+    subject_schema(
+      schema the_schema,
+      std::string subject,
+      schema_version version,
+      schema_id id)
+      : _schema(std::move(the_schema))
+      , _subject(std::move(subject))
+      , _version(version)
+      , _id(id) {}
+
+    [[nodiscard]] const schema& get_schema() const { return _schema; }
+    [[nodiscard]] const std::string& get_subject() const { return _subject; }
+    [[nodiscard]] schema_version get_version() const { return _version; }
+    [[nodiscard]] schema_id get_id() const { return _id; }
+
+private:
+    friend bool operator==(const subject_schema&, const subject_schema&)
+      = default;
+
+    schema _schema;
+    std::string _subject;
+    schema_version _version;
+    schema_id _id;
+};
+
+// TODO(oren): introduce errors
+
+class schema_registry_client {
+public:
+    schema_registry_client() = default;
+    schema_registry_client(const schema_registry_client&) = delete;
+    schema_registry_client& operator=(const schema_registry_client&) = delete;
+    schema_registry_client(schema_registry_client&&) noexcept = delete;
+    schema_registry_client& operator=(schema_registry_client&&) noexcept
+      = delete;
+    virtual ~schema_registry_client() = default;
+
+    [[nodiscard]] virtual std::expected<schema, std::error_code>
+    lookup_schema_by_id(schema_id id) const = 0;
+
+    [[nodiscard]] virtual std::expected<subject_schema, std::error_code>
+    lookup_schema_by_version(
+      const std::string& subject, schema_version version) const
+      = 0;
+
+    [[nodiscard]] virtual std::expected<subject_schema, std::error_code>
+    lookup_latest_schema(const std::string& subject) const = 0;
+
+    [[nodiscard]] virtual std::expected<subject_schema, std::error_code>
+    create_schema(const std::string& subject, schema the_schema) = 0;
+};
+
+} // namespace sr
 
 } // namespace redpanda

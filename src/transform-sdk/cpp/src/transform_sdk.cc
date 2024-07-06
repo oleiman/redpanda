@@ -21,6 +21,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <expected>
+#include <ranges>
 #include <system_error>
 #include <utility>
 
@@ -107,6 +108,54 @@ WASM_IMPORT(redpanda_transform, write_record)
 int32_t redpanda_transform_write_record(uint8_t* buf, uint32_t len);
 constexpr auto write_record = redpanda_transform_write_record;
 
+/**
+ * Schema Registry ABI
+ */
+namespace sr {
+
+WASM_IMPORT(redpanda_schema_registry, check_abi_version_0)
+void redpanda_schema_registry_check();
+constexpr auto check = redpanda_schema_registry_check;
+
+WASM_IMPORT(redpanda_schema_registry, get_schema_definition_len)
+int32_t redpanda_schema_registry_get_schema_definition_len(
+  int32_t schemaId, int32_t* len);
+constexpr auto get_schema_definition_len
+  = redpanda_schema_registry_get_schema_definition_len;
+
+WASM_IMPORT(redpanda_schema_registry, get_schema_definition)
+int32_t redpanda_schema_registry_get_schema_definition(
+  int32_t schema_id, uint8_t* buf, int32_t len);
+constexpr auto get_schema_definition
+  = redpanda_schema_registry_get_schema_definition;
+
+WASM_IMPORT(redpanda_schema_registry, get_subject_schema_len)
+int32_t redpanda_schema_registry_get_subject_schema_len(
+  const uint8_t* subject, int32_t subject_len, int32_t version, int32_t* len);
+constexpr auto get_subject_schema_len
+  = redpanda_schema_registry_get_subject_schema_len;
+
+WASM_IMPORT(redpanda_schema_registry, get_subject_schema)
+int32_t redpanda_schema_registry_get_subject_schema(
+  const uint8_t* subject,
+  int32_t subject_len,
+  int32_t version,
+  uint8_t* buf,
+  int32_t len);
+constexpr auto get_subject_schema = redpanda_schema_registry_get_subject_schema;
+
+WASM_IMPORT(redpanda_schema_registry, create_subject_schema)
+int32_t redpanda_schema_registry_create_subject_schema(
+  const uint8_t* subject,
+  int32_t subject_len,
+  uint8_t* buf,
+  int32_t len,
+  int32_t* schema_id_out);
+constexpr auto create_subject_schema
+  = redpanda_schema_registry_create_subject_schema;
+
+} // namespace sr
+
 #undef WASM_IMPORT
 }
 
@@ -140,6 +189,46 @@ int32_t read_next_record(
 int32_t write_record(const uint8_t* /*unused*/, uint32_t /*unused*/) {
     abort("write_record - stub");
 }
+
+namespace sr {
+
+void check() { abort("sr_check_abi - stub"); }
+
+int32_t get_schema_definition_len(int32_t /*unused*/, int32_t* /*unused*/) {
+    abort("get_schema_definition_len - stub");
+}
+
+int32_t get_schema_definition(
+  int32_t /*unused*/, uint8_t* /*unused*/, int32_t /*unused*/) {
+    abort("get_schema_definition - stub");
+}
+
+int32_t get_subject_schema_len(
+  const uint8_t* /*unused*/,
+  int32_t /*unused*/,
+  int32_t /*unused*/,
+  int32_t* /*unused*/) {
+    abort("get_subject_schema_len - stub");
+}
+
+int32_t get_subject_schema(
+  const uint8_t* /*unused*/,
+  int32_t /*unused*/,
+  int32_t /*unused*/,
+  uint8_t* /*unused*/,
+  int32_t /*unused*/) {
+    abort("get_subject_schema - stub");
+}
+
+int32_t create_subject_schema(
+  const uint8_t* /*unused*/,
+  int32_t /*unused*/,
+  uint8_t* /*unused*/,
+  int32_t /*unused*/,
+  int32_t* /*unused*/) {
+    abort("create_subject_schema - stub");
+}
+} // namespace sr
 
 #endif
 } // namespace abi
@@ -308,6 +397,98 @@ struct batch_header {
     int32_t base_sequence;
 };
 
+std::expected<sr::schema, std::error_code>
+read_schema_def(redpanda::bytes_view payload) {
+    ASSIGN_OR_RETURN(auto fmt_d, varint::read(payload));
+    ASSIGN_OR_RETURN(
+      auto format,
+      ([&fmt_d]() -> std::expected<sr::schema_format, std::error_code> {
+          switch (fmt_d.value) {
+          case 0:
+              return sr::schema_format::avro;
+          case 1:
+              return sr::schema_format::protobuf;
+          case 2:
+              return sr::schema_format::json;
+          default:
+              return std::unexpected(
+                std::make_error_code(std::errc::illegal_byte_sequence));
+          }
+      }()));
+
+    payload = payload.subview(fmt_d.read);
+    ASSIGN_OR_RETURN(auto schema_d, varint::read_sized_buffer(payload));
+    payload = payload.subview(schema_d.read);
+
+    const std::string_view schema = schema_d.value
+                                      .transform([](bytes_view buf) {
+                                          return std::string_view{buf};
+                                      })
+                                      .value_or(std::string_view{});
+
+    ASSIGN_OR_RETURN(auto refs_d, varint::read(payload));
+    payload = payload.subview(refs_d.read);
+
+    std::vector<sr::reference> refs;
+    refs.reserve(refs_d.value);
+
+    for ([[maybe_unused]] auto i : std::views::iota(0, refs_d.value)) {
+        ASSIGN_OR_RETURN(auto name_d, varint::read_sized_buffer(payload));
+        payload = payload.subview(name_d.read);
+        const std::string_view name = name_d.value
+                                        .transform([](bytes_view buf) {
+                                            return std::string_view{buf};
+                                        })
+                                        .value_or(std::string_view{});
+        ASSIGN_OR_RETURN(auto subject_d, varint::read_sized_buffer(payload));
+        payload = payload.subview(subject_d.read);
+        const std::string_view subject = subject_d.value
+                                           .transform([](bytes_view buf) {
+                                               return std::string_view{buf};
+                                           })
+                                           .value_or(std::string_view{});
+        ASSIGN_OR_RETURN(auto version_d, varint::read(payload));
+        payload = payload.subview(version_d.read);
+        sr::schema_version v{static_cast<int32_t>(version_d.value)};
+        refs.emplace_back(
+          std::string{name.data(), name.size()},
+          std::string{subject.data(), subject.size()},
+          v);
+    };
+
+    // TODO(oren): this should go straight into the expected object. trying to
+    // remember the incantation.
+    return sr::schema{
+      std::string{schema.data(), schema.size()}, format, std::move(refs)};
+}
+
+std::expected<sr::subject_schema, std::error_code>
+read_schema(const std::string& subject, redpanda::bytes_view payload) {
+    ASSIGN_OR_RETURN(auto id_d, varint::read(payload));
+    payload = payload.subview(id_d.read);
+    sr::schema_id id{static_cast<int32_t>(id_d.value)};
+    ASSIGN_OR_RETURN(auto version_d, varint::read(payload));
+    payload = payload.subview(version_d.read);
+    sr::schema_version version{static_cast<int32_t>(version_d.value)};
+    ASSIGN_OR_RETURN(auto schema, read_schema_def(payload));
+    return sr::subject_schema{std::move(schema), subject, version, id};
+}
+
+void write_schema_def(bytes* payload, const sr::schema& schema) {
+    varint::write(payload, static_cast<int64_t>(schema.get_format()));
+    varint::write_sized_buffer(
+      payload, std::make_optional<bytes_view>(schema.get_schema()));
+    varint::write(
+      payload, static_cast<int64_t>(schema.get_references().size()));
+    for (const auto& ref : schema.get_references()) {
+        varint::write_sized_buffer(
+          payload, std::make_optional<bytes_view>(ref.name));
+        varint::write_sized_buffer(
+          payload, std::make_optional<bytes_view>(ref.subject));
+        varint::write(payload, static_cast<int64_t>(ref.version));
+    }
+}
+
 } // namespace decode
 
 class abi_record_writer : public record_writer {
@@ -463,6 +644,88 @@ on_record_written(const on_record_written_callback& callback) {
         process_batch(callback);
     }
 }
+
+namespace sr {
+class abi_schema_registry_client : public schema_registry_client {
+public:
+    abi_schema_registry_client() { abi::sr::check(); }
+
+    [[nodiscard]] std::expected<schema, std::error_code>
+    lookup_schema_by_id(schema_id id) const final {
+        int32_t length = 0;
+        auto ec = abi::sr::get_schema_definition_len(id, &length);
+        // TODO(oren): maybe length > 0 guaranteed by no error?
+        if (ec != 0 || length < 0) {
+            // TODO(oren): should this be just the error code? what are we using
+            // here?
+            return std::unexpected{std::make_error_code(std::errc::io_error)};
+        }
+        redpanda::bytes buf;
+        buf.resize(length, 0);
+        auto ec_or_n = abi::sr::get_schema_definition(
+          id, buf.data(), static_cast<int32_t>(buf.size()));
+        if (ec_or_n < 0) {
+            // TODO(oren): error or total bytes read?
+            return std::unexpected{std::make_error_code(std::errc::io_error)};
+        }
+        return decode::read_schema_def(
+          redpanda::bytes_view{buf.data(), static_cast<size_t>(ec_or_n)});
+    }
+
+    [[nodiscard]] std::expected<subject_schema, std::error_code>
+    lookup_schema_by_version(
+      const std::string& subject, schema_version version) const final {
+        int32_t length = 0;
+        auto ec = abi::sr::get_subject_schema_len(
+          bytes_view{subject}.begin(),
+          static_cast<int32_t>(subject.size()),
+          version,
+          &length);
+        if (ec != 0) {
+            return std::unexpected{std::make_error_code(std::errc::io_error)};
+        }
+        redpanda::bytes buf;
+        buf.resize(length, 0);
+        auto ec_or_n = abi::sr::get_subject_schema(
+          bytes_view{subject}.begin(),
+          static_cast<int32_t>(subject.size()),
+          version,
+          buf.data(),
+          buf.size());
+        if (ec_or_n < 0) {
+            return std::unexpected{std::make_error_code(std::errc::io_error)};
+        }
+        return decode::read_schema(
+          subject, bytes_view{buf.data(), static_cast<size_t>(ec_or_n)});
+    }
+
+    [[nodiscard]] std::expected<subject_schema, std::error_code>
+    lookup_latest_schema(const std::string& subject) const final {
+        return lookup_schema_by_version(subject, schema_version{-1});
+        return std::unexpected{std::make_error_code(std::errc::io_error)};
+    }
+
+    [[nodiscard]] std::expected<subject_schema, std::error_code>
+    create_schema(const std::string& subject, schema the_schema) final {
+        bytes buf;
+        buf.resize(the_schema.get_schema().size() + varint::MAX_LENGTH);
+        decode::write_schema_def(&buf, the_schema);
+        sr::schema_id id{0};
+        sr::schema_version version{0};
+        auto ec = abi::sr::create_subject_schema(
+          bytes_view{subject}.begin(),
+          subject.size(),
+          buf.data(),
+          buf.size(),
+          &id);
+        if (ec != 0) {
+            return std::unexpected{std::make_error_code(std::errc::io_error)};
+        }
+        return sr::subject_schema{std::move(the_schema), subject, version, id};
+    };
+};
+
+} // namespace sr
 
 } // namespace redpanda
 

@@ -21,6 +21,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <expected>
+#include <iostream>
 #include <ranges>
 #include <system_error>
 #include <utility>
@@ -708,7 +709,7 @@ public:
     [[nodiscard]] std::expected<subject_schema, std::error_code>
     create_schema(const std::string& subject, schema the_schema) final {
         bytes buf;
-        buf.resize(the_schema.get_schema().size() + varint::MAX_LENGTH);
+        buf.reserve(the_schema.get_schema().size() + varint::MAX_LENGTH);
         decode::write_schema_def(&buf, the_schema);
         sr::schema_id id{0};
         sr::schema_version version{0};
@@ -724,6 +725,10 @@ public:
         return sr::subject_schema{std::move(the_schema), subject, version, id};
     };
 };
+
+std::unique_ptr<schema_registry_client> schema_registry_client::new_client() {
+    return std::make_unique<abi_schema_registry_client>();
+}
 
 } // namespace sr
 

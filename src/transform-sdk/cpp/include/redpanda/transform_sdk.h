@@ -309,6 +309,9 @@ public:
       = delete;
     virtual ~schema_registry_client() = default;
 
+    // TODO(oren): this could be a free function in namespace sr
+    static std::unique_ptr<schema_registry_client> new_client();
+
     [[nodiscard]] virtual std::expected<schema, std::error_code>
     lookup_schema_by_id(schema_id id) const = 0;
 

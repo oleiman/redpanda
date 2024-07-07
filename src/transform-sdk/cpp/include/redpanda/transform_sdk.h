@@ -327,6 +327,9 @@ public:
     create_schema(const std::string& subject, schema the_schema) = 0;
 };
 
+std::expected<std::pair<schema_id, bytes_view>, std::error_code>
+decode_schema_id(bytes_view buf);
+
 } // namespace sr
 
 } // namespace redpanda

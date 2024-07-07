@@ -730,6 +730,29 @@ std::unique_ptr<schema_registry_client> schema_registry_client::new_client() {
     return std::make_unique<abi_schema_registry_client>();
 }
 
+std::expected<std::pair<schema_id, bytes_view>, std::error_code>
+decode_schema_id(bytes_view buf) {
+    static bytes MAGIC_BYTES{0x00};
+    if (buf.subview(0, MAGIC_BYTES.size()) != MAGIC_BYTES || buf.size() < 5u) {
+        return std::unexpected{
+          std::make_error_code(std::errc::illegal_byte_sequence)};
+    }
+    auto id_bytes = buf.subview(1, 4);
+    schema_id result = (id_bytes[3] << 0) | (id_bytes[2] << 8)
+                       | (id_bytes[1] << 16) | (id_bytes[0] << 24);
+    return std::make_pair(result, buf.subview(5));
+}
+
+bytes encode_schema_id(schema_id id, bytes_view buf) {
+    static bytes MAGIC_BYTES{0x00};
+    bytes be_id;
+    be_id.resize(sizeof(schema_id));
+    std::memcpy(be_id.data(), &id, sizeof(schema_id));
+    bytes result = MAGIC_BYTES;
+    result.append_range(be_id | std::views::reverse);
+    return result;
+}
+
 } // namespace sr
 
 } // namespace redpanda

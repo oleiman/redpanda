@@ -883,6 +883,33 @@ void test_record_roundtrip(random_bytes_engine* rng) {
     }
 }
 
+void test_schema_def_roundtrip(random_bytes_engine* rng) {
+    constexpr size_t small = 42;
+    constexpr size_t big = 1028;
+    const auto schema_no_refs = sr::schema::new_avro(make_string(rng, big));
+    const auto schema_with_refs = sr::schema::new_avro(
+      make_string(rng, big),
+      sr::schema::refs_c{
+        sr::reference{
+          .name = make_string(rng, small),
+          .subject = make_string(rng, small),
+          .version = 1,
+        },
+        sr::reference{
+          .name = make_string(rng, small),
+          .subject = make_string(rng, small),
+          .version = 1,
+        },
+      });
+    for (const sr::schema& schema : {schema_no_refs, schema_with_refs}) {
+        bytes encoded;
+        decode::write_schema_def(&encoded, schema);
+        auto result = decode::read_schema_def(encoded);
+        assert(result.has_value(), "expected value");
+        assert(result.value() == schema, "schema mismatch");
+    }
+}
+
 // NOLINTEND(*-unchecked-optional-access)
 
 void run_test_suite() {
@@ -894,6 +921,7 @@ void run_test_suite() {
     test_null_buffer_roundtrip();
     test_sized_buffer_roundtrip(&rng);
     test_record_roundtrip(&rng);
+    test_schema_def_roundtrip(&rng);
     std::println("tests successful");
 }
 

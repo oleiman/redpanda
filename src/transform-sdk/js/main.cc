@@ -315,8 +315,95 @@ std::expected<qjs::value, qjs::exception> make_write_event(
     return write_event;
 }
 
-std::expected<std::monostate, qjs::exception>
-initial_native_modules(qjs::runtime* runtime, qjs::value* user_callback) {
+class schema_registry_client {
+public:
+    schema_registry_client() = default;
+    schema_registry_client(const schema_registry_client&) = delete;
+    schema_registry_client& operator=(const schema_registry_client&) = delete;
+    schema_registry_client(schema_registry_client&&) = default;
+    schema_registry_client& operator=(schema_registry_client&&) = default;
+
+    std::expected<qjs::value, qjs::exception>
+    lookup_schema_by_id(JSContext* ctx, std::span<qjs::value> params) {
+        if (params.size() != 1) [[unlikely]] {
+            return std::unexpected(qjs::exception::make(
+              ctx,
+              std::format(
+                "invalid number of parameters to "
+                "SchemaRegistryClient.lookup_schema_by_id, got: {}, "
+                "expected: 1",
+                params.size())));
+        }
+        auto& param = params.front();
+        if (!param.is_number()) [[unlikely]] {
+            return std::unexpected(qjs::exception::make(
+              ctx,
+              "expected only integer parameters to "
+              "SchemaRegistryClient.lookup_schema_by_id"));
+        }
+        [[maybe_unused]] redpanda::sr::schema_id id = param.as_number();
+        return qjs::value::undefined(ctx);
+    }
+
+    std::expected<qjs::value, qjs::exception>
+    lookup_schema_by_version(JSContext* ctx, std::span<qjs::value> params) {
+        if (params.size() != 2) [[unlikely]] {
+            return std::unexpected(qjs::exception::make(
+              ctx,
+              std::format(
+                "invalid number of parameters to "
+                "SchemaRegistryClient.lookup_schema_by_version, got: "
+                "{}, expected: 2",
+                params.size())));
+        }
+        return qjs::value::undefined(ctx);
+    }
+
+    std::expected<qjs::value, qjs::exception>
+    lookup_latest_schema(JSContext* ctx, std::span<qjs::value> params) {
+        if (params.size() != 1) [[unlikely]] {
+            return std::unexpected(qjs::exception::make(
+              ctx,
+              std::format(
+                "invalid number of parameters to "
+                "SchemaRegistryClient.lookup_latest_schema, got: {}, "
+                "expected: 1",
+                params.size())));
+        }
+        return qjs::value::undefined(ctx);
+    }
+    std::expected<qjs::value, qjs::exception>
+    create_schema(JSContext* ctx, std::span<qjs::value> params) {
+        if (params.size() != 2) [[unlikely]] {
+            return std::unexpected(qjs::exception::make(
+              ctx,
+              std::format(
+                "invalid number of parameters to "
+                "SchemaRegistryClient.create_schema, got: {}, expected: 2",
+                params.size())));
+        }
+        return qjs::value::undefined(ctx);
+    }
+};
+
+qjs::class_factory<schema_registry_client>
+make_schema_registry_client_class(qjs::runtime* runtime) {
+    qjs::class_builder<schema_registry_client> builder(
+      runtime->context(), "SchemaRegistryClient");
+    builder.method<&schema_registry_client::lookup_schema_by_id>(
+      "lookup_schema_by_id");
+    builder.method<&schema_registry_client::lookup_schema_by_version>(
+      "lookup_schema_by_version");
+    builder.method<&schema_registry_client::lookup_latest_schema>(
+      "lookup_latest_schema");
+    builder.method<&schema_registry_client::create_schema>("create_schema");
+    return builder.build();
+}
+
+std::expected<std::monostate, qjs::exception> initial_native_modules(
+  qjs::runtime* runtime,
+  qjs::value* user_callback,
+  qjs::class_factory<schema_registry_client>& sr_client_factory) {
     auto mod = qjs::module_builder("@redpanda-data/transform-sdk");
     mod.add_function(
       "onRecordWritten",
@@ -330,6 +417,19 @@ initial_native_modules(qjs::runtime* runtime, qjs::value* user_callback) {
                 "function as an argument"));
           }
           return {std::exchange(*user_callback, std::move(args.front()))};
+      });
+    auto sr_mod = qjs::module_builder("@redpanda-data/transform-sdk/sr");
+    sr_mod.add_function(
+      "newClient",
+      [&sr_client_factory](
+        JSContext* ctx, const qjs::value&, std::span<qjs::value> args)
+        -> std::expected<qjs::value, qjs::exception> {
+          if (args.size() > 0) [[unlikely]] {
+              return std::unexpected(
+                qjs::exception::make(ctx, "Unexpected arguments to newClient"));
+          }
+          return sr_client_factory.create(
+            std::make_unique<schema_registry_client>());
       });
     return runtime->add_module(std::move(mod));
 }
@@ -376,7 +476,9 @@ int run() {
     auto writer_factory = make_record_writer_class(&runtime);
     auto data_factory = make_record_data_class(&runtime);
     qjs::value record_callback = qjs::value::undefined(runtime.context());
-    result = initial_native_modules(&runtime, &record_callback);
+    auto sr_client_factory = make_schema_registry_client_class(&runtime);
+    result = initial_native_modules(
+      &runtime, &record_callback, sr_client_factory);
     if (!result) [[unlikely]] {
         std::println(
           stderr,

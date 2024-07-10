@@ -197,6 +197,8 @@ JSValue value::raw() const { return _underlying; }
 JSValue value::raw_dup() const { return JS_DupValue(_ctx, _underlying); }
 
 double value::as_number() const {
+    // NOTE(oren): This seems to pass if val is a string...we should looks at
+    // adding some restriction to is_number
     assert(is_number());
     if (JS_TAG_IS_FLOAT64(JS_VALUE_GET_TAG(_underlying))) {
         return JS_VALUE_GET_FLOAT64(_underlying);

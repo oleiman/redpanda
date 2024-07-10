@@ -389,7 +389,38 @@ public:
                 "{}, expected: 2",
                 params.size())));
         }
-        return qjs::value::undefined(ctx);
+        auto& subject_param = params[0];
+        auto& version_param = params[1];
+
+        if (!subject_param.is_string()) [[unlikely]] {
+            return std::unexpected(qjs::exception::make(
+              ctx,
+              "expected string for subject param in "
+              "SchemaRegistryClient.lookup_schema_by_version"));
+        }
+        auto subject = subject_param.string_data();
+
+        if (!version_param.is_number()) [[unlikely]] {
+            return std::unexpected(qjs::exception::make(
+              ctx,
+              "expected integer for version param in "
+              "SchemaRegistryClient.lookup_schema_by_version"));
+        }
+
+        auto version = static_cast<redpanda::sr::schema_version>(
+          std::lround(version_param.as_number()));
+
+        auto subj_schema = _client->lookup_schema_by_version(
+          std::string{subject.view()}, version);
+
+        if (!subj_schema.has_value()) {
+            return std::unexpected(qjs::exception::make(
+              ctx,
+              std::format(
+                "Error looking up schema: {}", subj_schema.error().message())));
+        }
+
+        return make_subject_schema(ctx, subj_schema.value());
     }
 
     std::expected<qjs::value, qjs::exception>
@@ -403,7 +434,26 @@ public:
                 "expected: 1",
                 params.size())));
         }
-        return qjs::value::undefined(ctx);
+        auto& subject_param = params[0];
+        if (!subject_param.is_string()) [[unlikely]] {
+            return std::unexpected(qjs::exception::make(
+              ctx,
+              "expected string for subject param in "
+              "SchemaRegistryClient.lookup_latest_schema"));
+        }
+        auto subject = subject_param.string_data();
+
+        auto subj_schema = _client->lookup_latest_schema(
+          std::string{subject.view()});
+
+        if (!subj_schema.has_value()) {
+            return std::unexpected(qjs::exception::make(
+              ctx,
+              std::format(
+                "Error looking up schema: {}", subj_schema.error().message())));
+        }
+
+        return make_subject_schema(ctx, subj_schema.value());
     }
     std::expected<qjs::value, qjs::exception>
     create_schema(JSContext* ctx, std::span<qjs::value> params) {
@@ -525,7 +575,7 @@ private:
       JSContext* ctx, const redpanda::sr::subject_schema subj_schema) {
         qjs::value obj = qjs::value::object(ctx);
         std::expected<std::monostate, qjs::exception> result;
-        auto schema = make_schema(ctx, subj_schema.get_schema());
+        auto schema = make_schema(ctx, subj_schema.schema());
         if (!schema.has_value()) {
             return std::unexpected(schema.error());
         }
@@ -533,7 +583,7 @@ private:
         if (!result.has_value()) {
             return std::unexpected(result.error());
         }
-        auto subject = qjs::value::string(ctx, subj_schema.get_subject());
+        auto subject = qjs::value::string(ctx, subj_schema.subject());
         if (!subject.has_value()) {
             return std::unexpected(subject.error());
         }
@@ -542,12 +592,12 @@ private:
             return std::unexpected(result.error());
         }
         result = obj.set_property(
-          "version", qjs::value::integer(ctx, subj_schema.get_version()));
+          "version", qjs::value::integer(ctx, subj_schema.version()));
         if (!result.has_value()) {
             return std::unexpected(result.error());
         }
         result = obj.set_property(
-          "id", qjs::value::integer(ctx, subj_schema.get_id()));
+          "id", qjs::value::integer(ctx, subj_schema.id()));
         if (!result.has_value()) {
             return std::unexpected(result.error());
         }
@@ -558,7 +608,7 @@ private:
     make_schema(JSContext* ctx, const redpanda::sr::schema& the_schema) {
         qjs::value obj = qjs::value::object(ctx);
         std::expected<std::monostate, qjs::exception> result;
-        auto schema_v = qjs::value::string(ctx, the_schema.get_schema());
+        auto schema_v = qjs::value::string(ctx, the_schema.raw_schema());
         if (!schema_v.has_value()) {
             return std::unexpected(schema_v.error());
         }
@@ -569,13 +619,13 @@ private:
         // TODO(oren): need some type of enum or something for this
         result = obj.set_property(
           "format",
-          qjs::value::integer(ctx, static_cast<int>(the_schema.get_format())));
+          qjs::value::integer(ctx, static_cast<int>(the_schema.format())));
         if (!result.has_value()) [[unlikely]] {
             return std::unexpected(result.error());
         }
 
         auto references = qjs::value::array(ctx);
-        for (const auto& ref : the_schema.get_references()) {
+        for (const auto& ref : the_schema.references()) {
             qjs::value obj = qjs::value::object(ctx);
             auto name_v = qjs::value::string(ctx, ref.name);
             if (!name_v.has_value()) [[unlikely]] {

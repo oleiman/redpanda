@@ -258,9 +258,9 @@ public:
           std::move(refs).value_or(refs_c{})};
     }
 
-    [[nodiscard]] std::string_view get_schema() const { return _schema; }
-    [[nodiscard]] schema_format get_format() const { return _format; }
-    [[nodiscard]] const refs_c& get_references() const { return _references; }
+    [[nodiscard]] const std::string& raw_schema() const { return _schema; }
+    [[nodiscard]] schema_format format() const { return _format; }
+    [[nodiscard]] const refs_c& references() const { return _references; }
 
 private:
     friend bool operator==(const schema&, const schema&) = default;
@@ -273,25 +273,25 @@ private:
 class subject_schema {
 public:
     subject_schema(
-      schema the_schema,
+      sr::schema schema,
       std::string subject,
       schema_version version,
       schema_id id)
-      : _schema(std::move(the_schema))
+      : _schema(std::move(schema))
       , _subject(std::move(subject))
       , _version(version)
       , _id(id) {}
 
-    [[nodiscard]] const schema& get_schema() const { return _schema; }
-    [[nodiscard]] const std::string& get_subject() const { return _subject; }
-    [[nodiscard]] schema_version get_version() const { return _version; }
-    [[nodiscard]] schema_id get_id() const { return _id; }
+    [[nodiscard]] const sr::schema& schema() const { return _schema; }
+    [[nodiscard]] const std::string& subject() const { return _subject; }
+    [[nodiscard]] schema_version version() const { return _version; }
+    [[nodiscard]] schema_id id() const { return _id; }
 
 private:
     friend bool operator==(const subject_schema&, const subject_schema&)
       = default;
 
-    schema _schema;
+    sr::schema _schema;
     std::string _subject;
     schema_version _version;
     schema_id _id;

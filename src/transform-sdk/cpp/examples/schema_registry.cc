@@ -71,10 +71,28 @@ do_transform(redpanda::write_event event, redpanda::record_writer* writer) {
         rs_e.has_value()) {
         raw_schema.emplace(std::move(rs_e).value());
     } else {
-        rs_e.error();
+        return rs_e.error();
     }
     // ?????
     // auto schema = avro::schema::parse_str(raw_schema.value().schema());
+
+    std::optional<sr::subject_schema> latest_schema;
+    if (auto latest_e = sr_client->lookup_latest_schema("avro-value");
+        latest_e.has_value()) {
+        latest_schema.emplace(std::move(latest_e).value());
+    } else {
+        return latest_e.error();
+    }
+
+    std::optional<sr::subject_schema> latest_direct;
+    if (auto latest_e = sr_client->lookup_schema_by_version(
+          "avro-value", latest_schema->version());
+        latest_e.has_value()) {
+        latest_direct.emplace(std::move(latest_e).value());
+    } else {
+        return latest_e.error();
+    }
+
     return writer->write(event.record);
 }
 

@@ -476,12 +476,11 @@ read_schema(const std::string& subject, redpanda::bytes_view payload) {
 }
 
 void write_schema_def(bytes* payload, const sr::schema& schema) {
-    varint::write(payload, static_cast<int64_t>(schema.get_format()));
+    varint::write(payload, static_cast<int64_t>(schema.format()));
     varint::write_sized_buffer(
-      payload, std::make_optional<bytes_view>(schema.get_schema()));
-    varint::write(
-      payload, static_cast<int64_t>(schema.get_references().size()));
-    for (const auto& ref : schema.get_references()) {
+      payload, std::make_optional<bytes_view>(schema.raw_schema()));
+    varint::write(payload, static_cast<int64_t>(schema.references().size()));
+    for (const auto& ref : schema.references()) {
         varint::write_sized_buffer(
           payload, std::make_optional<bytes_view>(ref.name));
         varint::write_sized_buffer(
@@ -707,10 +706,10 @@ public:
     }
 
     [[nodiscard]] std::expected<subject_schema, std::error_code>
-    create_schema(const std::string& subject, schema the_schema) final {
+    create_schema(const std::string& subject, sr::schema schema) final {
         bytes buf;
-        buf.reserve(the_schema.get_schema().size() + varint::MAX_LENGTH);
-        decode::write_schema_def(&buf, the_schema);
+        buf.reserve(schema.raw_schema().size() + varint::MAX_LENGTH);
+        decode::write_schema_def(&buf, schema);
         sr::schema_id id{0};
         sr::schema_version version{0};
         auto ec = abi::sr::create_subject_schema(
@@ -722,7 +721,7 @@ public:
         if (ec != 0) {
             return std::unexpected{std::make_error_code(std::errc::io_error)};
         }
-        return sr::subject_schema{std::move(the_schema), subject, version, id};
+        return sr::subject_schema{std::move(schema), subject, version, id};
     };
 };
 

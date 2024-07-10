@@ -257,7 +257,7 @@ qjs::class_factory<record_data> make_record_data_class(qjs::runtime* runtime) {
 
 std::expected<qjs::value, qjs::exception> make_write_event(
   JSContext* ctx,
-  const write_event& evt,
+  const redpanda::write_event& evt,
   qjs::class_factory<record_data>* data_factory) {
     auto make_kv = [ctx, data_factory](
                      std::optional<redpanda::bytes_view> key,
@@ -315,9 +315,35 @@ std::expected<qjs::value, qjs::exception> make_write_event(
     return write_event;
 }
 
+class schema {
+public:
+    explicit schema() = default;
+    schema(const schema&) = delete;
+    schema& operator=(const schema&) = delete;
+    schema(schema&&) = default;
+    schema& operator=(schema&&) = default;
+
+    std::expected<qjs::value, qjs::exception>
+    get_schema(JSContext* ctx, std::span<qjs::value> /*params*/) {
+        return qjs::value::undefined(ctx);
+    }
+
+    std::expected<qjs::value, qjs::exception>
+    get_format(JSContext* ctx, std::span<qjs::value> /*params*/) {
+        return qjs::value::undefined(ctx);
+    }
+
+    std::expected<qjs::value, qjs::exception>
+    get_references(JSContext* ctx, std::span<qjs::value> /*params*/) {
+        return qjs::value::undefined(ctx);
+    }
+};
+
 class schema_registry_client {
 public:
-    schema_registry_client() = default;
+    explicit schema_registry_client(
+      std::unique_ptr<redpanda::sr::schema_registry_client> client)
+      : _client(std::move(client)) {}
     schema_registry_client(const schema_registry_client&) = delete;
     schema_registry_client& operator=(const schema_registry_client&) = delete;
     schema_registry_client(schema_registry_client&&) = default;
@@ -341,8 +367,15 @@ public:
               "expected only integer parameters to "
               "SchemaRegistryClient.lookup_schema_by_id"));
         }
-        [[maybe_unused]] redpanda::sr::schema_id id = param.as_number();
-        return qjs::value::undefined(ctx);
+        redpanda::sr::schema_id id = param.as_number();
+
+        auto result = _client->lookup_schema_by_id(id);
+        if (!result.has_value()) {
+            return std::unexpected(qjs::exception::make(
+              ctx, std::format("Lookup failed: {}", result.error().message())));
+        }
+
+        return make_schema(ctx, result.value());
     }
 
     std::expected<qjs::value, qjs::exception>
@@ -384,6 +417,63 @@ public:
         }
         return qjs::value::undefined(ctx);
     }
+
+private:
+    std::expected<qjs::value, qjs::exception>
+    make_schema(JSContext* ctx, const redpanda::sr::schema& the_schema) {
+        qjs::value obj = qjs::value::object(ctx);
+        std::expected<std::monostate, qjs::exception> result;
+        auto schema_v = qjs::value::string(ctx, the_schema.get_schema());
+        if (!schema_v.has_value()) {
+            return std::unexpected(schema_v.error());
+        }
+        result = obj.set_property("schema", schema_v.value());
+        if (!result.has_value()) [[unlikely]] {
+            return std::unexpected(result.error());
+        }
+        // TODO(oren): need some type of enum or something for this
+        result = obj.set_property(
+          "format",
+          qjs::value::integer(ctx, static_cast<int>(the_schema.get_format())));
+        if (!result.has_value()) [[unlikely]] {
+            return std::unexpected(result.error());
+        }
+
+        auto references = qjs::value::array(ctx);
+        for (const auto& ref : the_schema.get_references()) {
+            qjs::value obj = qjs::value::object(ctx);
+            auto name_v = qjs::value::string(ctx, ref.name);
+            if (!name_v.has_value()) [[unlikely]] {
+                return std::unexpected(name_v.error());
+            }
+            result = obj.set_property("name", name_v.value());
+            if (!result.has_value()) [[unlikely]] {
+                return std::unexpected(result.error());
+            }
+            auto subj_v = qjs::value::string(ctx, ref.subject);
+            if (!subj_v.has_value()) [[unlikely]] {
+                return std::unexpected(subj_v.error());
+            }
+            result = obj.set_property("subject", subj_v.value());
+            if (!result.has_value()) [[unlikely]] {
+                return std::unexpected(result.error());
+            }
+            result = obj.set_property(
+              "version", qjs::value::integer(ctx, ref.version));
+            if (!result.has_value()) [[unlikely]] {
+                return std::unexpected(result.error());
+            }
+        }
+
+        result = obj.set_property("references", references);
+        if (!result.has_value()) [[unlikely]] {
+            return std::unexpected(result.error());
+        }
+
+        return obj;
+    }
+
+    std::unique_ptr<redpanda::sr::schema_registry_client> _client;
 };
 
 qjs::class_factory<schema_registry_client>
@@ -403,7 +493,7 @@ make_schema_registry_client_class(qjs::runtime* runtime) {
 std::expected<std::monostate, qjs::exception> initial_native_modules(
   qjs::runtime* runtime,
   qjs::value* user_callback,
-  qjs::class_factory<schema_registry_client>& sr_client_factory) {
+  qjs::class_factory<schema_registry_client>* sr_client_factory) {
     auto mod = qjs::module_builder("@redpanda-data/transform-sdk");
     mod.add_function(
       "onRecordWritten",
@@ -428,10 +518,15 @@ std::expected<std::monostate, qjs::exception> initial_native_modules(
               return std::unexpected(
                 qjs::exception::make(ctx, "Unexpected arguments to newClient"));
           }
-          return sr_client_factory.create(
-            std::make_unique<schema_registry_client>());
+          return sr_client_factory->create(
+            std::make_unique<schema_registry_client>(
+              redpanda::sr::schema_registry_client::new_client()));
       });
-    return runtime->add_module(std::move(mod));
+    auto result = runtime->add_module(std::move(mod));
+    if (!result.has_value()) {
+        return result;
+    }
+    return runtime->add_module(std::move(sr_mod));
 }
 
 std::expected<std::monostate, qjs::exception>
@@ -478,7 +573,7 @@ int run() {
     qjs::value record_callback = qjs::value::undefined(runtime.context());
     auto sr_client_factory = make_schema_registry_client_class(&runtime);
     result = initial_native_modules(
-      &runtime, &record_callback, sr_client_factory);
+      &runtime, &record_callback, &sr_client_factory);
     if (!result) [[unlikely]] {
         std::println(
           stderr,

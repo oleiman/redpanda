@@ -415,10 +415,145 @@ public:
                 "SchemaRegistryClient.create_schema, got: {}, expected: 2",
                 params.size())));
         }
-        return qjs::value::undefined(ctx);
+        auto& subject_param = params[0];
+        auto& schema_param = params[1];
+
+        if (!subject_param.is_string()) [[unlikely]] {
+            return std::unexpected(qjs::exception::make(
+              ctx,
+              "expected string for subject param in "
+              "SchemaRegistryClient.create_schema"));
+        }
+        auto subject = subject_param.string_data();
+
+        if (!schema_param.is_object()) [[unlikely]] {
+            return std::unexpected(qjs::exception::make(
+              ctx,
+              "expected an object for schema param in "
+              "SchemaRegistryClient.create_schema"));
+        }
+        auto schema = extract_schema(ctx, schema_param);
+        if (!schema.has_value()) {
+            return std::unexpected(schema.error());
+        }
+
+        auto result = _client->create_schema(
+          std::string{subject.view()}, std::move(schema).value());
+
+        if (!result.has_value()) {
+            return std::unexpected(qjs::exception::make(
+              ctx,
+              std::format(
+                "Error creating schema: {}", result.error().message())));
+        }
+
+        return make_subject_schema(ctx, result.value());
     }
 
 private:
+    std::unique_ptr<redpanda::sr::schema_registry_client> _client;
+
+    // TODO(oren): currently redpanda::schema takes strings rather than views...
+    // it's possible that a zero copy interface where the string is staged here
+    // in the wrapper would be more efficient. could be premature though.
+    std::expected<redpanda::sr::schema, qjs::exception>
+    extract_schema(JSContext* ctx, const qjs::value& val) {
+        auto raw_schema = val.get_property("schema");
+        if (!raw_schema.is_string()) {
+            return std::unexpected(qjs::exception::make(
+              ctx, "Malformed schema def: Expected string for 'schema'"));
+        }
+        auto format = val.get_property("format");
+        // TODO(oren): needs to be some kinda enum or whatever?
+        if (!format.is_number()) {
+            return std::unexpected(qjs::exception::make(
+              ctx, "Malformed schema def: Expected int for 'format'"));
+        }
+        std::vector<redpanda::sr::reference> native_refs;
+        auto refs = val.get_property("references");
+        if (!refs.is_null() && !refs.is_undefined()) {
+            if (!refs.is_array()) {
+                return std::unexpected(qjs::exception::make(
+                  ctx,
+                  "Malformed schema def: Expected array for 'references'"));
+            }
+
+            native_refs.reserve(refs.array_length());
+            for (size_t i = 0; i < refs.array_length(); ++i) {
+                auto ref = refs.get_element(i);
+                if (!ref.is_object()) {
+                    return std::unexpected(qjs::exception::make(
+                      ctx,
+                      "Malformed schema def: Expected array "
+                      "of objects for 'references'"));
+                }
+                auto name = ref.get_property("name");
+                if (!name.is_string()) {
+                    return std::unexpected(qjs::exception::make(
+                      ctx,
+                      "Malformed schema def: Bad reference: "
+                      "'name' should be a string"));
+                }
+                auto subj = ref.get_property("subject");
+                if (!subj.is_string()) {
+                    return std::unexpected(qjs::exception::make(
+                      ctx,
+                      "Malformed schema def: Bad reference: "
+                      "'subject' should be a string"));
+                }
+                auto vers = ref.get_property("version");
+                if (!vers.is_number()) {
+                    return std::unexpected(qjs::exception::make(
+                      ctx,
+                      "Malformed schema def: Bad reference: "
+                      "'version' should be a number"));
+                }
+                native_refs.emplace_back(
+                  std::string{name.string_data().view()},
+                  std::string{subj.string_data().view()},
+                  static_cast<redpanda::sr::schema_version>(vers.as_number()));
+            }
+        }
+
+        return redpanda::sr::schema{
+          std::string{raw_schema.string_data().view()},
+          static_cast<redpanda::sr::schema_format>(format.as_number()),
+          std::move(native_refs)};
+    }
+
+    std::expected<qjs::value, qjs::exception> make_subject_schema(
+      JSContext* ctx, const redpanda::sr::subject_schema subj_schema) {
+        qjs::value obj = qjs::value::object(ctx);
+        std::expected<std::monostate, qjs::exception> result;
+        auto schema = make_schema(ctx, subj_schema.get_schema());
+        if (!schema.has_value()) {
+            return std::unexpected(schema.error());
+        }
+        result = obj.set_property("schema", schema.value());
+        if (!result.has_value()) {
+            return std::unexpected(result.error());
+        }
+        auto subject = qjs::value::string(ctx, subj_schema.get_subject());
+        if (!subject.has_value()) {
+            return std::unexpected(subject.error());
+        }
+        result = obj.set_property("subject", subject.value());
+        if (!result.has_value()) {
+            return std::unexpected(result.error());
+        }
+        result = obj.set_property(
+          "version", qjs::value::integer(ctx, subj_schema.get_version()));
+        if (!result.has_value()) {
+            return std::unexpected(result.error());
+        }
+        result = obj.set_property(
+          "id", qjs::value::integer(ctx, subj_schema.get_id()));
+        if (!result.has_value()) {
+            return std::unexpected(result.error());
+        }
+        return obj;
+    }
+
     std::expected<qjs::value, qjs::exception>
     make_schema(JSContext* ctx, const redpanda::sr::schema& the_schema) {
         qjs::value obj = qjs::value::object(ctx);
@@ -472,8 +607,6 @@ private:
 
         return obj;
     }
-
-    std::unique_ptr<redpanda::sr::schema_registry_client> _client;
 };
 
 qjs::class_factory<schema_registry_client>
@@ -481,12 +614,12 @@ make_schema_registry_client_class(qjs::runtime* runtime) {
     qjs::class_builder<schema_registry_client> builder(
       runtime->context(), "SchemaRegistryClient");
     builder.method<&schema_registry_client::lookup_schema_by_id>(
-      "lookup_schema_by_id");
+      "lookupSchemaById");
     builder.method<&schema_registry_client::lookup_schema_by_version>(
-      "lookup_schema_by_version");
+      "lookupSchemaByVersion");
     builder.method<&schema_registry_client::lookup_latest_schema>(
-      "lookup_latest_schema");
-    builder.method<&schema_registry_client::create_schema>("create_schema");
+      "lookupLatestSchema");
+    builder.method<&schema_registry_client::create_schema>("createSchema");
     return builder.build();
 }
 
@@ -521,6 +654,27 @@ std::expected<std::monostate, qjs::exception> initial_native_modules(
           return sr_client_factory->create(
             std::make_unique<schema_registry_client>(
               redpanda::sr::schema_registry_client::new_client()));
+      });
+    sr_mod.add_function(
+      "decodeSchemaID",
+      [](JSContext* ctx, const qjs::value&, std::span<qjs::value> args)
+        -> std::expected<qjs::value, qjs::exception> {
+          if (args.size() != 1 && !args.front().is_uint8_array()) [[unlikely]] {
+              return std::unexpected(qjs::exception::make(
+                ctx,
+                "invalid argument, decodeSchemaId expects a single Uint8Array "
+                "argument"));
+          }
+          auto data = args.front().uint8_array_data();
+          auto id = redpanda::sr::decode_schema_id(
+            redpanda::bytes_view{data.data(), data.size()});
+          if (!id.has_value()) {
+              return std::unexpected(qjs::exception::make(
+                ctx,
+                std::format(
+                  "Failed to decode schema ID: {}", id.error().message())));
+          }
+          return qjs::value::integer(ctx, id.value().first);
       });
     auto result = runtime->add_module(std::move(mod));
     if (!result.has_value()) {

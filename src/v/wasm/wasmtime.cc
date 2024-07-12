@@ -74,7 +74,7 @@ namespace {
 // allocate a guard page, allocate 128KB-4KB of usable stack space.
 constexpr size_t vm_stack_size = 124_KiB;
 // The WebAssembly code gets at half the stack space for it's own work.
-constexpr size_t max_vm_guest_stack_usage = 64_KiB;
+constexpr size_t max_vm_guest_stack_usage = 68_KiB;
 // We allow for half the stack for host functions,
 // plus a little wiggle room to not get too close
 // to the guard page.

@@ -407,6 +407,16 @@ int application::run(int ac, char** av) {
       "redpanda-cfg",
       po::value<std::string>(),
       ".yaml file config for redpanda");
+    app.add_options()(
+      "node-uuid-overrides",
+      po::value<std::vector<config::uuid_override>>()->multitoken(),
+      "Override node UUID iff current UUID matches "
+      "- usage: <current UUID>:<new UUID>");
+    app.add_options()(
+      "node-id-overrides",
+      po::value<std::vector<config::id_override>>()->multitoken(),
+      "Override node ID iff current UUID matches "
+      "- usage: <current UUID>:<new ID> ");
 
     // Validate command line args using options registered by the app and
     // seastar. Keep the resulting variables in a temporary map so they don't
@@ -425,6 +435,21 @@ int application::run(int ac, char** av) {
         if (vm["version"].as<bool>()) {
             std::cout << redpanda_version() << std::endl;
             return 0;
+        }
+
+        if (!vm["node-uuid-overrides"].empty()) {
+            fmt::print(
+              std::cout,
+              "Node UUID overrides: {}",
+              vm["node-uuid-overrides"]
+                .as<std::vector<config::uuid_override>>());
+        }
+
+        if (!vm["node-id-overrides"].empty()) {
+            fmt::print(
+              std::cout,
+              "Node ID overrides: {}",
+              vm["node-id-overrides"].as<std::vector<config::id_override>>());
         }
     }
     // use endl for explicit flushing
@@ -839,6 +864,25 @@ void application::hydrate_config(const po::variables_map& cfg) {
           "`redpanda.rack = ''` from your node config as in the future this "
           "may result in Redpanda failing to start");
         config::node().rack.set_value(std::nullopt);
+    }
+
+    // load UUID overrides
+    if (!cfg["node-uuid-overrides"].empty()) {
+        // TODO(oren): maybe we only need these on shard 0?
+        ss::smp::invoke_on_all([&cfg] {
+            config::node().node_uuid_overrides.set_value(
+              cfg["node-uuid-overrides"]
+                .as<std::vector<config::uuid_override>>());
+        }).get();
+    }
+
+    // load ID overrides
+    if (!cfg["node-id-overrides"].empty()) {
+        // TODO(oren): maybe we only need these on shard 0?
+        ss::smp::invoke_on_all([&cfg] {
+            config::node().node_id_overrides.set_value(
+              cfg["node-id-overrides"].as<std::vector<config::id_override>>());
+        }).get();
     }
 
     // This includes loading from local bootstrap file or legacy

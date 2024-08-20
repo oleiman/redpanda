@@ -29,6 +29,7 @@ redpanda_cc_library(
         "fwd.h",
         "mock_property.h",
         "node_config.h",
+        "node_overrides.h",
         "property.h",
         "rest_authn_endpoint.h",
         "rjson_serialization.h",

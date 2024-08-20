@@ -222,4 +222,54 @@ void rjson_serialize(
     stringize(w, v);
 }
 
+void rjson_serialize(
+  json::Writer<json::StringBuffer>& w, const model::node_uuid& v) {
+    stringize(w, v);
+}
+
+// TODO(oren): collapse into one
+void rjson_serialize(
+  json::Writer<json::StringBuffer>& w, const config::uuid_override& v) {
+    w.StartObject();
+
+    w.Key("current_uuid");
+    stringize(w, v.key);
+    w.Key("new_uuid");
+    stringize(w, v.value);
+
+    w.EndObject();
+}
+
+void rjson_serialize(
+  json::Writer<json::StringBuffer>& w, const config::id_override& v) {
+    w.StartObject();
+
+    w.Key("current_uuid");
+    stringize(w, v.key);
+    w.Key("new_id");
+    stringize(w, v.value);
+
+    w.EndObject();
+}
+
+void rjson_serialize(
+  json::Writer<json::StringBuffer>& w,
+  const std::vector<config::uuid_override>& v) {
+    w.StartArray();
+    for (const auto& e : v) {
+        rjson_serialize(w, e);
+    }
+    w.EndArray();
+}
+
+void rjson_serialize(
+  json::Writer<json::StringBuffer>& w,
+  const std::vector<config::id_override>& v) {
+    w.StartArray();
+    for (const auto& e : v) {
+        rjson_serialize(w, e);
+    }
+    w.EndArray();
+}
+
 } // namespace json

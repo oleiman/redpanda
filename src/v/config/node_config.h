@@ -14,9 +14,11 @@
 #include "config/broker_endpoint.h"
 #include "config/convert.h"
 #include "config/data_directory_path.h"
+#include "config/node_overrides.h"
 #include "config/property.h"
 #include "config/seed_server.h"
 #include "config_store.h"
+#include "model/fundamental.h"
 
 #include <algorithm>
 #include <iterator>
@@ -95,6 +97,9 @@ public:
 
     // Path to the directory that holds the OpenSSL FIPS module
     property<std::optional<std::filesystem::path>> openssl_module_directory;
+
+    property<std::vector<config::id_override>> node_id_overrides;
+    property<std::vector<config::uuid_override>> node_uuid_overrides;
 
     // build pidfile path: `<data_directory>/pid.lock`
     std::filesystem::path pidfile_path() const {

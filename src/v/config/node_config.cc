@@ -227,6 +227,18 @@ node_config::node_config() noexcept
       "Path to the directory that contains the OpenSSL FIPS-compliant module.",
       {.visibility = visibility::user},
       std::nullopt)
+  , node_id_overrides(
+      *this,
+      "node_id_overrides",
+      "wisotb",
+      {.visibility = visibility::user},
+      {})
+  , node_uuid_overrides(
+      *this,
+      "node_uuid_overrides",
+      "wisotb",
+      {.visibility = visibility::user},
+      {})
   , _advertised_rpc_api(
       *this,
       "advertised_rpc_api",

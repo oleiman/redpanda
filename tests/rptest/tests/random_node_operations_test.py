@@ -155,12 +155,18 @@ class RandomNodeOperationsTest(PreallocNodesTest):
             self.installer.install(self.nodes_with_prev_version,
                                    self.previous_version)
 
+            # Installing a license is required for version upgrades with enterprise features
+            self.redpanda.install_license()
+
             self.redpanda.set_seed_servers(self.nodes_with_prev_version)
             self.redpanda.start(auto_assign_node_id=True,
                                 omit_seeds_on_idx_one=False)
         else:
             self.redpanda.start(auto_assign_node_id=True,
                                 omit_seeds_on_idx_one=False)
+
+            # Installing a license is required for version upgrades with enterprise features
+            self.redpanda.install_license()
 
         self.redpanda.await_feature('membership_change_controller_cmds',
                                     'active',

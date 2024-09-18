@@ -385,6 +385,7 @@ class UpgradeFromPriorFeatureVersionCloudStorageTest(RedpandaTest):
             self.installer.highest_from_prior_feature_version(RedpandaInstaller.HEAD)
         self.installer.install(self.redpanda.nodes, self.prev_version)
         super().setUp()
+        self.redpanda.install_license()
 
     # before v24.2, dns query to s3 endpoint do not include the bucketname, which is required for AWS S3 fips endpoints
     @ok_to_fail_fips

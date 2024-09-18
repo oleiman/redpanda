@@ -237,6 +237,8 @@ class RedpandaTest(RedpandaTestBase):
             old_version = current_version
             self.logger.info("Installed initial version, calling setUp...")
             RedpandaTest.setUp(self)
+            # Installing a license is required for version upgrades with enterprise features
+            self.redpanda.install_license()
             yield current_version
         else:
             old_version = self.redpanda.get_version_int_tuple(

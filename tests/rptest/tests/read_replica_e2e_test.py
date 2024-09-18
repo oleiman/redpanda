@@ -495,7 +495,8 @@ class ReadReplicasUpgradeTest(EndToEndTest):
         install_opts = InstallOptions(install_previous_version=True)
         self.start_redpanda(3,
                             si_settings=self.si_settings,
-                            install_opts=install_opts)
+                            install_opts=install_opts,
+                            license_required=True)
         spec = TopicSpec(name=self.topic_name,
                          partition_count=partition_count,
                          replication_factor=3)

@@ -19,6 +19,7 @@
 #include "cluster/health_monitor_types.h"
 #include "cluster/logger.h"
 #include "cluster/members_table.h"
+#include "cluster/metrics_reporter.h"
 #include "config/configuration.h"
 #include "config/node_config.h"
 #include "config/types.h"
@@ -47,6 +48,7 @@ feature_manager::feature_manager(
   ss::sharded<features::feature_table>& table,
   ss::sharded<rpc::connection_cache>& connection_cache,
   ss::sharded<security::role_store>& role_store,
+  ss::sharded<metrics_reporter>& metrics_reporter,
   raft::group_id raft0_group)
   : _stm(stm)
   , _as(as)
@@ -57,6 +59,7 @@ feature_manager::feature_manager(
   , _feature_table(table)
   , _connection_cache(connection_cache)
   , _role_store(role_store)
+  , _metrics_reporter(metrics_reporter)
   , _raft0_group(raft0_group)
   , _barrier_state(
       *config::node().node_id(),
@@ -316,6 +319,7 @@ void feature_manager::verify_enterprise_license() {
       license_missing_or_expired);
 
     if (license_required_feature_enabled() && license_missing_or_expired) {
+        _metrics_reporter.invoke_on(0, &metrics_reporter::kick).get();
         vassert(
           false,
           "Looks like you’ve enabled a Redpanda Enterprise feature(s) "

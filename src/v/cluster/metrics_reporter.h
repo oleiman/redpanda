@@ -97,6 +97,8 @@ public:
     ss::future<> start();
     ss::future<> stop();
 
+    ss::future<> kick();
+
 private:
     void report_metrics();
     ss::future<> do_report_metrics();

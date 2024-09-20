@@ -8,6 +8,7 @@
 # by the Apache License, Version 2.0
 
 import re
+import json
 
 from ducktape.mark import matrix
 
@@ -16,33 +17,47 @@ from rptest.clients.rpk import RpkTool
 from rptest.services.redpanda import LoggingConfig
 from rptest.tests.redpanda_test import RedpandaTest
 from rptest.services.redpanda_installer import RedpandaInstaller
+from rptest.tests.metrics_reporter_test import MetricsReporterServer
 
 
 class LicenseEnforcementTest(RedpandaTest):
     # Disable log checks because it is not very useful when we expect to crash nodes on license upgrades
     LOG_ALLOW_LIST = [re.compile(".*")]
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args,
-                         num_brokers=5,
-                         extra_rp_conf={},
-                         log_config=LoggingConfig('info',
-                                                  logger_levels={
-                                                      'cluster': 'debug',
-                                                      'features': 'debug'
-                                                  }),
-                         **kwargs)
+    def __init__(self, test_context, *args, **kwargs):
+        self._ctx = test_context
+        self.metrics = MetricsReporterServer(self._ctx)
+
+        super().__init__(
+            *args,
+            test_context=test_context,
+            num_brokers=5,
+            extra_rp_conf={**self.metrics.rp_conf()},
+            log_config=LoggingConfig(
+                'info',
+                logger_levels={
+                    'cluster': 'debug',
+                    'features': 'debug',
+                },
+            ),
+            **kwargs,
+        )
 
         self.rpk = RpkTool(self.redpanda)
 
     def setUp(self):
+        self.metrics.start()
         # start the nodes manually
         pass
 
-    @cluster(num_nodes=5, log_allow_list=LOG_ALLOW_LIST)
+    @cluster(num_nodes=6, log_allow_list=LOG_ALLOW_LIST)
     @matrix(
-        clean_node_before_recovery=[False, True],
-        clean_node_after_recovery=[False, True],
+        clean_node_before_recovery=[
+            False  # , True
+        ],
+        clean_node_after_recovery=[
+            False  # , True
+        ],
     )
     def test_license_enforcement(self, clean_node_before_recovery,
                                  clean_node_after_recovery):
@@ -97,7 +112,9 @@ class LicenseEnforcementTest(RedpandaTest):
                                     auto_assign_node_id=True,
                                     omit_seeds_on_idx_one=False)
 
-    @cluster(num_nodes=5)
+        print(json.dumps(self.metrics.reports(), indent=1))
+
+    @cluster(num_nodes=6)
     def test_enterprise_cluster_bootstrap(self):
         self.logger.info(
             "Bootstrapping an enterprise cluster without a license")

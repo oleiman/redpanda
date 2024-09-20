@@ -153,6 +153,34 @@ ss::future<> metrics_reporter::stop() {
     co_await _gate.close();
 }
 
+ss::future<> metrics_reporter::kick() {
+    using namespace std::chrono_literals;
+    auto serialize = []() -> iobuf {
+        json::StringBuffer sb;
+        json::Writer<json::StringBuffer> writer(sb);
+        writer.StartObject();
+        writer.Key("license_violation");
+        writer.Bool(true);
+        writer.EndObject();
+
+        iobuf out;
+        out.append(sb.GetString(), sb.GetSize());
+        return out;
+    };
+    iobuf out = serialize();
+    try {
+        co_await http::with_client(
+          co_await make_http_client(), [this, &out](http::client& client) {
+              return do_send_metrics(client, std::move(out));
+          });
+    } catch (...) {
+        vlog(
+          _logger.error,
+          "exception thrown while reporting metrics - {}",
+          std::current_exception());
+    }
+}
+
 void metrics_reporter::report_metrics() {
     ssx::background = ssx::spawn_with_gate_then(_gate, [this] {
                           return do_report_metrics().finally([this] {
@@ -435,6 +463,7 @@ ss::future<> metrics_reporter::do_report_metrics() {
 
     // skip reporting if current node is not raft0 leader
     if (!_raft0->is_elected_leader()) {
+        vlog(_logger.error, "Skip reporting - Not raft leader");
         co_return;
     }
 

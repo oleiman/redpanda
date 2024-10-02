@@ -19,7 +19,9 @@
 #include "model/timeout_clock.h"
 #include "net/types.h"
 #include "security/acl.h"
+#include "security/audit/fwd.h"
 #include "security/audit/logger.h"
+#include "security/audit/msg.h"
 #include "security/audit/probe.h"
 #include "security/audit/schemas/application_activity.h"
 #include "security/audit/schemas/iam.h"
@@ -50,9 +52,9 @@ template<typename T>
 concept InheritsFromOCSFBase
   = std::is_base_of<security::audit::ocsf_base_event<T>, T>::value;
 
-class audit_sink;
-
 using is_started = ss::bool_class<struct is_started_tag>;
+
+class audit_sink;
 
 class audit_log_manager
   : public ss::peering_sharded_service<audit_log_manager> {
@@ -293,39 +295,6 @@ private:
     static bool recovery_mode_enabled() noexcept;
 
 private:
-    class audit_msg {
-    public:
-        /// Wrapper around an ocsf event pointer
-        ///
-        /// Main benefit is to tie the lifetime of semaphore units with the
-        /// underlying ocsf event itself
-        audit_msg(
-          size_t hash_key,
-          std::unique_ptr<ocsf_base_impl> msg,
-          ssx::semaphore_units&& units)
-          : _hash_key(hash_key)
-          , _msg(std::move(msg))
-          , _units(std::move(units)) {
-            vassert(_msg != nullptr, "Audit record cannot be null");
-        }
-
-        size_t key() const { return _hash_key; }
-
-        void increment(timestamp_t t) const { _msg->increment(t); }
-
-        const std::unique_ptr<ocsf_base_impl>& ocsf_msg() const { return _msg; }
-
-        std::unique_ptr<ocsf_base_impl> release() && {
-            _units.return_all();
-            return std::move(_msg);
-        }
-
-    private:
-        size_t _hash_key;
-        std::unique_ptr<ocsf_base_impl> _msg;
-        ssx::semaphore_units _units;
-    };
-
     /// Multi index container is efficent in terms of time and space, underlying
     /// internal data structures are compact requiring only one node per
     /// element. More info here:
@@ -394,7 +363,7 @@ private:
 
     /// Single instance contains a kafka::client::client instance.
     friend class audit_sink;
-    std::unique_ptr<audit_sink> _sink;
+    std::unique_ptr<sink> _sink;
 
     /// Other references
     cluster::controller* _controller;

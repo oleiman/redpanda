@@ -21,8 +21,10 @@
 #include "kafka/protocol/topic_properties.h"
 #include "model/namespace.h"
 #include "security/acl.h"
+#include "security/audit/api.h"
 #include "security/audit/client_probe.h"
 #include "security/audit/logger.h"
+#include "security/audit/rpc_sink.h"
 #include "security/audit/schemas/application_activity.h"
 #include "security/audit/schemas/types.h"
 #include "security/audit/schemas/utils.h"
@@ -127,9 +129,11 @@ private:
 /// lifetime is the duration of the audit_log_manager. Contains a gate/mutex to
 /// synchronize around actions around the internal client which may be
 /// started/stopped on demand.
-class audit_sink {
+class audit_sink : public sink {
 public:
     using auth_misconfigured_t = ss::bool_class<struct auth_misconfigured_tag>;
+
+    virtual ~audit_sink() = default;
 
     audit_sink(
       audit_log_manager* audit_mgr,
@@ -137,18 +141,20 @@ public:
       kafka::client::configuration& config) noexcept;
 
     /// Starts a kafka::client if none is allocated, backgrounds the work
-    ss::future<> start();
+    ss::future<> start() override;
 
     /// Closes all gates, deallocates client returns when all has completed
-    ss::future<> stop();
+    ss::future<> stop() override;
 
     /// Produce to the audit topic within the context of the internal locks,
     /// ensuring toggling of the audit master switch happens in lock step with
     /// calls to produce()
     ss::future<> produce(std::vector<kafka::client::record_essence> records);
 
+    ss::future<> produce(chunked_vector<audit_msg> records) override;
+
     /// Allocates and connects, or deallocates and shuts down the audit client
-    void toggle(bool enabled);
+    void toggle(bool enabled) override;
 
 private:
     ss::future<>
@@ -581,6 +587,20 @@ audit_sink::produce(std::vector<kafka::client::record_essence> records) {
     co_await _client->produce(std::move(records), _audit_mgr->probe());
 }
 
+ss::future<> audit_sink::produce(chunked_vector<audit_msg> records) {
+    std::vector<kafka::client::record_essence> essences;
+    for (auto& msg : records) {
+        auto ocsf_msg = std::move(msg).release();
+        auto as_json = ocsf_msg->to_json();
+        iobuf b;
+        b.append(as_json.c_str(), as_json.size());
+        essences.push_back(
+          kafka::client::record_essence{.value = std::move(b)});
+        co_await ss::maybe_yield();
+    }
+    co_await produce(std::move(essences));
+}
+
 ss::future<> audit_sink::publish_app_lifecycle_event(
   application_lifecycle::activity_id event) {
     /// Directly publish the event instead of enqueuing it like all other
@@ -690,7 +710,9 @@ audit_log_manager::audit_log_manager(
   , _controller(controller)
   , _config(client_config) {
     if (ss::this_shard_id() == client_shard_id) {
-        _sink = std::make_unique<audit_sink>(this, controller, client_config);
+        // _sink = std::make_unique<audit_sink>(this, controller,
+        // client_config);
+        _sink = std::make_unique<rpc_sink>();
     }
 
     _drain_timer.set_callback([this] {
@@ -851,18 +873,12 @@ ss::future<> audit_log_manager::drain() {
       _queue.size());
 
     /// Combine all batched audit msgs into record_essences
-    std::vector<kafka::client::record_essence> essences;
+    chunked_vector<audit_msg> msgs;
     auto records = std::exchange(_queue, underlying_t{});
     auto& records_seq = records.get<underlying_list>();
     while (!records_seq.empty()) {
         auto first = records_seq.extract(records_seq.begin());
-        auto audit_msg = std::move(first.value()).release();
-        auto as_json = audit_msg->to_json();
-        iobuf b;
-        b.append(as_json.c_str(), as_json.size());
-        essences.push_back(
-          kafka::client::record_essence{.value = std::move(b)});
-        co_await ss::maybe_yield();
+        msgs.push_back(std::move(first.value()));
     }
 
     /// This call may block if the audit_clients semaphore is exhausted,
@@ -872,7 +888,7 @@ ss::future<> audit_log_manager::drain() {
     /// capacity. When it hits capacity, enqueue_audit_event() will block.
     co_await container().invoke_on(
       client_shard_id,
-      [recs = std::move(essences)](audit_log_manager& mgr) mutable {
+      [recs = std::move(msgs)](audit_log_manager& mgr) mutable {
           return mgr._sink->produce(std::move(recs));
       });
 }

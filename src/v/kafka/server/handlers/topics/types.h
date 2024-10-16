@@ -12,6 +12,7 @@
 #pragma once
 #include "cluster/types.h"
 #include "container/fragmented_vector.h"
+#include "kafka/protocol/logger.h"
 #include "kafka/protocol/schemata/create_topics_request.h"
 #include "kafka/protocol/schemata/create_topics_response.h"
 #include "kafka/protocol/topic_properties.h"
@@ -152,5 +153,41 @@ to_cluster_type(const creatable_topic& t);
 std::vector<kafka::creatable_topic_configs> report_topic_configs(
   const cluster::metadata_cache& metadata_cache,
   const cluster::topic_properties& topic_properties);
+
+// template<typename T>
+// concept Properties = std::is_same_v<T, cluster::topic_properties>
+//                      || std::is_same_v<T,
+//                      cluster::incremental_topic_updates>;
+
+// template<Properties T>
+// void check_cloud_storage_properties(
+//   model::topic_namespace_view tp, const T& props) {
+//     if (!config::shard_local_cfg().cloud_storage_enabled()) {
+//         return;
+//     }
+
+//     std::optional<ss::sstring> msg;
+//     if constexpr (std::is_same_v<T, cluster::topic_properties>) {
+//         if (auto mode = props.shadow_indexing;
+//             mode.has_value()
+//             && mode.value() != model::shadow_indexing_mode::full) {
+//             msg.emplace(fmt::format("{}", mode.value()));
+//         }
+//     } else if constexpr (std::
+//                            is_same_v<T, cluster::incremental_topic_updates>)
+//                            {
+//         for (const auto& p :
+//              {props.remote_read, props.remote_write, props.remote_delete}) {
+//             if (p.op == cluster::incremental_update_operation::remove ||) }
+//     }
+
+//     if (msg.has_value()) {
+//         vlog(
+//           klog.warn,
+//           "Cloud storage not fully enabled for topic {{{}}}: {{{}}}",
+//           tp,
+//           msg);
+//     }
+// }
 
 } // namespace kafka

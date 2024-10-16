@@ -24,6 +24,7 @@
 #include "storage/ntp_config.h"
 
 #include <seastar/core/coroutine.hh>
+#include <seastar/core/shard_id.hh>
 #include <seastar/coroutine/maybe_yield.hh>
 
 #include <algorithm>
@@ -33,6 +34,38 @@
 #include <vector>
 
 namespace cluster {
+
+namespace {
+void check_cloud_storage_properties(
+  model::topic_namespace_view tp,
+  const topic_properties& props,
+  std::string_view extra = "") {
+    // topic table is materialized on every shard, so only warn on shard 0
+    if (
+      ss::this_shard_id() != 0
+      || !config::shard_local_cfg().cloud_storage_enabled()) {
+        return;
+    }
+
+    std::optional<ss::sstring> msg;
+
+    // TODO(oren): if it's not set, you get the cluster default, which should
+    // maybe match the config? idk.
+    if (auto mode = props.shadow_indexing;
+        mode.has_value() && mode.value() != model::shadow_indexing_mode::full) {
+        msg.emplace(fmt::format("{}", mode.value()));
+    }
+
+    if (msg.has_value()) {
+        vlog(
+          clusterlog.warn,
+          "Cloud storage not fully enabled for topic {{{}}}: {{{}}} {}",
+          tp,
+          msg,
+          extra);
+    }
+}
+} // namespace
 
 topic_table::topic_table(
   data_migrations::migrated_resources& migrated_resources)
@@ -62,6 +95,9 @@ topic_table::apply(create_topic_cmd cmd, model::offset offset) {
         return ss::make_ready_future<std::error_code>(
           schema_id_validation_validator::ec);
     }
+
+    check_cloud_storage_properties(
+      model::topic_namespace_view{cmd.key}, cmd.value.cfg.properties, "CREATE");
 
     std::optional<model::initial_revision_id> remote_revision
       = cmd.value.cfg.properties.remote_topic_properties
@@ -1035,6 +1071,9 @@ topic_table::apply(update_topic_properties_cmd cmd, model::offset o) {
     if (!schema_id_validation_validator::is_valid(updated_properties)) {
         co_return schema_id_validation_validator::ec;
     }
+
+    check_cloud_storage_properties(
+      model::topic_namespace_view{tp->first}, updated_properties, "UPDATE");
 
     // Apply the changes
     properties = std::move(updated_properties);

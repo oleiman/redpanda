@@ -354,6 +354,7 @@ class RpkTool:
                     cfg = [f"{k}:{v}" for k, v in config.items()]
                     for it in cfg:
                         cmd += ["--topic-config", it]
+                    print(cfg)
                 output = self._run_topic(cmd)
                 self._check_stdout_success(output)
                 return (True, output)

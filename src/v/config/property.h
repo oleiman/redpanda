@@ -22,6 +22,9 @@
 
 #include <seastar/util/noncopyable_function.hh>
 
+#include <absl/container/flat_hash_set.h>
+
+#include <algorithm>
 #include <chrono>
 #include <exception>
 #include <functional>
@@ -69,6 +72,7 @@ public:
 template<class T>
 class property : public base_property {
 public:
+    using underlying = T;
     using validator =
       typename ss::noncopyable_function<std::optional<ss::sstring>(const T&)>;
 
@@ -185,6 +189,12 @@ public:
     std::optional<validation_error> validate(YAML::Node n) const override {
         auto v = std::move(n.as<T>());
         return validate(v);
+    }
+
+    std::optional<validation_error>
+    check_restricted(YAML::Node) const override {
+        // Config properties are unrestricted by default
+        return std::nullopt;
     }
 
     void reset() override {
@@ -952,6 +962,116 @@ public:
     bool is_hidden() const override {
         return this->value() == this->default_value();
     }
+};
+namespace detail {
+
+template<typename P>
+concept Property = requires() {
+    std::derived_from<P, base_property>;
+    typename P::underlying;
+};
+
+template<typename T>
+concept Array = !(std::is_same_v<std::decay_t<T>, ss::sstring>
+                  || std::is_same_v<std::decay_t<T>, std::string>)
+                && is_collection<T>;
+
+} // namespace detail
+
+template<detail::Property P>
+class enterprise : public P {
+    template<typename T, typename = void>
+    struct value_type {
+        using type = T;
+    };
+    template<detail::Array T>
+    struct value_type<T, std::void_t<typename T::value_type>> {
+        using type = T::value_type;
+    };
+    template<reflection::is_std_optional T>
+    struct value_type<T, std::void_t<typename T::value_type>> {
+        using type = T::value_type;
+    };
+
+    using T = typename P::underlying;
+    using val_t = typename value_type<T>::type;
+    using val_container_t = std::vector<val_t>;
+    using restrict_check_t = std::function<bool(const val_t&)>;
+    using restrict_variant_t
+      = std::variant<val_t, val_container_t, restrict_check_t>;
+
+public:
+    // TODO(oren): probably overkill
+    template<typename R, typename... Args>
+    requires std::ranges::range<R>
+             && std::is_same_v<std::ranges::range_value_t<R>, val_t>
+    enterprise(config_store& conf, R restricted, Args&&... args)
+      : enterprise(
+          conf,
+          restrict_variant_t{val_container_t{
+            std::make_move_iterator(restricted.begin()),
+            std::make_move_iterator(restricted.end())}},
+          std::forward<Args>(args)...) {}
+
+    template<typename... Args>
+    enterprise(
+      config_store& conf, restrict_variant_t restricted, Args&&... args)
+      : P(conf, std::forward<Args>(args)...)
+      , _restriction(std::move(restricted)) {
+        assert_no_default_conflict();
+    }
+
+    std::optional<validation_error> check_restricted(YAML::Node n) const final {
+        auto v = std::move(n.as<T>());
+        if (check_restricted(v)) {
+            return std::make_optional<validation_error>(
+              P::name().data(),
+              fmt::format(
+                "'{}' is restricted to enterprise licensed clusters", v));
+        }
+        return std::nullopt;
+    }
+
+private:
+    void assert_no_default_conflict() const {
+        vassert(
+          !check_restricted(this->default_value()),
+          "Enterprise properties must not restrict the default value of the "
+          "underlying property!");
+    }
+
+    bool check_restricted(const T& setting) const {
+        // depending on how the restriction was defined, construct an applicable
+        // check function for bare instances of the underlying value type
+        auto restriction_check = [this](const val_t& v) -> bool {
+            return ss::visit(
+              _restriction,
+              [&v](const val_t& val) { return v == val; },
+              [&v](const val_container_t& vals) {
+                  return std::find(vals.begin(), vals.end(), v) != vals.end();
+              },
+              [&v](const restrict_check_t& check) { return check(v); });
+        };
+
+        if constexpr (detail::Array<T>) {
+            return std::any_of(
+              setting.begin(),
+              setting.end(),
+              [&restriction_check](const auto& v) {
+                  return restriction_check(v);
+              });
+        }
+
+        if constexpr (reflection::is_std_optional<T>) {
+            return setting.has_value() && restriction_check(setting.value());
+        }
+
+        if constexpr (std::is_same_v<T, val_t>) {
+            return restriction_check(setting);
+        }
+    }
+
+    restrict_variant_t _restriction;
 };
 
 }; // namespace config

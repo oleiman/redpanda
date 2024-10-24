@@ -731,6 +731,18 @@ const std::optional<security::license>& feature_table::get_license() const {
     return _license ? _license : _builtin_trial_license;
 }
 
+bool feature_table::should_sanction() const {
+    if (_license) {
+        return _license->is_expired();
+    } else if (_builtin_trial_license) {
+        return _builtin_trial_license->is_expired();
+    }
+
+    // We are yet to initialize _builtin_trial_license on cluster creation, be
+    // permissive in the meantime
+    return false;
+}
+
 void feature_table::testing_activate_all() {
     for (auto& s : _feature_state) {
         if (

@@ -597,7 +597,16 @@ public:
 
     void revoke_license();
 
+    /// Returns the user-configured license or if not set, a built in trial
+    /// license. The built in trial license is initialized async on cluster
+    /// bootstrap and during startup on subsequent starts, so consider using
+    /// `should_sanction` instead for a general, permissive check on whether
+    /// to act on a missing valid license.
     const std::optional<security::license>& get_license() const;
+
+    /// Whether to act on an expired license or evaluation period by restricting
+    /// enterprise feature usage
+    bool should_sanction() const;
 
     /**
      * For use in unit tests: activate all features that would

@@ -26,6 +26,7 @@
 
 #include <chrono>
 #include <memory>
+#include <optional>
 
 // The feature table is closely related to cluster and uses many types from it
 using namespace cluster;
@@ -721,11 +722,15 @@ void feature_table::set_builtin_trial_license(
     if (ss::this_shard_id() == 0) {
         vlog(featureslog.debug, "Initializing builtin trial license.");
     }
+    _builtin_trial_license_initialized = true;
     _builtin_trial_license = make_builtin_trial_license(
       model::to_time_point(cluster_creation_timestamp));
 }
 
-void feature_table::revoke_license() { _license = std::nullopt; }
+void feature_table::revoke_license() {
+    _license = std::nullopt;
+    _builtin_trial_license = std::nullopt;
+}
 
 const std::optional<security::license>& feature_table::get_license() const {
     return _license ? _license : _builtin_trial_license;
@@ -738,9 +743,9 @@ bool feature_table::should_sanction() const {
         return _builtin_trial_license->is_expired();
     }
 
-    // We are yet to initialize _builtin_trial_license on cluster creation, be
-    // permissive in the meantime
-    return false;
+    // While we are yet to initialize _builtin_trial_license on cluster
+    // creation, be permissive
+    return _builtin_trial_license_initialized;
 }
 
 void feature_table::testing_activate_all() {

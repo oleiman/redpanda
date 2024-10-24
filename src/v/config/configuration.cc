@@ -3707,6 +3707,13 @@ configuration::configuration()
       {.needs_restart = needs_restart::no, .visibility = visibility::tunable},
       std::chrono::milliseconds(1min),
       {.min = 10ms})
+  , iceberg_catalog_base_location(
+      *this,
+      "iceberg_catalog_base_location",
+      "Base path for the cloud object storage backed Iceberg catalog. Once "
+      "Iceberg is enabled, this value should NOT be changed.",
+      {.needs_restart = needs_restart::yes, .visibility = visibility::user},
+      "redpanda-iceberg-catalog")
   , development_enable_cloud_topics(
       *this,
       "development_enable_cloud_topics",

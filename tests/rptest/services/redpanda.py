@@ -5350,7 +5350,8 @@ class RedpandaService(RedpandaServiceBase):
         def license_observable():
             for node in self.started_nodes():
                 license = self._admin.get_license(node)
-                if license is None or license['loaded'] is not True:
+                if license is None or not license['loaded'] or \
+                        license['license']['type'] == 'free_trial':
                     return False
             return True
 

@@ -128,6 +128,14 @@ private:
     static constexpr auth_level user = auth_level::user;
     static constexpr auth_level superuser = auth_level::superuser;
 
+    enum class license_req {
+        community = 0,
+        enterprise = 1,
+    };
+
+    static constexpr license_req community = license_req::community;
+    static constexpr license_req enterprise = license_req::enterprise;
+
     using httpd_authorized = ss::bool_class<struct httpd_authorized>;
     void audit_authz(
       ss::httpd::const_req req,
@@ -190,6 +198,8 @@ private:
 
         return auth_state;
     }
+
+    void check_license() const;
 
     void log_exception(
       const ss::sstring& url,

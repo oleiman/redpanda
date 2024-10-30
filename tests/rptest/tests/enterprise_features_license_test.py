@@ -218,7 +218,7 @@ class EnterpriseFeaturesTest(EnterpriseFeaturesTestBase):
 
         # RBAC isn't controlled by cluster config and so is not subject to
         # sanction/restriction pending CORE-8029
-        expect_rejected = not has_license and not (feature == Feature.rbac)
+        expect_rejected = not has_license  #and not (feature == Feature.rbac)
 
         if expect_rejected:
             with expect_exception(

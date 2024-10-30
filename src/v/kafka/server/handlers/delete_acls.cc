@@ -154,6 +154,11 @@ ss::future<response_ptr> delete_acls_handler::handle(
                 .error_code = ec,
                 .matching_acls = bindings_to_delete_result(results[i].bindings),
               });
+              if (results[i].error == cluster::errc::feature_disabled) {
+                  response.data.filter_results.back().error_message.emplace(
+                    "An enterprise license is required to delete Role-bound "
+                    "ACLs");
+              }
           },
           [&response](delete_acls_filter_result& r) {
               response.data.filter_results.push_back(std::move(r));

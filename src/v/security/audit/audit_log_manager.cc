@@ -88,8 +88,7 @@ class audit_sink;
 /// on the value of the global audit toggle config option (audit_enabled)
 class audit_client {
 public:
-    audit_client(
-      audit_sink* sink, cluster::controller*, kafka::client::configuration&);
+    audit_client(audit_sink* sink, cluster::controller*);
 
     /// Initializes the client (with all necessary auth) and connects to the
     /// remote broker. If successful requests to create audit topic and all
@@ -115,14 +114,11 @@ private:
     ss::future<>
     do_produce(model::record_batch, model::partition_id, audit_probe&);
     ss::future<> update_status(kafka::error_code);
-    ss::future<> update_status(kafka::produce_response);
     ss::future<> configure();
     ss::future<> mitigate_error(std::exception_ptr);
     ss::future<> create_internal_topic();
-    ss::future<> set_auditing_permissions();
     ss::future<> inform(model::node_id id);
     ss::future<> do_inform(model::node_id id);
-    ss::future<> set_client_credentials();
 
 private:
     kafka::error_code _last_errc{kafka::error_code::unknown_server_error};
@@ -131,7 +127,6 @@ private:
     bool _is_initialized{false};
     size_t _max_buffer_size;
     ssx::semaphore _send_sem;
-    kafka::client::client _client;
     audit_sink* _sink;
     cluster::controller* _controller;
     std::unique_ptr<client_probe> _probe;
@@ -147,9 +142,7 @@ public:
     using auth_misconfigured_t = ss::bool_class<struct auth_misconfigured_tag>;
 
     audit_sink(
-      audit_log_manager* audit_mgr,
-      cluster::controller* controller,
-      kafka::client::configuration& config) noexcept;
+      audit_log_manager* audit_mgr, cluster::controller* controller) noexcept;
 
     /// Starts a kafka::client if none is allocated, backgrounds the work
     ss::future<> start();
@@ -191,21 +184,14 @@ private:
     /// audit_client and members necessary to pass to its constructor
     std::unique_ptr<audit_client> _client;
     cluster::controller* _controller;
-    kafka::client::configuration& _config;
     transform::rpc::client* _rpc_client;
 
     friend class audit_client;
 };
 
-audit_client::audit_client(
-  audit_sink* sink,
-  cluster::controller* controller,
-  kafka::client::configuration& client_config)
+audit_client::audit_client(audit_sink* sink, cluster::controller* controller)
   : _max_buffer_size(config::shard_local_cfg().audit_client_max_buffer_size())
   , _send_sem(_max_buffer_size, "audit_log_producer_semaphore")
-  , _client(
-      config::to_yaml(client_config, config::redact_secrets::no),
-      [this](std::exception_ptr eptr) { return mitigate_error(eptr); })
   , _sink(sink)
   , _controller(controller)
   , _rpc_client(sink->_rpc_client) {}
@@ -234,20 +220,6 @@ ss::future<> audit_client::initialize() {
     }
 }
 
-ss::future<> audit_client::set_client_credentials() {
-    /// Set ephemeral credential
-    auto& frontend = _controller->get_ephemeral_credential_frontend().local();
-    auto pw = co_await frontend.get(audit_principal);
-    if (pw.err != cluster::errc::success) {
-        throw std::runtime_error(fmt::format(
-          "Failed to fetch credential for principal: {}", audit_principal));
-    }
-
-    _client.config().sasl_mechanism.set_value(pw.credential.mechanism());
-    _client.config().scram_username.set_value(pw.credential.user()());
-    _client.config().scram_password.set_value(pw.credential.password()());
-}
-
 ss::future<> audit_client::configure() {
     try {
         const auto& feature_table = _controller->get_feature_table();
@@ -257,10 +229,7 @@ ss::future<> audit_client::configure() {
               "Failing to create audit client until cluster has been fully "
               "upgraded to the min supported version for audit_logging");
         }
-        co_await set_client_credentials();
-        co_await set_auditing_permissions();
         co_await create_internal_topic();
-        co_await _client.connect();
 
         /// To avoid dropping data, retries should be functionally infinite,
         /// but we handle this logic at the produce call site. Individual
@@ -268,7 +237,7 @@ ss::future<> audit_client::configure() {
         /// client to refresh its metadata on a subsequent request.
         /// Explicitly set `client::config::retries` to its default value.
         /// We might want to make this tunable at some point.
-        _client.config().retries.reset();
+        // TODO(oren): do we need to configure retries on the rpc client?
         vlog(adtlog.info, "Audit log client initialized");
     } catch (...) {
         vlog(
@@ -277,31 +246,6 @@ ss::future<> audit_client::configure() {
           std::current_exception());
         throw;
     }
-}
-
-ss::future<> audit_client::set_auditing_permissions() {
-    /// Give permissions to create and write to the audit topic
-    security::acl_entry acl_create_entry{
-      audit_principal,
-      security::acl_host::wildcard_host(),
-      security::acl_operation::create,
-      security::acl_permission::allow};
-
-    security::acl_entry acl_write_entry{
-      audit_principal,
-      security::acl_host::wildcard_host(),
-      security::acl_operation::write,
-      security::acl_permission::allow};
-
-    security::resource_pattern audit_topic_pattern{
-      security::resource_type::topic,
-      model::kafka_audit_logging_topic,
-      security::pattern_type::literal};
-
-    co_await _controller->get_security_frontend().local().create_acls(
-      {security::acl_binding{audit_topic_pattern, acl_create_entry},
-       security::acl_binding{audit_topic_pattern, acl_write_entry}},
-      5s);
 }
 
 /// `update_auth_status` should not be called frequently since this method
@@ -328,51 +272,6 @@ ss::future<> audit_client::update_status(kafka::error_code errc) {
     _last_errc = errc;
 }
 
-ss::future<> audit_client::update_status(kafka::produce_response response) {
-    /// This method should almost always call update_status() with a value of
-    /// no error code. That is because kafka client mitigation will be called in
-    /// the case there is a produce error, and an erraneous response will only
-    /// be returned when the retry count is exhausted, which will never occur
-    /// since it is artificially set high to have the effect of always retrying
-    absl::flat_hash_set<kafka::error_code> errcs;
-    for (const auto& topic_response : response.data.responses) {
-        for (const auto& partition_response : topic_response.partitions) {
-            errcs.emplace(partition_response.error_code);
-        }
-    }
-    if (errcs.empty()) {
-        vlog(seclog.warn, "Empty produce response recieved");
-        co_return;
-    }
-    auto errc = *errcs.begin();
-    if (errcs.contains(kafka::error_code::illegal_sasl_state)) {
-        errc = kafka::error_code::illegal_sasl_state;
-    }
-    co_await update_status(errc);
-}
-
-ss::future<> audit_client::mitigate_error(std::exception_ptr eptr) {
-    vlog(adtlog.trace, "mitigate_error: {}", eptr);
-    auto f = ss::now();
-    try {
-        std::rethrow_exception(eptr);
-    } catch (const kafka::client::broker_error& ex) {
-        f = update_status(ex.error);
-        if (ex.error == kafka::error_code::sasl_authentication_failed) {
-            f = f.then([this, ex]() {
-                return inform(ex.node_id).then([this]() {
-                    return _client.connect();
-                });
-            });
-        } else {
-            throw;
-        }
-    } catch (...) {
-        throw;
-    }
-    co_await std::move(f);
-}
-
 ss::future<> audit_client::inform(model::node_id id) {
     vlog(adtlog.trace, "inform: {}", id);
 
@@ -394,55 +293,54 @@ ss::future<> audit_client::do_inform(model::node_id id) {
 }
 
 ss::future<> audit_client::create_internal_topic() {
-    constexpr std::string_view retain_forever = "-1";
-    constexpr std::string_view seven_days = "604800000";
+    // constexpr std::string_view seven_days = "604800000";
+    using namespace std::chrono_literals;
+
     int16_t replication_factor
       = config::shard_local_cfg().audit_log_replication_factor().value_or(
         _controller->internal_topic_replication());
     vlog(
       adtlog.debug,
-      "Attempting to create internal topic (replication={})",
+      "TODO(plumbing): Attempting to create internal topic (replication={})",
       replication_factor);
-    kafka::creatable_topic audit_topic{
-      .name = model::kafka_audit_logging_topic,
-      .num_partitions = config::shard_local_cfg().audit_log_num_partitions(),
-      .replication_factor = replication_factor,
-      .assignments = {},
-      .configs = {
-        kafka::createable_topic_config{
-          .name = ss::sstring(kafka::topic_property_retention_bytes),
-          .value{retain_forever}},
-        kafka::createable_topic_config{
-          .name = ss::sstring(kafka::topic_property_retention_duration),
-          .value{seven_days}},
-        kafka::createable_topic_config{
-          .name = ss::sstring(kafka::topic_property_cleanup_policy),
-          .value = "delete"}}};
+
+    cluster::topic_properties audit_topic_props;
+    audit_topic_props.retention_bytes = tristate<size_t>{};
+    // TODO(oren): respect the replication config, otherwise it uses the default
+    audit_topic_props.retention_duration = tristate<std::chrono::milliseconds>{
+      604800s /*7d*/};
+    audit_topic_props.cleanup_policy_bitflags
+      = model::cleanup_policy_bitflags::deletion;
     vlog(
-      adtlog.info, "Creating audit log topic with settings: {}", audit_topic);
-    const auto resp = co_await _client.create_topic({std::move(audit_topic)});
-    if (resp.data.topics.size() != 1) {
-        throw std::runtime_error(
-          fmt::format("Unexpected create topics response: {}", resp.data));
-    }
-    const auto& topic = resp.data.topics[0];
-    if (topic.error_code == kafka::error_code::none) {
-        vlog(adtlog.debug, "Auditing: created audit log topic: {}", topic);
-    } else if (topic.error_code == kafka::error_code::topic_already_exists) {
+      adtlog.info,
+      "Creating audit log topic with settings: {}",
+      audit_topic_props);
+    const auto ec = co_await _rpc_client->create_topic(
+      model::kafka_audit_logging_nt,
+      std::move(audit_topic_props),
+      config::shard_local_cfg().audit_log_num_partitions());
+    if (ec == cluster::errc::success) {
+        // TODO(oren): better log. look up in metadata?
+        vlog(
+          adtlog.debug,
+          "Auditing: created audit log topic: {}",
+          model::kafka_audit_logging_topic);
+    } else if (ec == cluster::errc::topic_already_exists) {
         vlog(adtlog.debug, "Auditing: topic already exists");
-        co_await _client.update_metadata();
+        // co_await _client.update_metadata();
     } else {
-        if (topic.error_code == kafka::error_code::invalid_replication_factor) {
+        if (ec == cluster::errc::topic_invalid_replication_factor) {
             vlog(
               adtlog.warn,
               "Auditing: invalid replication factor on audit topic, "
               "check/modify settings, then disable and re-enable "
               "'audit_enabled'");
         }
-        const auto msg = topic.error_message.has_value() ? *topic.error_message
-                                                         : "<no_err_msg>";
-        throw std::runtime_error(
-          fmt::format("{} - error_code: {}", msg, topic.error_code));
+        // const auto msg = topic.error_message.has_value() ?
+        // *topic.error_message
+        //                                                  : "<no_err_msg>";
+        // TODO(oren): should there be a message? do we care?
+        throw std::runtime_error(fmt::format("error_code: {}", ec));
     }
 }
 
@@ -488,7 +386,7 @@ ss::future<> audit_client::shutdown() {
           client_drain_wait_timeout);
     }
     _send_sem.broken();
-    co_await _client.stop();
+    // co_await _client.stop();
     co_await _gate.close();
     _probe.reset(nullptr);
     vlog(adtlog.info, "Audit client stopped");
@@ -565,7 +463,8 @@ ss::future<> audit_client::do_produce(
     // way the kafka client should periodically refresh its internal metadata.
 
     // TODO(oren): map cluster errc to kafka. we should be able to do that
-    // actually
+    // actually with better fidelity. but really this is mostly for detecting
+    // auth errors I think, which is totally unnecessary here.
     constexpr auto map_ec = [](cluster::errc ec) -> kafka::error_code {
         if (ec == cluster::errc::success) {
             return kafka::error_code::none;
@@ -575,10 +474,6 @@ ss::future<> audit_client::do_produce(
 
     std::optional<kafka::error_code> ec;
     while (!_as.abort_requested()) {
-        // auto r = co_await _client.produce_record_batch(
-        //     model::topic_partition{model::kafka_audit_logging_topic, pid},
-        //     batch.copy());
-        //   ec.emplace(r.error_code);
         // TODO(oren): yuck lol
         ss::chunked_fifo<model::record_batch> batches;
         batches.emplace_back(batch.copy());
@@ -609,12 +504,9 @@ ss::future<> audit_client::do_produce(
 /// audit_sink
 
 audit_sink::audit_sink(
-  audit_log_manager* audit_mgr,
-  cluster::controller* controller,
-  kafka::client::configuration& config) noexcept
+  audit_log_manager* audit_mgr, cluster::controller* controller) noexcept
   : _audit_mgr(audit_mgr)
   , _controller(controller)
-  , _config(config)
   , _rpc_client(&audit_mgr->_rpc_client->local()) {}
 
 ss::future<> audit_sink::start() {
@@ -681,7 +573,7 @@ void audit_sink::toggle(bool enabled) {
 
 ss::future<> audit_sink::do_toggle(bool enabled) {
     if (enabled && !_client) {
-        _client = std::make_unique<audit_client>(this, _controller, _config);
+        _client = std::make_unique<audit_client>(this, _controller);
         co_await _client->initialize();
         if (_client->is_initialized()) {
             co_await publish_app_lifecycle_event(
@@ -763,7 +655,7 @@ audit_log_manager::audit_log_manager(
   , _metadata_cache(metadata_cache)
   , _rpc_client(rpc_client) {
     if (ss::this_shard_id() == client_shard_id) {
-        _sink = std::make_unique<audit_sink>(this, _controller, _config);
+        _sink = std::make_unique<audit_sink>(this, _controller);
     }
     _drain_timer.set_callback([this] {
         ssx::spawn_with_gate(_gate, [this]() {

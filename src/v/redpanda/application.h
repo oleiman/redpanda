@@ -262,7 +262,7 @@ private:
 
     bool datalake_enabled();
 
-    bool kafka_rpc_enabled();
+    bool kafka_data_rpc_enabled();
 
     /**
      * @brief Construct service boilerplate.

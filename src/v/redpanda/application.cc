@@ -2402,9 +2402,11 @@ bool application::datalake_enabled() {
     return config::shard_local_cfg().iceberg_enabled();
 }
 
-bool application::kafka_rpc_enabled() {
-    return wasm_data_transforms_enabled()
-           || config::shard_local_cfg().audit_enabled();
+bool application::kafka_data_rpc_enabled() {
+    // NOTE(oren): need to build all that stuff unconditionally i suppose
+    return true;
+    // return wasm_data_transforms_enabled()
+    //        || config::shard_local_cfg().audit_enabled();
 }
 
 ss::future<>

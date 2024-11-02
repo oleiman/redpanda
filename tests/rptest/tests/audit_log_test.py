@@ -1330,6 +1330,9 @@ class AuditLogTestKafkaApi(AuditLogTestBase):
             _ = self.find_matching_record(test.filter_function,
                                           test.valid_count, test.desc())
 
+    # TODO(oren): I kinda suspect we want to preserve this behavior in one way or
+    # another, but we don't get it for "free" because the audit client doesn't need to authN
+    @ignore
     @skip_fips_mode
     @cluster(num_nodes=4, log_allow_list=AUDIT_LOG_ALLOW_LIST)
     def test_no_auth_enabled(self):
@@ -1619,6 +1622,7 @@ class AuditLogTestKafkaAuthnApi(AuditLogTestBase):
             records) == 1, f'Expected only one record, got {len(records)}'
 
     @skip_fips_mode
+    @ignore  # NOTE(oren): no more audit user
     @cluster(num_nodes=5)
     def test_no_audit_user_authn(self):
         """
@@ -1714,7 +1718,10 @@ class AuditLogTestInvalidConfig(AuditLogTestInvalidConfigBase):
                                                             self.password,
                                                             self.algorithm)))
 
+    # NOTE(oren): don't need a user anymore, can you still misconfigure?
+    # replication factor would bork topic create maybe??
     @skip_fips_mode
+    @ignore
     @cluster(num_nodes=4,
              log_allow_list=[
                  r'Failed to append authentication event to audit log',
@@ -1757,7 +1764,10 @@ class AuditLogTestInvalidConfigMTLS(AuditLogTestInvalidConfigBase):
               self).__init__(test_context=test_context,
                              security=self._security_config)
 
+    # NOTE(oren): don't need a user anymore, can you still misconfigure?
+    # replication factor would bork topic create maybe??
     @skip_fips_mode
+    @ignore
     @cluster(
         num_nodes=4,
         log_allow_list=[

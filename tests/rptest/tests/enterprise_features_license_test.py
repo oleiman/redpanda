@@ -57,7 +57,6 @@ FEATURE_DEPENDENT_CONFIG = {
 }
 
 SKIP_FEATURES = [
-    Feature.audit_logging,  # NOTE(oren): omit due to shutdown issues
     Feature.
     cloud_storage,  # TODO(oren): initially omitted because it's a bit complicated to initialize infra
     Feature.datalake_iceberg,  # TODO: also depends on cloud infra
@@ -203,7 +202,9 @@ class EnterpriseFeaturesTest(EnterpriseFeaturesTestBase):
 
     @skip_fips_mode
     @cluster(num_nodes=3, log_allow_list=OIDC_UPDATE_FAILURE_LOGS)
-    @matrix(feature=[f for f in Feature if f not in SKIP_FEATURES],
+    @matrix(feature=[
+        f for f in Feature if f == Feature.audit_logging not in SKIP_FEATURES
+    ],
             install_license=[
                 True,
                 False,

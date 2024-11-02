@@ -1891,7 +1891,8 @@ void application::wire_up_redpanda_services(
       node_id,
       controller.get(),
       std::ref(*_audit_log_client_config),
-      &metadata_cache)
+      &metadata_cache,
+      &_transform_rpc_client)
       .get();
 
     syschecks::systemd_message("Creating metadata dissemination service").get();
@@ -2399,6 +2400,11 @@ bool application::wasm_data_transforms_enabled() {
 
 bool application::datalake_enabled() {
     return config::shard_local_cfg().iceberg_enabled();
+}
+
+bool application::kafka_rpc_enabled() {
+    return wasm_data_transforms_enabled()
+           || config::shard_local_cfg().audit_enabled();
 }
 
 ss::future<>

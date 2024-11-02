@@ -28,6 +28,7 @@
 #include "security/audit/types.h"
 #include "security/request_auth.h"
 #include "ssx/semaphore.h"
+#include "transform/rpc/client.h"
 
 #include <seastar/core/abort_source.hh>
 #include <seastar/core/gate.hh>
@@ -66,7 +67,8 @@ public:
       model::node_id self,
       cluster::controller* controller,
       kafka::client::configuration&,
-      ss::sharded<cluster::metadata_cache>*);
+      ss::sharded<cluster::metadata_cache>*,
+      ss::sharded<transform::rpc::client>*);
 
     audit_log_manager(const audit_log_manager&) = delete;
     audit_log_manager& operator=(const audit_log_manager&) = delete;
@@ -412,6 +414,7 @@ private:
     std::unique_ptr<audit_probe> _probe;
 
     ss::sharded<cluster::metadata_cache>* _metadata_cache;
+    ss::sharded<transform::rpc::client>* _rpc_client;
 };
 
 } // namespace security::audit

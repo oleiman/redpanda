@@ -135,6 +135,7 @@ private:
     audit_sink* _sink;
     cluster::controller* _controller;
     std::unique_ptr<client_probe> _probe;
+    transform::rpc::client* _rpc_client;
 };
 
 /// Allocated only on the shard responsible for owning the kafka client, its
@@ -191,6 +192,7 @@ private:
     std::unique_ptr<audit_client> _client;
     cluster::controller* _controller;
     kafka::client::configuration& _config;
+    transform::rpc::client* _rpc_client;
 
     friend class audit_client;
 };
@@ -205,7 +207,8 @@ audit_client::audit_client(
       config::to_yaml(client_config, config::redact_secrets::no),
       [this](std::exception_ptr eptr) { return mitigate_error(eptr); })
   , _sink(sink)
-  , _controller(controller) {}
+  , _controller(controller)
+  , _rpc_client(sink->_rpc_client) {}
 
 ss::future<> audit_client::initialize() {
     static const auto base_backoff = 250ms;
@@ -560,12 +563,29 @@ ss::future<> audit_client::do_produce(
     // Effectively retry forever, but start a fresh request from batch data held
     // in memory when each produce_record_batch's retries are exhausted. This
     // way the kafka client should periodically refresh its internal metadata.
+
+    // TODO(oren): map cluster errc to kafka. we should be able to do that
+    // actually
+    constexpr auto map_ec = [](cluster::errc ec) -> kafka::error_code {
+        if (ec == cluster::errc::success) {
+            return kafka::error_code::none;
+        }
+        return kafka::error_code::unknown_server_error;
+    };
+
     std::optional<kafka::error_code> ec;
     while (!_as.abort_requested()) {
-        auto r = co_await _client.produce_record_batch(
+        // auto r = co_await _client.produce_record_batch(
+        //     model::topic_partition{model::kafka_audit_logging_topic, pid},
+        //     batch.copy());
+        //   ec.emplace(r.error_code);
+        // TODO(oren): yuck lol
+        ss::chunked_fifo<model::record_batch> batches;
+        batches.emplace_back(batch.copy());
+        auto r = co_await _rpc_client->produce(
           model::topic_partition{model::kafka_audit_logging_topic, pid},
-          batch.copy());
-        ec.emplace(r.error_code);
+          std::move(batches));
+        ec.emplace(map_ec(r));
         co_await update_status(ec.value());
         if (ec.value() == kafka::error_code::none) {
             break;
@@ -594,7 +614,8 @@ audit_sink::audit_sink(
   kafka::client::configuration& config) noexcept
   : _audit_mgr(audit_mgr)
   , _controller(controller)
-  , _config(config) {}
+  , _config(config)
+  , _rpc_client(&audit_mgr->_rpc_client->local()) {}
 
 ss::future<> audit_sink::start() {
     toggle(true);
@@ -722,7 +743,8 @@ audit_log_manager::audit_log_manager(
   model::node_id self,
   cluster::controller* controller,
   kafka::client::configuration& client_config,
-  ss::sharded<cluster::metadata_cache>* metadata_cache)
+  ss::sharded<cluster::metadata_cache>* metadata_cache,
+  ss::sharded<transform::rpc::client>* rpc_client)
   : _audit_enabled(config::shard_local_cfg().audit_enabled.bind())
   , _queue_drain_interval_ms(
       config::shard_local_cfg().audit_queue_drain_interval_ms.bind())
@@ -738,11 +760,11 @@ audit_log_manager::audit_log_manager(
   , _self(self)
   , _controller(controller)
   , _config(client_config)
-  , _metadata_cache(metadata_cache) {
+  , _metadata_cache(metadata_cache)
+  , _rpc_client(rpc_client) {
     if (ss::this_shard_id() == client_shard_id) {
-        _sink = std::make_unique<audit_sink>(this, controller, client_config);
+        _sink = std::make_unique<audit_sink>(this, _controller, _config);
     }
-
     _drain_timer.set_callback([this] {
         ssx::spawn_with_gate(_gate, [this]() {
             return ss::get_units(_active_drain, 1)
@@ -808,6 +830,7 @@ ss::future<> audit_log_manager::start() {
           "Redpanda is operating in recovery mode.  Auditing is disabled!");
         co_return;
     }
+
     _probe = std::make_unique<audit_probe>();
     _probe->setup_metrics([this] {
         return 1.0

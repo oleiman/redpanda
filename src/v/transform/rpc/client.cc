@@ -234,6 +234,41 @@ ss::future<cluster::errc> client::do_produce_once(produce_request req) {
     co_return reply.results.front().err;
 }
 
+// TODO(oren): use this for creating transforms logs topic I guess?
+ss::future<cluster::errc> client::create_topic(
+  model::topic_namespace_view tp,
+  cluster::topic_properties props,
+  std::optional<int32_t> partition_count) {
+    co_return co_await retry(
+      [this, tp, partition_count, p = std::move(props)]() {
+          return try_create_topic(tp, p, partition_count);
+      });
+}
+
+ss::future<cluster::errc> client::try_create_topic(
+  model::topic_namespace_view nt,
+  cluster::topic_properties props,
+  std::optional<int32_t> partition_count) {
+    auto fut = co_await ss::coroutine::as_future<cluster::errc>(
+      _topic_creator->create_topic(
+        nt,
+        partition_count.value_or(
+          config::shard_local_cfg().default_topic_partitions()),
+        std::move(props)));
+    if (fut.failed()) {
+        throw std::runtime_error(fmt::format(
+          "Error creating topic '{}': {}", nt, fut.get_exception()));
+    }
+    auto ec = fut.get();
+    if (
+      ec != cluster::errc::success
+      && ec != cluster::errc::topic_already_exists) {
+        throw std::runtime_error(
+          fmt::format("Failed to create topic '{}'", nt));
+    }
+    co_return ec;
+}
+
 ss::future<> client::start() {
     if (ss::this_shard_id() != 0) {
         co_return;

@@ -68,6 +68,16 @@ public:
     ss::future<cluster::errc>
       produce(model::topic_partition, ss::chunked_fifo<model::record_batch>);
 
+    ss::future<cluster::errc> create_topic(
+      model::topic_namespace_view,
+      cluster::topic_properties,
+      std::optional<int32_t> partition_count = std::nullopt);
+
+    ss::future<cluster::errc> try_create_topic(
+      model::topic_namespace_view,
+      cluster::topic_properties,
+      std::optional<int32_t> partition_count);
+
     /**
      * Write a Wasm binary to our internal topic and return metadata for it.
      *

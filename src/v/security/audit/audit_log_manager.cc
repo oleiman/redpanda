@@ -537,6 +537,9 @@ ss::future<> audit_sink::produce(chunked_vector<partition_batch> records) {
 
 ss::future<> audit_sink::publish_app_lifecycle_event(
   application_lifecycle::activity_id event) {
+    if (ss::this_shard_id() != audit_log_manager::client_shard_id) {
+        co_return;
+    }
     /// Directly publish the event instead of enqueuing it like all other
     /// events. This ensures that the event won't get discarded in the case
     /// audit is disabled.
@@ -654,9 +657,7 @@ audit_log_manager::audit_log_manager(
   , _config(client_config)
   , _metadata_cache(metadata_cache)
   , _rpc_client(rpc_client) {
-    if (ss::this_shard_id() == client_shard_id) {
-        _sink = std::make_unique<audit_sink>(this, _controller);
-    }
+    _sink = std::make_unique<audit_sink>(this, _controller);
     _drain_timer.set_callback([this] {
         ssx::spawn_with_gate(_gate, [this]() {
             return ss::get_units(_active_drain, 1)
@@ -728,9 +729,6 @@ ss::future<> audit_log_manager::start() {
         return 1.0
                - (static_cast<double>(_queue_bytes_sem.available_units()) / static_cast<double>(_max_queue_size_bytes));
     });
-    if (ss::this_shard_id() != client_shard_id) {
-        co_return;
-    }
     _audit_enabled.watch([this] {
         try {
             _sink->toggle(_audit_enabled());
@@ -753,10 +751,8 @@ ss::future<> audit_log_manager::start() {
 ss::future<> audit_log_manager::stop() {
     _drain_timer.cancel();
     _as.request_abort();
-    if (ss::this_shard_id() == client_shard_id) {
-        vlog(adtlog.info, "Shutting down audit log manager");
-        co_await _sink->stop();
-    }
+    vlog(adtlog.info, "Shutting down audit log manager");
+    co_await _sink->stop();
     if (!_gate.is_closed()) {
         /// Gate may already be closed if ::pause() had been called
         co_await _gate.close();
@@ -788,14 +784,14 @@ ss::future<> audit_log_manager::pause() {
 }
 
 ss::future<> audit_log_manager::resume() {
-    return container().invoke_on_all([](audit_log_manager& mgr) {
-        /// If the timer is already armed that is a bug
-        vassert(
-          !mgr._drain_timer.armed(),
-          "Timer is already armed upon call to ::resume");
-        mgr._effectively_enabled = true;
-        mgr._drain_timer.arm(mgr._queue_drain_interval_ms());
-    });
+    // return container().invoke_on_all([](audit_log_manager& mgr) {
+    /// If the timer is already armed that is a bug
+    vassert(
+      !_drain_timer.armed(), "Timer is already armed upon call to ::resume");
+    _effectively_enabled = true;
+    _drain_timer.arm(_queue_drain_interval_ms());
+    // });
+    return ss::make_ready_future();
 }
 
 bool audit_log_manager::report_redpanda_app_event(is_started app_started) {
@@ -898,11 +894,7 @@ ss::future<> audit_log_manager::drain() {
     /// produce batch queue. If the semaphore blocks it will apply
     /// backpressure here, and the \ref _queue will begin to fill closer to
     /// capacity. When it hits capacity, enqueue_audit_event() will block.
-    co_await container().invoke_on(
-      client_shard_id,
-      [recs = std::move(p_batches)](audit_log_manager& mgr) mutable {
-          return mgr._sink->produce(std::move(recs));
-      });
+    co_await _sink->produce(std::move(p_batches));
 }
 
 std::optional<audit_log_manager::audit_event_passthrough>

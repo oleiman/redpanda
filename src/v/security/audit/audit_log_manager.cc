@@ -130,7 +130,7 @@ private:
     audit_sink* _sink;
     cluster::controller* _controller;
     std::unique_ptr<client_probe> _probe;
-    transform::rpc::client* _rpc_client;
+    kafka::data::rpc::client* _rpc_client;
 };
 
 /// Allocated only on the shard responsible for owning the kafka client, its
@@ -184,7 +184,7 @@ private:
     /// audit_client and members necessary to pass to its constructor
     std::unique_ptr<audit_client> _client;
     cluster::controller* _controller;
-    transform::rpc::client* _rpc_client;
+    kafka::data::rpc::client* _rpc_client;
 
     friend class audit_client;
 };
@@ -639,7 +639,7 @@ audit_log_manager::audit_log_manager(
   cluster::controller* controller,
   kafka::client::configuration& client_config,
   ss::sharded<cluster::metadata_cache>* metadata_cache,
-  ss::sharded<transform::rpc::client>* rpc_client)
+  ss::sharded<kafka::data::rpc::client>* rpc_client)
   : _audit_enabled(config::shard_local_cfg().audit_enabled.bind())
   , _queue_drain_interval_ms(
       config::shard_local_cfg().audit_queue_drain_interval_ms.bind())

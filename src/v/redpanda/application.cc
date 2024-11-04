@@ -1885,6 +1885,30 @@ void application::wire_up_redpanda_services(
     construct_service(quota_mgr, std::ref(controller->get_quota_store())).get();
     construct_service(snc_quota_mgr, std::ref(snc_node_quota)).get();
 
+    construct_service(
+      _kafka_data_rpc_client,
+      node_id,
+      ss::sharded_parameter([this] {
+          return transform::rpc::partition_leader_cache::make_default(
+            &controller->get_partition_leaders());
+      }),
+      // TODO(oren): remove
+      // ss::sharded_parameter([this] {
+      //     return transform::rpc::topic_metadata_cache::make_default(
+      //       &metadata_cache);
+      // }),
+      ss::sharded_parameter([this] {
+          return transform::rpc::topic_creator::make_default(controller.get());
+      }),
+      // TODO(oren): remove
+      // ss::sharded_parameter([this] {
+      //     return transform::rpc::cluster_members_cache::make_default(
+      //       &controller->get_members_table());
+      // }),
+      &_connection_cache,
+      &_transform_rpc_service)
+      .get();
+
     syschecks::systemd_message("Creating auditing subsystem").get();
     construct_service(
       audit_mgr,
@@ -1892,7 +1916,7 @@ void application::wire_up_redpanda_services(
       controller.get(),
       std::ref(*_audit_log_client_config),
       &metadata_cache,
-      &_transform_rpc_client)
+      &_kafka_data_rpc_client)
       .get();
 
     syschecks::systemd_message("Creating metadata dissemination service").get();
@@ -2875,6 +2899,11 @@ void application::wire_up_and_start(::stop_signal& app_signal, bool test_mode) {
           _log.info,
           "Started Schema Registry listening at {}",
           _schema_reg_config->schema_registry_api());
+    }
+
+    if (kafka_data_rpc_enabled() && !config::node().recovery_mode_enabled) {
+        _kafka_data_rpc_client.invoke_on_all(&kafka::data::rpc::client::start)
+          .get();
     }
 
     audit_mgr.invoke_on_all(&security::audit::audit_log_manager::start).get();

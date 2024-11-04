@@ -14,6 +14,7 @@
 #include "config/property.h"
 #include "kafka/client/fwd.h"
 #include "kafka/client/types.h"
+#include "kafka/data/rpc/client.h"
 #include "kafka/protocol/types.h"
 #include "model/namespace.h"
 #include "model/timeout_clock.h"
@@ -28,7 +29,6 @@
 #include "security/audit/types.h"
 #include "security/request_auth.h"
 #include "ssx/semaphore.h"
-#include "transform/rpc/client.h"
 
 #include <seastar/core/abort_source.hh>
 #include <seastar/core/gate.hh>
@@ -68,7 +68,7 @@ public:
       cluster::controller* controller,
       kafka::client::configuration&,
       ss::sharded<cluster::metadata_cache>*,
-      ss::sharded<transform::rpc::client>*);
+      ss::sharded<kafka::data::rpc::client>*);
 
     audit_log_manager(const audit_log_manager&) = delete;
     audit_log_manager& operator=(const audit_log_manager&) = delete;
@@ -414,7 +414,7 @@ private:
     std::unique_ptr<audit_probe> _probe;
 
     ss::sharded<cluster::metadata_cache>* _metadata_cache;
-    ss::sharded<transform::rpc::client>* _rpc_client;
+    ss::sharded<kafka::data::rpc::client>* _rpc_client;
 };
 
 } // namespace security::audit

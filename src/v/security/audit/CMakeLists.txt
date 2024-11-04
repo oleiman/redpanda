@@ -13,6 +13,7 @@ v_cc_library(
     v::config
     v::cluster
     v::kd_record_batcher
+    v::kd_rpc
     v::transform_rpc
 )
 

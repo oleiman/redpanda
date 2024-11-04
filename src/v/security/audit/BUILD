@@ -37,6 +37,7 @@ redpanda_cc_library(
     ],
     implementation_deps = [
         "//src/v/kafka/data:record_batcher",
+        "//src/v/kafka/data/rpc",
         "@abseil-cpp//absl/algorithm:container",
     ],
     include_prefix = "security/audit",

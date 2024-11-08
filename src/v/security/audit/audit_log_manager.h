@@ -372,13 +372,6 @@ private:
 
     ssx::semaphore _queue_bytes_sem;
 
-    /// This will be true when the client detects that there is an issue with
-    /// authorization configuration. Auth must be enabled so the client
-    /// principal can be queried. This is needed so that redpanda can give
-    /// special permission to the audit client to do things like produce to the
-    /// audit topic.
-    bool _auth_misconfigured{false};
-
     /// Represents whether the feature is actually active, not the
     /// representation of the config variable
     bool _effectively_enabled{false};

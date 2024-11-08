@@ -114,7 +114,6 @@ public:
 private:
     ss::future<>
     do_produce(model::record_batch, model::partition_id, audit_probe&);
-    ss::future<> update_status(kafka::error_code);
     ss::future<> configure();
     ss::future<> create_internal_topic();
 
@@ -137,8 +136,6 @@ private:
 /// started/stopped on demand.
 class audit_sink {
 public:
-    using auth_misconfigured_t = ss::bool_class<struct auth_misconfigured_tag>;
-
     audit_sink(
       audit_log_manager* audit_mgr, cluster::controller* controller) noexcept;
 
@@ -159,8 +156,6 @@ public:
 private:
     ss::future<>
       publish_app_lifecycle_event(application_lifecycle::activity_id);
-
-    ss::future<> update_auth_status(auth_misconfigured_t);
 
     ss::future<> do_toggle(bool enabled);
 
@@ -245,30 +240,6 @@ ss::future<> audit_client::configure() {
           std::current_exception());
         throw;
     }
-}
-
-/// `update_auth_status` should not be called frequently since this method
-/// occurs on the hot path and calls to `update_auth_status` call will boil down
-/// to an invoke_on_all() call. Conditionals are wrapped around the call to
-/// `update_auth_status` so that its only called when the errc changes to/from
-/// a desired condition.
-ss::future<> audit_client::update_status(kafka::error_code errc) {
-    /// If the status changed to erraneous from anything else
-    if (errc == kafka::error_code::illegal_sasl_state) {
-        if (_last_errc != kafka::error_code::illegal_sasl_state) {
-            co_await _sink->update_auth_status(
-              audit_sink::auth_misconfigured_t::yes);
-        }
-    } else if (_last_errc == kafka::error_code::illegal_sasl_state) {
-        /// The status changed from erraneous to anything else
-        if (
-          errc != kafka::error_code::illegal_sasl_state
-          && errc != kafka::error_code::broker_not_available) {
-            co_await _sink->update_auth_status(
-              audit_sink::auth_misconfigured_t::no);
-        }
-    }
-    _last_errc = errc;
 }
 
 ss::future<> audit_client::create_internal_topic() {
@@ -450,7 +421,6 @@ ss::future<> audit_client::do_produce(
           model::topic_partition{model::kafka_audit_logging_topic, pid},
           batch.copy());
         ec.emplace(map_ec(r));
-        co_await update_status(ec.value());
         if (ec.value() == kafka::error_code::none) {
             break;
         }
@@ -487,14 +457,6 @@ ss::future<> audit_sink::stop() {
     vlog(adtlog.info, "stop() invoked on audit_sink");
     toggle(false);
     co_await _gate.close();
-}
-
-ss::future<>
-audit_sink::update_auth_status(auth_misconfigured_t auth_misconfigured) {
-    return _audit_mgr->container().invoke_on_all(
-      [auth_misconfigured](audit_log_manager& mgr) {
-          mgr._auth_misconfigured = (bool)auth_misconfigured;
-      });
 }
 
 ss::future<> audit_sink::produce(chunked_vector<partition_batch> records) {
@@ -882,15 +844,6 @@ audit_log_manager::should_enqueue_audit_event() const {
           "upgraded to the min supported version for audit_logging");
         _probe->audit_error();
         return std::make_optional(audit_event_passthrough::yes);
-    }
-    if (_auth_misconfigured) {
-        /// Audit logging depends on having auth enabled, if it is not
-        /// then messages are rejected for increased observability into why
-        /// things are not working.
-        vlog(
-          adtlog.warn,
-          "Audit message rejected due to misconfigured authorization");
-        return std::make_optional(audit_event_passthrough::no);
     }
     return std::nullopt;
 }

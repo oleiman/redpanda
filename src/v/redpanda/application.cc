@@ -242,37 +242,6 @@ set_sr_kafka_client_defaults(kafka::client::configuration& client_config) {
     }
 }
 
-static void set_auditing_kafka_client_defaults(
-  kafka::client::configuration& client_config) {
-    if (!client_config.produce_batch_delay.is_overriden()) {
-        client_config.produce_batch_delay.set_value(0ms);
-    }
-    if (!client_config.produce_batch_record_count.is_overriden()) {
-        client_config.produce_batch_record_count.set_value(int32_t(0));
-    }
-    if (!client_config.produce_batch_size_bytes.is_overriden()) {
-        client_config.produce_batch_size_bytes.set_value(int32_t(0));
-    }
-    if (!client_config.client_identifier.is_overriden()) {
-        client_config.client_identifier.set_value(
-          std::make_optional<ss::sstring>("audit_log_client"));
-    }
-    if (!client_config.produce_compression_type.is_overriden()) {
-        client_config.produce_compression_type.set_value("zstd");
-    }
-    if (!client_config.produce_ack_level.is_overriden()) {
-        client_config.produce_ack_level.set_value(int16_t(1));
-    }
-    if (!client_config.produce_shutdown_delay.is_overriden()) {
-        client_config.produce_shutdown_delay.set_value(3000ms);
-    }
-    /// explicity override the scram details as the client will need to use
-    /// broker generated ephemeral credentials
-    client_config.scram_password.reset();
-    client_config.scram_username.reset();
-    client_config.sasl_mechanism.reset();
-}
-
 application::application(ss::sstring logger_name)
   : _log(std::move(logger_name)) {};
 
@@ -536,7 +505,6 @@ void application::initialize(
   std::optional<YAML::Node> proxy_client_cfg,
   std::optional<YAML::Node> schema_reg_cfg,
   std::optional<YAML::Node> schema_reg_client_cfg,
-  std::optional<YAML::Node> audit_log_client_cfg,
   std::optional<scheduling_groups> groups) {
     ss::smp::invoke_on_all([] {
         // initialize memory groups now that our configuration is loaded
@@ -667,9 +635,6 @@ void application::initialize(
 
     if (schema_reg_client_cfg) {
         _schema_reg_client_config.emplace(*schema_reg_client_cfg);
-    }
-    if (audit_log_client_cfg) {
-        _audit_log_client_config.emplace(*audit_log_client_cfg);
     }
 }
 
@@ -938,15 +903,6 @@ void application::hydrate_config(const po::variables_map& cfg) {
         config_printer("schema_registry", *_schema_reg_config);
         config_printer("schema_registry_client", *_schema_reg_client_config);
     }
-    /// Auditing will be toggled via cluster config settings, internal audit
-    /// client options can be configured via local config properties
-    if (config["audit_log_client"]) {
-        _audit_log_client_config.emplace(config["audit_log_client"]);
-    } else {
-        set_local_kafka_client_config(_audit_log_client_config, config::node());
-    }
-    set_auditing_kafka_client_defaults(*_audit_log_client_config);
-    config_printer("audit_log_client", *_audit_log_client_config);
 }
 
 void application::check_environment() {
@@ -1922,7 +1878,6 @@ void application::wire_up_redpanda_services(
       audit_mgr,
       node_id,
       controller.get(),
-      std::ref(*_audit_log_client_config),
       &metadata_cache,
       &_kafka_data_rpc_client)
       .get();

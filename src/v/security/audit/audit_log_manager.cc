@@ -638,7 +638,6 @@ bool audit_log_manager::recovery_mode_enabled() noexcept {
 audit_log_manager::audit_log_manager(
   model::node_id self,
   cluster::controller* controller,
-  kafka::client::configuration& client_config,
   ss::sharded<cluster::metadata_cache>* metadata_cache,
   ss::sharded<kafka::data::rpc::client>* rpc_client)
   : _audit_enabled(config::shard_local_cfg().audit_enabled.bind())
@@ -655,7 +654,6 @@ audit_log_manager::audit_log_manager(
   , _queue_bytes_sem(_max_queue_size_bytes, "s/audit/buffer")
   , _self(self)
   , _controller(controller)
-  , _config(client_config)
   , _metadata_cache(metadata_cache)
   , _rpc_client(rpc_client) {
     _sink = std::make_unique<audit_sink>(this, _controller);

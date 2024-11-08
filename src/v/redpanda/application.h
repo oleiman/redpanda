@@ -91,7 +91,6 @@ public:
       std::optional<YAML::Node> proxy_client_cfg = std::nullopt,
       std::optional<YAML::Node> schema_reg_cfg = std::nullopt,
       std::optional<YAML::Node> schema_reg_client_cfg = std::nullopt,
-      std::optional<YAML::Node> audit_log_client_cfg = std::nullopt,
       std::optional<scheduling_groups> = std::nullopt);
     void check_environment();
     void wire_up_and_start(::stop_signal&, bool test_mode = false);
@@ -321,7 +320,6 @@ private:
     std::optional<pandaproxy::schema_registry::configuration>
       _schema_reg_config;
     std::optional<kafka::client::configuration> _schema_reg_client_config;
-    std::optional<kafka::client::configuration> _audit_log_client_config;
     ss::sharded<scheduling_groups_probe> _scheduling_groups_probe;
     ss::logger _log;
 

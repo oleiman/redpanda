@@ -72,6 +72,7 @@ v_cc_library(
     v::finjector
     v::kafka
     v::kafka_recovery
+    v::kd_rpc
     v::metrics
     v::migrations
     v::pandaproxy_rest

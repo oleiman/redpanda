@@ -19,6 +19,7 @@
 #include "kafka/client/client.h"
 #include "kafka/client/config_utils.h"
 #include "kafka/data/record_batcher.h"
+#include "kafka/data/rpc/client.h"
 #include "kafka/protocol/produce.h"
 #include "kafka/protocol/schemata/produce_response.h"
 #include "kafka/protocol/topic_properties.h"

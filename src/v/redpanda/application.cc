@@ -1885,6 +1885,24 @@ void application::wire_up_redpanda_services(
     construct_service(quota_mgr, std::ref(controller->get_quota_store())).get();
     construct_service(snc_quota_mgr, std::ref(snc_node_quota)).get();
 
+    // TODO(oren): separate service group for kafka data
+    construct_service(
+      _kafka_data_rpc_service,
+      ss::sharded_parameter([this] {
+          return transform::rpc::topic_metadata_cache::make_default(
+            &metadata_cache);
+      }),
+      ss::sharded_parameter([this] {
+          return transform::rpc::partition_manager::make_default(
+            &shard_table,
+            &partition_manager,
+            smp_service_groups.transform_smp_sg());
+      }),
+      ss::sharded_parameter([this] {
+          return transform::service::create_reporter(&_transform_service);
+      }))
+      .get();
+
     construct_service(
       _kafka_data_rpc_client,
       node_id,
@@ -1892,21 +1910,11 @@ void application::wire_up_redpanda_services(
           return transform::rpc::partition_leader_cache::make_default(
             &controller->get_partition_leaders());
       }),
-      // TODO(oren): remove
-      // ss::sharded_parameter([this] {
-      //     return transform::rpc::topic_metadata_cache::make_default(
-      //       &metadata_cache);
-      // }),
       ss::sharded_parameter([this] {
           return transform::rpc::topic_creator::make_default(controller.get());
       }),
-      // TODO(oren): remove
-      // ss::sharded_parameter([this] {
-      //     return transform::rpc::cluster_members_cache::make_default(
-      //       &controller->get_members_table());
-      // }),
       &_connection_cache,
-      &_transform_rpc_service)
+      &_kafka_data_rpc_service)
       .get();
 
     syschecks::systemd_message("Creating auditing subsystem").get();
@@ -3168,6 +3176,14 @@ void application::start_runtime_services(
                   sched_groups.transforms_sg(),
                   smp_service_groups.transform_smp_sg(),
                   &_transform_rpc_service));
+          }
+          if (kafka_data_rpc_enabled()) {
+              // TODO(oren): separate service group for kafka data
+              runtime_services.push_back(
+                std::make_unique<kafka::data::rpc::network_service>(
+                  sched_groups.transforms_sg(),
+                  smp_service_groups.transform_smp_sg(),
+                  &_kafka_data_rpc_service));
           }
 
           runtime_services.push_back(

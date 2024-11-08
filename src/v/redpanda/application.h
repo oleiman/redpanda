@@ -342,6 +342,7 @@ private:
     ss::sharded<transform::service> _transform_service;
     ss::sharded<transform::rpc::local_service> _transform_rpc_service;
     ss::sharded<transform::rpc::client> _transform_rpc_client;
+    ss::sharded<kafka::data::rpc::local_service> _kafka_data_rpc_service;
     ss::sharded<kafka::data::rpc::client> _kafka_data_rpc_client;
 
     metrics::internal_metric_groups _metrics;

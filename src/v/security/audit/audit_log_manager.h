@@ -14,7 +14,6 @@
 #include "config/property.h"
 #include "kafka/client/fwd.h"
 #include "kafka/client/types.h"
-#include "kafka/data/rpc/client.h"
 #include "kafka/protocol/types.h"
 #include "model/namespace.h"
 #include "model/timeout_clock.h"
@@ -44,6 +43,10 @@
 #include <boost/multi_index_container.hpp>
 
 using namespace std::chrono_literals;
+
+namespace kafka::data::rpc {
+class client;
+}
 
 namespace security::audit {
 

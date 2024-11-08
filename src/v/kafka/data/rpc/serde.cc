@@ -57,7 +57,8 @@ std::ostream& operator<<(std::ostream& os, const produce_reply& reply) {
     return os;
 }
 
-std::ostream& operator<<(std::ostream& os, const topic_data_result& result) {
+std::ostream&
+operator<<(std::ostream& os, const transformed_topic_data_result& result) {
     fmt::print(os, "{{ errc: {}, tp: {} }}", result.err, result.tp);
     return os;
 }

@@ -12,8 +12,8 @@ v_cc_library(
   SRCS
     client.cc
     logger.cc
-    # serde.cc
-    # service.cc
+    serde.cc
+    service.cc
     # deps.cc
   DEPS
     generated_kafka_data_rpc 
@@ -21,7 +21,6 @@ v_cc_library(
     v::model
     v::rpc
     v::kafka_partition_proxy
-    v::transform_rpc # TODO(oren): remove
     Seastar::seastar
 )
 

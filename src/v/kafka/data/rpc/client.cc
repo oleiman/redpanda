@@ -132,7 +132,7 @@ client::client(
   std::unique_ptr<transform::rpc::partition_leader_cache> l,
   std::unique_ptr<transform::rpc::topic_creator> t,
   ss::sharded<::rpc::connection_cache>* c,
-  ss::sharded<transform::rpc::local_service>* s)
+  ss::sharded<local_service>* s)
   : _self(self)
   , _leaders(std::move(l))
   , _topic_creator(std::move(t))

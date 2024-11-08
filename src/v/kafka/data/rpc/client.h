@@ -17,16 +17,16 @@
 #include "rpc/fwd.h"
 #include "transform/rpc/deps.h"
 // TODO(oren): make data service
-#include "transform/rpc/serde.h"
-#include "transform/rpc/service.h"
+#include "kafka/data/rpc/serde.h"
+#include "kafka/data/rpc/service.h"
 
 namespace kafka::data::rpc {
 
-using produce_request = transform::rpc::produce_request;
-using transformed_topic_data = transform::rpc::transformed_topic_data;
-using produce_reply = transform::rpc::produce_reply;
-using transformed_topic_data_result
-  = transform::rpc::transformed_topic_data_result;
+// using produce_request = transform::rpc::produce_request;
+// using transformed_topic_data = transform::rpc::transformed_topic_data;
+// using produce_reply = transform::rpc::produce_reply;
+// using transformed_topic_data_result
+//   = transform::rpc::transformed_topic_data_result;
 
 /**
  * A client for kafka data plane rpcs.
@@ -42,7 +42,7 @@ public:
       std::unique_ptr<transform::rpc::partition_leader_cache>,
       std::unique_ptr<transform::rpc::topic_creator>,
       ss::sharded<::rpc::connection_cache>*,
-      ss::sharded<transform::rpc::local_service>*);
+      ss::sharded<local_service>*);
 
     client(client&&) = delete;
     client& operator=(client&&) = delete;
@@ -87,7 +87,7 @@ private:
     std::unique_ptr<transform::rpc::partition_leader_cache> _leaders;
     std::unique_ptr<transform::rpc::topic_creator> _topic_creator;
     ss::sharded<::rpc::connection_cache>* _connections;
-    ss::sharded<transform::rpc::local_service>* _local_service;
+    ss::sharded<local_service>* _local_service;
     ss::abort_source _as;
     ss::gate _gate;
 };

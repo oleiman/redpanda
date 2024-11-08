@@ -10,9 +10,9 @@
 #pragma once
 
 #include "kafka/data/rpc/rpc_service.h"
+#include "kafka/data/rpc/serde.h"
 #include "model/fundamental.h"
 #include "transform/rpc/deps.h"
-#include "transform/rpc/serde.h"
 
 #include <seastar/core/chunked_fifo.hh>
 #include <seastar/core/sharded.hh>
@@ -21,7 +21,7 @@
 
 namespace kafka::data::rpc {
 
-using namespace transform::rpc;
+// using namespace transform::rpc;
 
 /**
  * A per core sharded service that handles custom data path requests for data
@@ -30,9 +30,9 @@ using namespace transform::rpc;
 class local_service {
 public:
     local_service(
-      std::unique_ptr<topic_metadata_cache> metadata_cache,
-      std::unique_ptr<partition_manager> partition_manager,
-      std::unique_ptr<reporter>);
+      std::unique_ptr<transform::rpc::topic_metadata_cache> metadata_cache,
+      std::unique_ptr<transform::rpc::partition_manager> partition_manager,
+      std::unique_ptr<transform::rpc::reporter>);
 
     ss::future<ss::chunked_fifo<transformed_topic_data_result>> produce(
       ss::chunked_fifo<transformed_topic_data> topic_data,
@@ -47,9 +47,9 @@ private:
       ss::chunked_fifo<model::record_batch>,
       model::timeout_clock::duration);
 
-    std::unique_ptr<topic_metadata_cache> _metadata_cache;
-    std::unique_ptr<partition_manager> _partition_manager;
-    std::unique_ptr<reporter> _reporter;
+    std::unique_ptr<transform::rpc::topic_metadata_cache> _metadata_cache;
+    std::unique_ptr<transform::rpc::partition_manager> _partition_manager;
+    std::unique_ptr<transform::rpc::reporter> _reporter;
 };
 
 /**

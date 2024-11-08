@@ -2,7 +2,7 @@
     "namespace": "kafka::data::rpc::impl",
     "service_name": "kafka_data_rpc",
     "includes": [
-        "transform/rpc/serde.h"
+        "kafka/data/rpc/serde.h"
     ],
     "methods": [
         {

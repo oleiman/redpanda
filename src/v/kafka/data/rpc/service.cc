@@ -35,8 +35,6 @@
 #include <system_error>
 #include <utility>
 
-using namespace transform::rpc;
-
 namespace kafka::data::rpc {
 namespace {
 //
@@ -64,31 +62,31 @@ cluster::errc map_errc(std::error_code ec) {
     return cluster::errc::replication_error;
 }
 
-iobuf make_iobuf(ss::sstring str) {
-    iobuf b;
-    b.append(str.data(), str.size());
-    return b;
-}
+// iobuf make_iobuf(ss::sstring str) {
+//     iobuf b;
+//     b.append(str.data(), str.size());
+//     return b;
+// }
 
-iobuf make_iobuf(uuid_t uuid) {
-    iobuf b;
-    b.append(uuid.mutable_uuid().begin(), uuid.length);
-    return b;
-}
+// iobuf make_iobuf(uuid_t uuid) {
+//     iobuf b;
+//     b.append(uuid.mutable_uuid().begin(), uuid.length);
+//     return b;
+// }
 
-model::record_header make_header(ss::sstring k, ss::sstring v) {
-    auto key = make_iobuf(std::move(k));
-    auto ks = int32_t(key.size_bytes());
-    auto value = make_iobuf(std::move(v));
-    auto vs = int32_t(value.size_bytes());
-    return {ks, std::move(key), vs, std::move(value)};
-}
+// model::record_header make_header(ss::sstring k, ss::sstring v) {
+//     auto key = make_iobuf(std::move(k));
+//     auto ks = int32_t(key.size_bytes());
+//     auto value = make_iobuf(std::move(v));
+//     auto vs = int32_t(value.size_bytes());
+//     return {ks, std::move(key), vs, std::move(value)};
+// }
 } // namespace
 
 local_service::local_service(
-  std::unique_ptr<topic_metadata_cache> metadata_cache,
-  std::unique_ptr<partition_manager> partition_manager,
-  std::unique_ptr<reporter> reporter)
+  std::unique_ptr<transform::rpc::topic_metadata_cache> metadata_cache,
+  std::unique_ptr<transform::rpc::partition_manager> partition_manager,
+  std::unique_ptr<transform::rpc::reporter> reporter)
   : _metadata_cache(std::move(metadata_cache))
   , _partition_manager(std::move(partition_manager))
   , _reporter(std::move(reporter)) {}

@@ -446,12 +446,9 @@ ss::future<> audit_client::do_produce(
 
     std::optional<kafka::error_code> ec;
     while (!_as.abort_requested()) {
-        // TODO(oren): yuck lol
-        ss::chunked_fifo<model::record_batch> batches;
-        batches.emplace_back(batch.copy());
         auto r = co_await _rpc_client->produce(
           model::topic_partition{model::kafka_audit_logging_topic, pid},
-          std::move(batches));
+          batch.copy());
         ec.emplace(map_ec(r));
         co_await update_status(ec.value());
         if (ec.value() == kafka::error_code::none) {

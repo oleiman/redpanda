@@ -116,10 +116,7 @@ private:
     do_produce(model::record_batch, model::partition_id, audit_probe&);
     ss::future<> update_status(kafka::error_code);
     ss::future<> configure();
-    ss::future<> mitigate_error(std::exception_ptr);
     ss::future<> create_internal_topic();
-    ss::future<> inform(model::node_id id);
-    ss::future<> do_inform(model::node_id id);
 
 private:
     kafka::error_code _last_errc{kafka::error_code::unknown_server_error};
@@ -215,8 +212,9 @@ ss::future<> audit_client::initialize() {
     if (_is_initialized) {
         _probe = std::make_unique<client_probe>();
         _probe->setup_metrics([this]() {
-            return 1.0
-                   - (static_cast<double>(_send_sem.available_units()) / static_cast<double>(_max_buffer_size));
+            auto avail = static_cast<double>(_send_sem.available_units());
+            auto max = static_cast<double>(_max_buffer_size);
+            return 1.0 - (avail / max);
         });
     }
 }
@@ -273,26 +271,6 @@ ss::future<> audit_client::update_status(kafka::error_code errc) {
     _last_errc = errc;
 }
 
-ss::future<> audit_client::inform(model::node_id id) {
-    vlog(adtlog.trace, "inform: {}", id);
-
-    // Inform a particular node
-    if (id != kafka::client::unknown_node_id) {
-        return do_inform(id);
-    }
-
-    // Inform all nodes
-    return seastar::parallel_for_each(
-      _controller->get_members_table().local().node_ids(),
-      [this](model::node_id id) { return do_inform(id); });
-}
-
-ss::future<> audit_client::do_inform(model::node_id id) {
-    auto& fe = _controller->get_ephemeral_credential_frontend().local();
-    auto ec = co_await fe.inform(id, audit_principal);
-    vlog(adtlog.info, "Informed: broker: {}, ec: {}", id, ec);
-}
-
 ss::future<> audit_client::create_internal_topic() {
     // constexpr std::string_view seven_days = "604800000";
     using namespace std::chrono_literals;
@@ -328,7 +306,6 @@ ss::future<> audit_client::create_internal_topic() {
           model::kafka_audit_logging_topic);
     } else if (ec == cluster::errc::topic_already_exists) {
         vlog(adtlog.debug, "Auditing: topic already exists");
-        // co_await _client.update_metadata();
     } else {
         if (ec == cluster::errc::topic_invalid_replication_factor) {
             vlog(
@@ -337,9 +314,6 @@ ss::future<> audit_client::create_internal_topic() {
               "check/modify settings, then disable and re-enable "
               "'audit_enabled'");
         }
-        // const auto msg = topic.error_message.has_value() ?
-        // *topic.error_message
-        //                                                  : "<no_err_msg>";
         // TODO(oren): should there be a message? do we care?
         throw std::runtime_error(fmt::format("error_code: {}", ec));
     }
@@ -387,7 +361,6 @@ ss::future<> audit_client::shutdown() {
           client_drain_wait_timeout);
     }
     _send_sem.broken();
-    // co_await _client.stop();
     co_await _gate.close();
     _probe.reset(nullptr);
     vlog(adtlog.info, "Audit client stopped");
@@ -450,9 +423,7 @@ ss::future<> audit_client::produce(
                 });
           });
     } catch (const ss::broken_semaphore&) {
-        vlog(
-          adtlog.debug,
-          "Shutting down the auditor kafka::client, semaphore broken");
+        vlog(adtlog.debug, "Shutting down the audit client, semaphore broken");
     }
     co_return;
 }

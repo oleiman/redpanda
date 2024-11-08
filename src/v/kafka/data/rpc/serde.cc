@@ -13,19 +13,19 @@
 
 namespace kafka::data::rpc {
 
-transformed_topic_data::transformed_topic_data(
+kafka_topic_data::kafka_topic_data(
   model::topic_partition tp, model::record_batch b)
   : tp(std::move(tp)) {
     batches.reserve(1);
     batches.push_back(std::move(b));
 }
 
-transformed_topic_data::transformed_topic_data(
+kafka_topic_data::kafka_topic_data(
   model::topic_partition tp, ss::chunked_fifo<model::record_batch> b)
   : tp(std::move(tp))
   , batches(std::move(b)) {}
 
-transformed_topic_data transformed_topic_data::share() {
+kafka_topic_data kafka_topic_data::share() {
     ss::chunked_fifo<model::record_batch> shared;
     shared.reserve(batches.size());
     for (auto& batch : batches) {
@@ -35,7 +35,7 @@ transformed_topic_data transformed_topic_data::share() {
 }
 
 produce_request produce_request::share() {
-    ss::chunked_fifo<kafka::data::rpc::transformed_topic_data> shared;
+    ss::chunked_fifo<kafka::data::rpc::kafka_topic_data> shared;
     shared.reserve(topic_data.size());
     for (auto& data : topic_data) {
         shared.push_back(data.share());
@@ -58,12 +58,12 @@ std::ostream& operator<<(std::ostream& os, const produce_reply& reply) {
 }
 
 std::ostream&
-operator<<(std::ostream& os, const transformed_topic_data_result& result) {
+operator<<(std::ostream& os, const kafka_topic_data_result& result) {
     fmt::print(os, "{{ errc: {}, tp: {} }}", result.err, result.tp);
     return os;
 }
 
-std::ostream& operator<<(std::ostream& os, const transformed_topic_data& data) {
+std::ostream& operator<<(std::ostream& os, const kafka_topic_data& data) {
     fmt::print(
       os, "{{ tp: {}, batches_size: {} }}", data.tp, data.batches.size());
     return os;

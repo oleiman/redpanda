@@ -1841,37 +1841,37 @@ void application::wire_up_redpanda_services(
     construct_service(quota_mgr, std::ref(controller->get_quota_store())).get();
     construct_service(snc_quota_mgr, std::ref(snc_node_quota)).get();
 
-    // TODO(oren): separate service group for kafka data
-    construct_service(
-      _kafka_data_rpc_service,
-      ss::sharded_parameter([this] {
-          return transform::rpc::topic_metadata_cache::make_default(
-            &metadata_cache);
-      }),
-      ss::sharded_parameter([this] {
-          return transform::rpc::partition_manager::make_default(
-            &shard_table,
-            &partition_manager,
-            smp_service_groups.transform_smp_sg());
-      }),
-      ss::sharded_parameter([this] {
-          return transform::service::create_reporter(&_transform_service);
-      }))
-      .get();
+    if (kafka_data_rpc_enabled()) {
+        // TODO(oren): separate service group for kafka data
+        construct_service(
+          _kafka_data_rpc_service,
+          ss::sharded_parameter([this] {
+              return transform::rpc::topic_metadata_cache::make_default(
+                &metadata_cache);
+          }),
+          ss::sharded_parameter([this] {
+              return transform::rpc::partition_manager::make_default(
+                &shard_table,
+                &partition_manager,
+                smp_service_groups.transform_smp_sg());
+          }))
+          .get();
 
-    construct_service(
-      _kafka_data_rpc_client,
-      node_id,
-      ss::sharded_parameter([this] {
-          return transform::rpc::partition_leader_cache::make_default(
-            &controller->get_partition_leaders());
-      }),
-      ss::sharded_parameter([this] {
-          return transform::rpc::topic_creator::make_default(controller.get());
-      }),
-      &_connection_cache,
-      &_kafka_data_rpc_service)
-      .get();
+        construct_service(
+          _kafka_data_rpc_client,
+          node_id,
+          ss::sharded_parameter([this] {
+              return transform::rpc::partition_leader_cache::make_default(
+                &controller->get_partition_leaders());
+          }),
+          ss::sharded_parameter([this] {
+              return transform::rpc::topic_creator::make_default(
+                controller.get());
+          }),
+          &_connection_cache,
+          &_kafka_data_rpc_service)
+          .get();
+    }
 
     syschecks::systemd_message("Creating auditing subsystem").get();
     construct_service(
@@ -2390,10 +2390,7 @@ bool application::datalake_enabled() {
 }
 
 bool application::kafka_data_rpc_enabled() {
-    // NOTE(oren): need to build all that stuff unconditionally i suppose
-    return true;
-    // return wasm_data_transforms_enabled()
-    //        || config::shard_local_cfg().audit_enabled();
+    return config::shard_local_cfg().audit_enabled();
 }
 
 ss::future<>

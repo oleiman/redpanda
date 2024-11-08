@@ -22,12 +22,6 @@
 
 namespace kafka::data::rpc {
 
-// using produce_request = transform::rpc::produce_request;
-// using transformed_topic_data = transform::rpc::transformed_topic_data;
-// using produce_reply = transform::rpc::produce_reply;
-// using transformed_topic_data_result
-//   = transform::rpc::transformed_topic_data_result;
-
 /**
  * A client for kafka data plane rpcs.
  *

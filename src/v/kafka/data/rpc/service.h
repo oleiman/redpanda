@@ -21,8 +21,6 @@
 
 namespace kafka::data::rpc {
 
-// using namespace transform::rpc;
-
 /**
  * A per core sharded service that handles custom data path requests for data
  * transforms and storage of wasm binaries.
@@ -31,16 +29,15 @@ class local_service {
 public:
     local_service(
       std::unique_ptr<transform::rpc::topic_metadata_cache> metadata_cache,
-      std::unique_ptr<transform::rpc::partition_manager> partition_manager,
-      std::unique_ptr<transform::rpc::reporter>);
+      std::unique_ptr<transform::rpc::partition_manager> partition_manager);
 
-    ss::future<ss::chunked_fifo<transformed_topic_data_result>> produce(
-      ss::chunked_fifo<transformed_topic_data> topic_data,
+    ss::future<ss::chunked_fifo<kafka_topic_data_result>> produce(
+      ss::chunked_fifo<kafka_topic_data> topic_data,
       model::timeout_clock::duration timeout);
 
 private:
-    ss::future<transformed_topic_data_result>
-      produce(transformed_topic_data, model::timeout_clock::duration);
+    ss::future<kafka_topic_data_result>
+      produce(kafka_topic_data, model::timeout_clock::duration);
 
     ss::future<result<model::offset, cluster::errc>> produce(
       model::any_ntp auto,
@@ -49,7 +46,6 @@ private:
 
     std::unique_ptr<transform::rpc::topic_metadata_cache> _metadata_cache;
     std::unique_ptr<transform::rpc::partition_manager> _partition_manager;
-    std::unique_ptr<transform::rpc::reporter> _reporter;
 };
 
 /**

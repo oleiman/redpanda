@@ -21,24 +21,21 @@
 
 namespace kafka::data::rpc {
 
-struct transformed_topic_data
-  : serde::envelope<
-      transformed_topic_data,
-      serde::version<0>,
-      serde::compat_version<0>> {
+struct kafka_topic_data
+  : serde::
+      envelope<kafka_topic_data, serde::version<0>, serde::compat_version<0>> {
     using rpc_adl_exempt = std::true_type;
 
-    transformed_topic_data() = default;
-    transformed_topic_data(model::topic_partition, model::record_batch);
-    transformed_topic_data(
+    kafka_topic_data() = default;
+    kafka_topic_data(model::topic_partition, model::record_batch);
+    kafka_topic_data(
       model::topic_partition, ss::chunked_fifo<model::record_batch>);
 
     model::topic_partition tp;
     ss::chunked_fifo<model::record_batch> batches;
 
-    transformed_topic_data share();
-    friend std::ostream&
-    operator<<(std::ostream&, const transformed_topic_data&);
+    kafka_topic_data share();
+    friend std::ostream& operator<<(std::ostream&, const kafka_topic_data&);
 
     auto serde_fields() { return std::tie(tp, batches); }
 };
@@ -50,7 +47,7 @@ struct produce_request
 
     produce_request() = default;
     produce_request(
-      ss::chunked_fifo<transformed_topic_data> topic_data,
+      ss::chunked_fifo<kafka_topic_data> topic_data,
       model::timeout_clock::duration timeout)
       : topic_data{std::move(topic_data)}
       , timeout{timeout} {}
@@ -60,17 +57,17 @@ struct produce_request
     produce_request share();
     friend std::ostream& operator<<(std::ostream&, const produce_request&);
 
-    ss::chunked_fifo<transformed_topic_data> topic_data;
+    ss::chunked_fifo<kafka_topic_data> topic_data;
     model::timeout_clock::duration timeout{};
 };
 
-struct transformed_topic_data_result
+struct kafka_topic_data_result
   : serde::envelope<
-      transformed_topic_data_result,
+      kafka_topic_data_result,
       serde::version<0>,
       serde::compat_version<0>> {
-    transformed_topic_data_result() = default;
-    transformed_topic_data_result(model::topic_partition tp, cluster::errc ec)
+    kafka_topic_data_result() = default;
+    kafka_topic_data_result(model::topic_partition tp, cluster::errc ec)
       : tp(std::move(tp))
       , err(ec) {}
 
@@ -79,7 +76,7 @@ struct transformed_topic_data_result
 
     auto serde_fields() { return std::tie(tp, err); }
     friend std::ostream&
-    operator<<(std::ostream&, const transformed_topic_data_result&);
+    operator<<(std::ostream&, const kafka_topic_data_result&);
 };
 
 struct produce_reply
@@ -88,13 +85,13 @@ struct produce_reply
     using rpc_adl_exempt = std::true_type;
 
     produce_reply() = default;
-    explicit produce_reply(ss::chunked_fifo<transformed_topic_data_result> r)
+    explicit produce_reply(ss::chunked_fifo<kafka_topic_data_result> r)
       : results(std::move(r)) {}
 
     auto serde_fields() { return std::tie(results); }
 
     friend std::ostream& operator<<(std::ostream&, const produce_reply&);
 
-    ss::chunked_fifo<transformed_topic_data_result> results;
+    ss::chunked_fifo<kafka_topic_data_result> results;
 };
 } // namespace kafka::data::rpc

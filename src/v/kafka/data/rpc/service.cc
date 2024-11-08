@@ -37,7 +37,7 @@
 
 namespace kafka::data::rpc {
 namespace {
-//
+
 raft::replicate_options
 make_replicate_options(model::timeout_clock::duration timeout) {
     return {
@@ -62,52 +62,30 @@ cluster::errc map_errc(std::error_code ec) {
     return cluster::errc::replication_error;
 }
 
-// iobuf make_iobuf(ss::sstring str) {
-//     iobuf b;
-//     b.append(str.data(), str.size());
-//     return b;
-// }
-
-// iobuf make_iobuf(uuid_t uuid) {
-//     iobuf b;
-//     b.append(uuid.mutable_uuid().begin(), uuid.length);
-//     return b;
-// }
-
-// model::record_header make_header(ss::sstring k, ss::sstring v) {
-//     auto key = make_iobuf(std::move(k));
-//     auto ks = int32_t(key.size_bytes());
-//     auto value = make_iobuf(std::move(v));
-//     auto vs = int32_t(value.size_bytes());
-//     return {ks, std::move(key), vs, std::move(value)};
-// }
 } // namespace
 
 local_service::local_service(
   std::unique_ptr<transform::rpc::topic_metadata_cache> metadata_cache,
-  std::unique_ptr<transform::rpc::partition_manager> partition_manager,
-  std::unique_ptr<transform::rpc::reporter> reporter)
+  std::unique_ptr<transform::rpc::partition_manager> partition_manager)
   : _metadata_cache(std::move(metadata_cache))
-  , _partition_manager(std::move(partition_manager))
-  , _reporter(std::move(reporter)) {}
+  , _partition_manager(std::move(partition_manager)) {}
 
-ss::future<ss::chunked_fifo<transformed_topic_data_result>>
-local_service::produce(
-  ss::chunked_fifo<transformed_topic_data> topic_data,
+ss::future<ss::chunked_fifo<kafka_topic_data_result>> local_service::produce(
+  ss::chunked_fifo<kafka_topic_data> topic_data,
   model::timeout_clock::duration timeout) {
-    ss::chunked_fifo<transformed_topic_data_result> results;
+    ss::chunked_fifo<kafka_topic_data_result> results;
     constexpr size_t max_concurrent_produces = 10;
     ss::semaphore sem(max_concurrent_produces);
     co_await ss::parallel_for_each(
       std::make_move_iterator(topic_data.begin()),
       std::make_move_iterator(topic_data.end()),
-      [this, timeout, &results, &sem](transformed_topic_data data) {
+      [this, timeout, &results, &sem](kafka_topic_data data) {
           return ss::with_semaphore(
             sem,
             1,
             [this, timeout, &results, data = std::move(data)]() mutable {
                 return produce(std::move(data), timeout)
-                  .then([&results](transformed_topic_data_result r) {
+                  .then([&results](kafka_topic_data_result r) {
                       results.push_back(std::move(r));
                   });
             });
@@ -115,12 +93,12 @@ local_service::produce(
     co_return results;
 }
 
-ss::future<transformed_topic_data_result> local_service::produce(
-  transformed_topic_data data, model::timeout_clock::duration timeout) {
+ss::future<kafka_topic_data_result> local_service::produce(
+  kafka_topic_data data, model::timeout_clock::duration timeout) {
     auto ktp = model::ktp(data.tp.topic, data.tp.partition);
     auto result = co_await produce(ktp, std::move(data.batches), timeout);
     auto ec = result.has_error() ? result.error() : cluster::errc::success;
-    co_return transformed_topic_data_result(data.tp, ec);
+    co_return kafka_topic_data_result(data.tp, ec);
 }
 
 ss::future<result<model::offset, cluster::errc>> local_service::produce(
@@ -148,7 +126,6 @@ ss::future<result<model::offset, cluster::errc>> local_service::produce(
     }
     auto rdr = model::make_foreign_fragmented_memory_record_batch_reader(
       std::move(batches));
-    // TODO: schema validation
     co_return co_await _partition_manager->invoke_on_shard(
       *shard,
       ntp,

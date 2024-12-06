@@ -11,6 +11,8 @@
 #include "cloud_io/tests/scoped_remote.h"
 #include "cloud_storage/tests/s3_imposter.h"
 #include "datalake/catalog_schema_manager.h"
+#include "gtest/gtest.h"
+#include "iceberg/datatypes.h"
 #include "iceberg/field_collecting_visitor.h"
 #include "iceberg/filesystem_catalog.h"
 #include "iceberg/table_identifier.h"
@@ -23,14 +25,40 @@ using namespace iceberg;
 
 namespace {
 const auto table_ident = table_identifier{.ns = {"redpanda"}, .table = "foo"};
+
+// TODO(oren): remove
+// DFS iteration through fields of the target schema. When it encounters a field
+// of type 'curr', that field is indiscriminately promoted to 'dest'
+[[maybe_unused]] chunked_vector<ss::sstring>
+promote_type(struct_type& schema, primitive_type curr, primitive_type dest) {
+    chunked_vector<ss::sstring> result;
+    chunked_vector<nested_field*> stack;
+    stack.reserve(schema.fields.size());
+    for (auto& f : std::ranges::reverse_view(schema.fields)) {
+        stack.emplace_back(f.get());
+    }
+    while (!stack.empty()) {
+        auto* fld = stack.back();
+        if (fld->type == curr) {
+            std::cerr << fmt::format(
+              "{} [{}]: {} -> {}\n", fld->name, fld->id, fld->type, dest);
+            fld->type = dest;
+            result.push_back(fld->name);
+        }
+        stack.pop_back();
+        // NOTE(oren): in principal we won't hit this for types we care about
+        // because primitive type visitation is a no-op.
+        std::visit(reverse_field_collecting_visitor(stack), fld->type);
+    }
+    return result;
+}
+
 } // namespace
 
-class CatalogSchemaManagerTest
-  : public s3_imposter_fixture
-  , public ::testing::Test {
+class CatalogSchemaManagerTestBase : public s3_imposter_fixture {
 public:
     static constexpr std::string_view base_location{"test"};
-    CatalogSchemaManagerTest()
+    CatalogSchemaManagerTestBase()
       : sr(cloud_io::scoped_remote::create(10, conf))
       , catalog(remote(), bucket_name, ss::sstring(base_location))
       , schema_mgr(catalog) {
@@ -87,8 +115,13 @@ public:
     catalog_schema_manager schema_mgr;
 };
 
+class CatalogSchemaManagerTest
+  : public CatalogSchemaManagerTestBase
+  , public ::testing::Test {};
+
 TEST_F(CatalogSchemaManagerTest, TestCreateTable) {
     auto type = std::get<struct_type>(test_nested_schema_type());
+    std::cerr << type << std::endl;
     reset_field_ids(type);
 
     // Create the table
@@ -271,4 +304,121 @@ TEST_F(CatalogSchemaManagerTest, TestTypeMismatch) {
     auto res = schema_mgr.get_registered_ids(model::topic{"foo"}, type).get();
     ASSERT_TRUE(res.has_error());
     EXPECT_EQ(res.error(), schema_manager::errc::not_supported);
+}
+
+struct type_promotion_case {
+    using is_legal = ss::bool_class<struct is_legal_tag>;
+    primitive_type source;
+    primitive_type dest;
+    is_legal legal;
+
+    friend std::ostream&
+    operator<<(std::ostream& os, const type_promotion_case& tc) {
+        fmt::print(
+          os,
+          "{{promote {} to {} [{}]}}",
+          tc.source,
+          tc.dest,
+          tc.legal ? "LEGAL" : "ILLEGAL");
+        return os;
+    }
+};
+
+class PrimitiveTypePromotionTest
+  : public CatalogSchemaManagerTestBase
+  , public testing::TestWithParam<type_promotion_case> {
+public:
+    primitive_type source_type() const { return make_copy(GetParam().source); }
+    primitive_type dest_type() const { return make_copy(GetParam().dest); }
+    bool expect_allowed() const { return (bool)GetParam().legal; }
+    void append_source_type(struct_type& type) const {
+        // TODO(oren): maybe should compute the field id
+        type.fields.emplace_back(nested_field::create(
+          18, "some_test_field", field_required::no, source_type()));
+    }
+    void promote(struct_type& type) const {
+        type.fields.back()->type = dest_type();
+    }
+    struct_type get_source_struct() const {
+        auto type = std::get<struct_type>(test_nested_schema_type());
+        append_source_type(type);
+        return type;
+    }
+};
+
+INSTANTIATE_TEST_SUITE_P(
+  ImplementsPrimitiveTypePromotion,
+  PrimitiveTypePromotionTest,
+  ::testing::Values(
+    type_promotion_case{
+      .source = int_type{},
+      .dest = long_type{},
+      .legal = type_promotion_case::is_legal::yes,
+    },
+    type_promotion_case{
+      .source = date_type{},
+      .dest = timestamp_type{},
+      .legal = type_promotion_case::is_legal::yes,
+    },
+    type_promotion_case{
+      .source = float_type{},
+      .dest = double_type{},
+      .legal = type_promotion_case::is_legal::yes,
+    },
+    type_promotion_case{
+      .source = decimal_type{.precision = 10, .scale = 2},
+      .dest = decimal_type{.precision = 20, .scale = 2},
+      .legal = type_promotion_case::is_legal::yes,
+    },
+    type_promotion_case{
+      .source = int_type{},
+      .dest = string_type{},
+      .legal = type_promotion_case::is_legal::no,
+    })); // TODO(oren): add some more illegal cases
+
+TEST_P(PrimitiveTypePromotionTest, CanDoTypePromotion) {
+    auto type = get_source_struct();
+    create_table(type);
+    reset_field_ids(type);
+    promote(type);
+
+    auto ensure_res
+      = schema_mgr.ensure_table_schema(model::topic{"foo"}, type).get();
+
+    if (expect_allowed()) {
+        ASSERT_FALSE(ensure_res.has_error());
+    } else {
+        ASSERT_TRUE(ensure_res.has_error());
+        EXPECT_EQ(ensure_res.error(), schema_manager::errc::not_supported);
+    }
+
+    // TODO(oren): how do we confirm that the evolution is valid. like what does
+    // it look like? basically the fields should all be exactly the same (ids
+    // and that) but with the promoted type.
+
+    auto fill_res
+      = schema_mgr.get_registered_ids(model::topic{"foo"}, type).get();
+    if (expect_allowed()) {
+        ASSERT_FALSE(fill_res.has_error());
+    } else {
+        ASSERT_TRUE(fill_res.has_error());
+        EXPECT_EQ(ensure_res.error(), schema_manager::errc::not_supported);
+    }
+
+    // check that the table schema was updated appropriately
+
+    // TODO(oren): need to implement the actual transaction for these to work
+    // for legal ones
+
+    if (!expect_allowed()) {
+        type = get_source_struct();
+        reset_field_ids(type);
+        fill_res
+          = schema_mgr.get_registered_ids(model::topic{"foo"}, type).get();
+        ASSERT_FALSE(fill_res.has_error());
+
+        auto loaded_table = load_table_schema(table_ident).get();
+        ASSERT_TRUE(loaded_table.has_value());
+        ASSERT_EQ(loaded_table.value().schema_struct, type);
+    }
 }

@@ -12,6 +12,7 @@
 #include "base/vlog.h"
 #include "datalake/logger.h"
 #include "datalake/table_definition.h"
+#include "iceberg/datatypes.h"
 #include "iceberg/field_collecting_visitor.h"
 #include "iceberg/table_identifier.h"
 #include "iceberg/transaction.h"
@@ -40,6 +41,69 @@ enum class fill_errc {
     // We couldn't fill all the columns, but the ones we could all matched.
     incomplete,
 };
+
+struct primitive_type_promotion_visitor {
+    template<typename T, typename U>
+    requires(!std::is_same_v<T, U>)
+    bool operator()(const T&, const U&) const {
+        return false;
+    }
+
+    template<typename T>
+    bool operator()(const T&, const T&) const {
+        return true;
+    }
+
+    bool operator()(const iceberg::int_type&, const iceberg::long_type&) const {
+        return true;
+    }
+
+    bool operator()(
+      const iceberg::date_type&, const iceberg::timestamp_type&) const {
+        // TODO(oren): I think a bounds check is required here?
+        return true;
+    }
+
+    // NOTE(oren): looks like timetsamp_ns is not supported. Intentional?
+    // bool
+    // operator()(const iceberg::date_type&, const iceberg::timestamp_ns_type)
+    // const {
+    //     return true;
+    // }
+
+    bool operator()(const iceberg::float_type&, const iceberg::double_type&) {
+        return true;
+    }
+
+    bool operator()(
+      const iceberg::decimal_type& src, const iceberg::decimal_type& dst) {
+        return dst.scale == src.scale && dst.precision > src.precision;
+    }
+};
+
+struct type_promotion_visitor {
+    template<typename T, typename U>
+    requires(!std::is_same_v<T, U>)
+    bool operator()(const T&, const U&) const {
+        return false;
+    }
+
+    template<typename T>
+    bool operator()(const T&, const T&) const {
+        return true;
+    }
+
+    bool operator()(
+      const iceberg::primitive_type& src, const iceberg::primitive_type& dst) {
+        return std::visit(primitive_type_promotion_visitor{}, src, dst);
+    }
+};
+
+bool satisfies_type_promotion_policy(
+  const iceberg::field_type& src, const iceberg::field_type& dst) {
+    return std::visit(type_promotion_visitor{}, src, dst);
+}
+
 // Performs a simultaneous, depth-first iteration through fields of the two
 // schemas, filling dest's field IDs with those from the source. Returns
 // successfully if all the field IDs in the destination type are filled.
@@ -61,7 +125,7 @@ fill_field_ids(iceberg::struct_type& dest, const iceberg::struct_type& source) {
         auto* src = source_stack.back();
         if (
           dst->name != src->name || dst->required != src->required
-          || dst->type.index() != src->type.index()) {
+          || !satisfies_type_promotion_policy(src->type, dst->type)) {
             return fill_errc::mismatch;
         }
         dst->id = src->id;

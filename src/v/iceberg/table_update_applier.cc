@@ -26,6 +26,7 @@ struct update_applying_visitor {
     table_metadata& meta;
 
     outcome operator()(const add_schema& update) {
+        std::cerr << "ADD SCHEMA - TODO(oren): THIS ONE" << std::endl;
         auto sid = update.schema.schema_id;
         auto s = std::ranges::find(meta.schemas, sid, &schema::schema_id);
         if (s != meta.schemas.end()) {

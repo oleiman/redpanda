@@ -150,6 +150,15 @@ filesystem_catalog::commit_txn(
             co_return errc::unexpected_state;
         }
     }
+    fmt::print(
+      std::cerr,
+      "ID: {}, N: {}, SCHM: {}\n",
+      current_tmeta.value().tmeta.current_schema_id,
+      current_tmeta.value().tmeta.schemas.size(),
+      current_tmeta.value()
+        .tmeta.schemas[current_tmeta.value().tmeta.current_schema_id]
+        .schema_struct);
+
     auto current_version = current_tmeta.value().version;
     co_return co_await write_table_meta(
       table_ident, new_tmeta, current_version);

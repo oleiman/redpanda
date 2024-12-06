@@ -25,34 +25,6 @@ using namespace iceberg;
 
 namespace {
 const auto table_ident = table_identifier{.ns = {"redpanda"}, .table = "foo"};
-
-// TODO(oren): remove
-// DFS iteration through fields of the target schema. When it encounters a field
-// of type 'curr', that field is indiscriminately promoted to 'dest'
-[[maybe_unused]] chunked_vector<ss::sstring>
-promote_type(struct_type& schema, primitive_type curr, primitive_type dest) {
-    chunked_vector<ss::sstring> result;
-    chunked_vector<nested_field*> stack;
-    stack.reserve(schema.fields.size());
-    for (auto& f : std::ranges::reverse_view(schema.fields)) {
-        stack.emplace_back(f.get());
-    }
-    while (!stack.empty()) {
-        auto* fld = stack.back();
-        if (fld->type == curr) {
-            std::cerr << fmt::format(
-              "{} [{}]: {} -> {}\n", fld->name, fld->id, fld->type, dest);
-            fld->type = dest;
-            result.push_back(fld->name);
-        }
-        stack.pop_back();
-        // NOTE(oren): in principal we won't hit this for types we care about
-        // because primitive type visitation is a no-op.
-        std::visit(reverse_field_collecting_visitor(stack), fld->type);
-    }
-    return result;
-}
-
 } // namespace
 
 class CatalogSchemaManagerTestBase : public s3_imposter_fixture {
@@ -328,20 +300,29 @@ class PrimitiveTypePromotionTest
   : public CatalogSchemaManagerTestBase
   , public testing::TestWithParam<type_promotion_case> {
 public:
-    primitive_type source_type() const { return make_copy(GetParam().source); }
-    primitive_type dest_type() const { return make_copy(GetParam().dest); }
+    primitive_type source_field_type() const {
+        return make_copy(GetParam().source);
+    }
+    primitive_type dest_field_type() const {
+        return make_copy(GetParam().dest);
+    }
     bool expect_allowed() const { return (bool)GetParam().legal; }
-    void append_source_type(struct_type& type) const {
+    void append_field(struct_type& type, field_type field) const {
         // TODO(oren): maybe should compute the field id
         type.fields.emplace_back(nested_field::create(
-          18, "some_test_field", field_required::no, source_type()));
+          18, "some_test_field", field_required::no, std::move(field)));
     }
     void promote(struct_type& type) const {
-        type.fields.back()->type = dest_type();
+        type.fields.back()->type = dest_field_type();
     }
     struct_type get_source_struct() const {
         auto type = std::get<struct_type>(test_nested_schema_type());
-        append_source_type(type);
+        append_field(type, source_field_type());
+        return type;
+    }
+    struct_type get_dest_struct() const {
+        auto type = std::get<struct_type>(test_nested_schema_type());
+        append_field(type, dest_field_type());
         return type;
     }
 };
@@ -374,51 +355,80 @@ INSTANTIATE_TEST_SUITE_P(
       .source = int_type{},
       .dest = string_type{},
       .legal = type_promotion_case::is_legal::no,
+    },
+    type_promotion_case{
+      .source = double_type{},
+      .dest = float_type{},
+      .legal = type_promotion_case::is_legal::no,
+    },
+    type_promotion_case{
+      .source = decimal_type{.precision = 10, .scale = 2},
+      .dest = decimal_type{.precision = 10, .scale = 3},
+      .legal = type_promotion_case::is_legal::no,
+    },
+    type_promotion_case{
+      .source = decimal_type{.precision = 10, .scale = 2},
+      .dest = decimal_type{.precision = 5, .scale = 2},
+      .legal = type_promotion_case::is_legal::no,
+    },
+    type_promotion_case{
+      .source = date_type{},
+      .dest = timestamptz_type{},
+      .legal = type_promotion_case::is_legal::no,
+    },
+    type_promotion_case{
+      .source = fixed_type{.length = 32},
+      .dest = fixed_type{.length = 64},
+      .legal = type_promotion_case::is_legal::no,
     })); // TODO(oren): add some more illegal cases
 
 TEST_P(PrimitiveTypePromotionTest, CanDoTypePromotion) {
     auto type = get_source_struct();
     create_table(type);
-    reset_field_ids(type);
     promote(type);
+    reset_field_ids(type);
 
     auto ensure_res
       = schema_mgr.ensure_table_schema(model::topic{"foo"}, type).get();
 
     if (expect_allowed()) {
-        ASSERT_FALSE(ensure_res.has_error());
+        ASSERT_FALSE(ensure_res.has_error()) << ensure_res.error();
     } else {
         ASSERT_TRUE(ensure_res.has_error());
-        EXPECT_EQ(ensure_res.error(), schema_manager::errc::not_supported);
+        EXPECT_EQ(ensure_res.error(), schema_manager::errc::not_supported)
+          << ensure_res.error();
     }
 
-    // TODO(oren): how do we confirm that the evolution is valid. like what does
-    // it look like? basically the fields should all be exactly the same (ids
-    // and that) but with the promoted type.
+    // TODO(oren): how do we confirm that the evolution is valid. like
+    // what does it look like? basically the fields should all be exactly
+    // the same (ids and that) but with the promoted type.
 
     auto fill_res
       = schema_mgr.get_registered_ids(model::topic{"foo"}, type).get();
     if (expect_allowed()) {
-        ASSERT_FALSE(fill_res.has_error());
+        ASSERT_FALSE(fill_res.has_error()) << fill_res.error();
     } else {
         ASSERT_TRUE(fill_res.has_error());
-        EXPECT_EQ(ensure_res.error(), schema_manager::errc::not_supported);
+        EXPECT_EQ(fill_res.error(), schema_manager::errc::not_supported)
+          << fill_res.error();
     }
 
     // check that the table schema was updated appropriately
 
-    // TODO(oren): need to implement the actual transaction for these to work
-    // for legal ones
+    // TODO(oren): need to implement the actual transaction for these to
+    // work for legal ones
 
     if (!expect_allowed()) {
+        // In this case, we want to assert that the table schema didn't
+        // change
         type = get_source_struct();
         reset_field_ids(type);
         fill_res
           = schema_mgr.get_registered_ids(model::topic{"foo"}, type).get();
-        ASSERT_FALSE(fill_res.has_error());
-
-        auto loaded_table = load_table_schema(table_ident).get();
-        ASSERT_TRUE(loaded_table.has_value());
-        ASSERT_EQ(loaded_table.value().schema_struct, type);
+        ASSERT_FALSE(fill_res.has_error()) << fill_res.error();
     }
+
+    auto loaded_table = load_table_schema(table_ident).get();
+    ASSERT_TRUE(loaded_table.has_value());
+    ASSERT_EQ(loaded_table.value().schema_struct, type);
 }

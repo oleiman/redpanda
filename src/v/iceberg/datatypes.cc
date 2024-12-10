@@ -105,7 +105,7 @@ format_nested_field_ptr_name_type(const iceberg::nested_field_ptr& ptr) {
     if (ptr == nullptr) {
         return "null";
     }
-    return fmt::format("{}<{}>", ptr->name, ptr->type);
+    return fmt::format("{}<{}:{}>", ptr->name, ptr->id, ptr->type);
 }
 
 } // namespace

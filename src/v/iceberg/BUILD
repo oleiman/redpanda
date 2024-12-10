@@ -120,6 +120,8 @@ redpanda_cc_library(
     ],
 )
 
+# TODO(oren): Add compatibililty target
+
 redpanda_cc_library(
     name = "datatypes_json",
     srcs = [

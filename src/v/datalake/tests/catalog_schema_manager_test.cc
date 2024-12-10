@@ -388,6 +388,8 @@ TEST_P(PrimitiveTypePromotionTest, CanDoTypePromotion) {
     promote(type);
     reset_field_ids(type);
 
+    std::cerr << type << std::endl;
+
     auto ensure_res
       = schema_mgr.ensure_table_schema(model::topic{"foo"}, type).get();
 

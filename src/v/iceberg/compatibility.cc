@@ -45,13 +45,13 @@ std::ostream& operator<<(std::ostream& os, const evo_action& act) {
           act.op,
           **act.src_field,
           **act.dest_field);
-    } else if (auto f = act.src_field.value_or(
-                 act.dest_field.value_or(nullptr));
-               f != nullptr) {
+    } else if (auto& f = act.src_field; f.has_value()) {
+        fmt::print(os, "{{{} {}}}", act.op, **f);
+    } else if (auto* f = act.dest_field.value_or(nullptr); f != nullptr) {
         fmt::print(os, "{{{} {}}}", act.op, *f);
-    } else {
-        fmt::print(os, "{{Invalid action ({})}}", act.op);
-    }
+    } // else {
+    //     fmt::print(os, "{{{}}}", act.op);
+    // }
     return os;
 }
 std::ostream& operator<<(std::ostream& os, const compat_plan& plan) {
@@ -59,7 +59,7 @@ std::ostream& operator<<(std::ostream& os, const compat_plan& plan) {
       os,
       "plan: \n{}",
       fmt::join(
-        plan.actions | std::views::filter([](const auto act) {
+        plan.actions | std::views::filter([](const auto& act) {
             return act.op != evo_operation::fill;
         }),
         ",\n"));
@@ -190,6 +190,254 @@ bool satisfies_type_promotion_policy(
       type_promotion_visitor{primitive_type_promotion_policy_visitor{}},
       src,
       dst);
+}
+
+class dispatching_compat_visitor;
+class schema_visitor;
+
+struct post_visit {
+    field_type* type;
+    dispatching_compat_visitor* visitor;
+    compat_plan get();
+};
+
+struct field_post_visit {
+    field_post_visit(
+      dispatching_compat_visitor* d, schema_visitor* v, nested_field* f)
+      : vis(v)
+      , field(f)
+      , fut(&field->type, d) {}
+    schema_visitor* vis;
+    nested_field* field;
+    post_visit fut;
+    compat_plan get();
+};
+
+class schema_visitor {
+public:
+    explicit schema_visitor(const struct_type& source)
+      : source_(source)
+      , current_type_(source_.copy()) {}
+
+    compat_plan
+    operator()(struct_type&, chunked_vector<field_post_visit> fields) {
+        vassert(
+          std::holds_alternative<struct_type>(current_type_),
+          "curr type must be struct");
+        compat_plan result{};
+        for (auto& fv : fields) {
+            result.merge(fv.get());
+        }
+        return result;
+    }
+
+    compat_plan operator()(nested_field* f, post_visit& fut) {
+        fmt::print(std::cerr, "VISITING NESTED FIELD {}\n", *f);
+        compat_plan result{};
+
+        static constexpr auto is_legal_req_update = [](
+                                                      field_required src,
+                                                      field_required dest) {
+            return !(src == field_required::no && dest == field_required::yes);
+        };
+
+        auto find_match = [&f](const struct_type& s, bool require_name = true)
+          -> std::optional<nested_field*> {
+            for (const auto& sf : s.fields) {
+                if (
+                  (f->name == sf->name || !require_name)
+                  && is_legal_req_update(sf->required, f->required)
+                  && satisfies_type_promotion_policy(sf->type, f->type)) {
+                    return sf.get();
+                }
+            }
+            return std::nullopt;
+        };
+
+        auto strct = std::get<struct_type>(current_type_).copy();
+
+        auto* sf = find_match(strct).value_or(
+          find_match(strct, false).value_or(nullptr));
+
+        if (sf != nullptr) {
+            // TODO(oren): should be FILL
+            result.actions.emplace_back(evo_operation::update, sf, f);
+            std::visit(set_curr_type_visitor{current_type_}, sf->type);
+            result.merge(fut.get());
+        } else {
+            result.actions.emplace_back(evo_operation::add, std::nullopt, f);
+        }
+
+        current_type_ = std::move(strct);
+
+        return result;
+    }
+
+    compat_plan operator()(const list_type& t, post_visit fut) {
+        vassert(
+          std::holds_alternative<list_type>(current_type_),
+          "Must be visiting a list");
+
+        std::cerr << "VISIT LIST TYPE" << std::endl;
+
+        auto list = std::get<list_type>(current_type_).copy();
+
+        std::visit(
+          set_curr_type_visitor{current_type_}, list.element_field->type);
+
+        // TODO(oren): check element required
+
+        auto element_plan = fut.get();
+
+        // TODO(oren): are there rules on what kinds of evolutions can take
+        // place for a list element?
+
+        // TODO(oren): we'll probably be propagating errors, ultimately
+        if (!element_plan.actions.empty()) {
+            // make sure we assign the compatible source list's
+            element_plan.actions.emplace_back(
+              evo_operation::update,
+              list.element_field.get(),
+              t.element_field.get());
+        }
+
+        current_type_ = std::move(list);
+
+        return element_plan;
+    }
+
+    compat_plan
+    operator()(map_type& t, post_visit key_fut, post_visit val_fut) {
+        vassert(
+          std::holds_alternative<map_type>(current_type_), "Expected Map");
+
+        auto map = std::get<map_type>(current_type_).copy();
+
+        // TODO(oren): check key/value requiredness
+
+        std::visit(set_curr_type_visitor{current_type_}, map.key_field->type);
+        auto key_plan = key_fut.get();
+
+        if (!key_plan.actions.empty()) {
+            fmt::print(std::cerr, "Key plan: {}", key_plan);
+            key_plan.actions.emplace_back(
+              evo_operation::update, map.key_field.get(), t.key_field.get());
+        }
+
+        // TODO(oren): key update rules
+
+        std::visit(set_curr_type_visitor{current_type_}, map.value_field->type);
+        auto val_plan = val_fut.get();
+        if (!val_plan.actions.empty()) {
+            fmt::print(std::cerr, "Val plan: {}", val_plan);
+            val_plan.actions.emplace_back(
+              evo_operation::update,
+              map.value_field.get(),
+              t.value_field.get());
+        }
+
+        // TODO(oren): value update rules
+        current_type_ = std::move(map);
+
+        return std::move(key_plan.merge(std::move(val_plan)));
+    }
+
+    compat_plan operator()(const primitive_type& t) {
+        vassert(
+          std::holds_alternative<primitive_type>(current_type_),
+          "Must be primitive (these shouldn't be assertions)");
+
+        auto ptype = std::get<primitive_type>(current_type_);
+
+        compat_plan result{};
+
+        if (satisfies_type_promotion_policy(ptype, t)) {
+            std::cerr << "ELEMENT TYPE MATCH" << std::endl;
+            result.actions.emplace_back(
+              evo_operation::update, std::nullopt, std::nullopt);
+        }
+
+        return result;
+    }
+
+private:
+    // TODO(oren): collapse
+    struct set_curr_type_visitor {
+        field_type& curr;
+        void operator()(const struct_type& t) { curr = t.copy(); }
+        void operator()(const primitive_type& t) { curr = t; }
+        void operator()(const list_type& t) { curr = t.copy(); }
+        // TODO(oren): how do we set these???
+        void operator()(const map_type& t) { curr = t.copy(); }
+    };
+
+    [[maybe_unused]] const struct_type& source_;
+    field_type current_type_;
+};
+
+class dispatching_compat_visitor {
+public:
+    explicit dispatching_compat_visitor(const schema& source)
+      : source_(source)
+      , schema_vis_(source_.schema_struct) {}
+
+    compat_plan operator()(struct_type& t) {
+        compat_plan result{
+          .actions = {},
+          .source_highest_id = source_.highest_field_id().value_or(
+            nested_field::id_t{0}),
+        };
+
+        chunked_vector<field_post_visit> fields;
+        fields.reserve(t.fields.size());
+        std::transform(
+          t.fields.begin(),
+          t.fields.end(),
+          std::back_inserter(fields),
+          [this](auto& f) {
+              return field_post_visit{this, &schema_vis_, f.get()};
+          });
+
+        std::cerr << "Get ready for " << fields.size() << std::endl;
+
+        result.merge(schema_vis_(t, std::move(fields)));
+
+        return result;
+    }
+
+    compat_plan operator()(list_type& t) {
+        return schema_vis_(
+          t, post_visit{.type = &t.element_field->type, .visitor = this});
+
+        // deferred_visit{.type = &t.element_field->type, .visitor = this}
+    }
+
+    compat_plan operator()(map_type& t) {
+        return schema_vis_(
+          t,
+          post_visit{.type = &t.key_field->type, .visitor = this},
+          post_visit{.type = &t.value_field->type, .visitor = this});
+    }
+
+    // TODO(oren): these all should return a checked result. then we can surface
+    // incompatibilities and propagate them
+    compat_plan operator()(const primitive_type& t) { return schema_vis_(t); }
+
+    template<typename T>
+    compat_plan operator()(const T&) {
+        return compat_plan{};
+    }
+
+private:
+    const schema& source_;
+    schema_visitor schema_vis_;
+};
+
+compat_plan field_post_visit::get() { return (*vis)(field, fut); }
+compat_plan post_visit::get() { return std::visit(*visitor, *type); }
+
+compat_plan fancy_check_compatible(struct_type& dest, const schema& source) {
+    return dispatching_compat_visitor{source}(dest);
 }
 
 struct ordinal_field {

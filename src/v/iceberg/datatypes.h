@@ -97,6 +97,8 @@ struct list_type {
     nested_field_ptr element_field;
     friend bool operator==(const list_type& lhs, const list_type& rhs);
 
+    list_type copy() const;
+
     static list_type create(
       int32_t element_id, field_required element_required, field_type element);
 };
@@ -105,6 +107,8 @@ struct map_type {
     nested_field_ptr key_field;
     nested_field_ptr value_field;
     friend bool operator==(const map_type& lhs, const map_type& rhs);
+
+    map_type copy() const;
 
     static map_type create(
       int32_t key_id,

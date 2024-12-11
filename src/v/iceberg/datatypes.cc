@@ -314,6 +314,10 @@ struct_type struct_type::copy() const {
     return {std::move(fields_copy)};
 }
 
+list_type list_type::copy() const {
+    return list_type{.element_field = element_field->copy()};
+}
+
 list_type list_type::create(
   int32_t element_id, field_required element_required, field_type element) {
     // NOTE: the element field doesn't have a name. Functionally, the list type
@@ -326,6 +330,11 @@ list_type list_type::create(
     return list_type{
       .element_field = nested_field::create(
         element_id, "element", element_required, std::move(element))};
+}
+
+map_type map_type::copy() const {
+    return map_type{
+      .key_field = key_field->copy(), .value_field = value_field->copy()};
 }
 
 map_type map_type::create(

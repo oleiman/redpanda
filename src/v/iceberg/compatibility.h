@@ -35,10 +35,13 @@ struct evo_action {
       std::optional<const nested_field*> src_field,
       std::optional<nested_field*> dest_field)
       : op(op)
-      , src_field(src_field)
+      , src_field(
+          src_field
+            ? std::make_optional<nested_field_ptr>(src_field.value()->copy())
+            : std::nullopt)
       , dest_field(dest_field) {}
     evo_operation op;
-    std::optional<const nested_field*> src_field;
+    std::optional<nested_field_ptr> src_field;
     std::optional<nested_field*> dest_field;
 };
 
@@ -54,12 +57,24 @@ struct compat_plan {
     chunked_vector<evo_action> actions;
     // used to assign IDs to new columns and avoid reusing IDs for incompatible
     // types.
-    nested_field::id_t source_highest_id;
+    nested_field::id_t source_highest_id{0};
+    compat_plan& merge(compat_plan&& other) {
+        actions.reserve(actions.size() + other.actions.size());
+        std::ranges::move(
+          other.actions.begin(),
+          other.actions.end(),
+          std::back_inserter(actions));
+        source_highest_id = std::max(
+          source_highest_id, other.source_highest_id);
+        return *this;
+    }
 };
 
 std::ostream& operator<<(std::ostream&, const evo_operation&);
 std::ostream& operator<<(std::ostream&, const evo_action&);
 std::ostream& operator<<(std::ostream&, const compat_plan&);
+
+compat_plan fancy_check_compatible(struct_type& dest, const schema& source);
 
 checked<compat_plan, compat_errc>
 is_compatible(struct_type& dest, const schema& source);

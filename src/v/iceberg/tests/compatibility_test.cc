@@ -85,3 +85,53 @@ TEST(StructCompatibilityTest, CanGeneratePlan) {
     // ASSERT_FALSE(plan_res.has_error());
     // ASSERT_EQ(plan_res.value().actions.size(), 1) << plan_res.value();
 }
+
+TEST(StructCompatibilityTest, CanDoFancyCheck) {
+    int next_id = 1;
+    struct_type type;
+    type.fields.emplace_back(
+      nested_field::create(next_id++, "foo", field_required::yes, int_type{}));
+    {
+        struct_type obj;
+        obj.fields.emplace_back(nested_field::create(
+          next_id++, "field", field_required::yes, string_type{}));
+        auto kid = next_id++;
+        auto vid = next_id++;
+        obj.fields.emplace_back(nested_field::create(
+          next_id++,
+          "map",
+          field_required::yes,
+          map_type::create(
+            kid, string_type{}, vid, field_required::yes, date_type{})));
+        type.fields.emplace_back(nested_field::create(
+          next_id++, "obj", field_required::yes, std::move(obj)));
+    }
+    {
+        auto lt = list_type::create(next_id++, field_required::yes, int_type{});
+        type.fields.emplace_back(nested_field::create(
+          next_id++, "list", field_required::yes, std::move(lt)));
+    }
+
+    schema orig_schema{
+      .schema_struct = type.copy(),
+      .schema_id = schema::unassigned_id,
+      .identifier_field_ids = {},
+    };
+
+    type.fields[0]->required = field_required::no;
+    type.fields[0]->type = long_type{};
+    std::get<struct_type>(type.fields[1]->type).fields[0]->name = "new_field";
+    std::get<map_type>(
+      std::get<struct_type>(type.fields[1]->type).fields[1]->type)
+      .value_field->type
+      = timestamp_type{};
+
+    std::get<list_type>(type.fields[2]->type).element_field->type = long_type{};
+
+    type.fields.emplace_back(nested_field::create(
+      next_id++, "bar", field_required::no, boolean_type{}));
+
+    auto plan = fancy_check_compatible(type, orig_schema);
+
+    fmt::print(std::cerr, "{}\n", plan);
+}

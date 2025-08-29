@@ -73,7 +73,14 @@ struct WriteAtOffsetStmFixture
     struct offset_validating_consumer {
         ss::future<ss::stop_iteration> operator()(model::record_batch& batch) {
             if (batch.header().type != model::record_batch_type::raft_data) {
+                fmt::print(
+                  std::cerr, "Skipping batch type: {}\n", batch.header().type);
                 co_return ss::stop_iteration::no;
+            } else {
+                fmt::print(
+                  std::cerr,
+                  "Accepting batch: {}\n",
+                  batch.header().base_offset);
             }
             auto record_iterator = model::record_batch_iterator::create(batch);
             while (record_iterator.has_next()) {

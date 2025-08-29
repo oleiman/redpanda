@@ -185,6 +185,11 @@ ss::future<result<raft::replicate_result>> write_at_offset_stm::do_replicate(
             // fill with ghost batch.
             // The term argument is not important here, it will be
             // overriden in Raft layer
+            fmt::print(
+              std::cerr,
+              "MAKING GHOSTS: {}-{}\n",
+              kafka::offset_cast(kafka::next_offset(effective_last_offset)),
+              kafka::offset_cast(expected_prev_offset));
             auto ghost_batches = model::make_ghost_batches(
               kafka::offset_cast(kafka::next_offset(effective_last_offset)),
               kafka::offset_cast(expected_prev_offset),

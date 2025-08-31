@@ -800,3 +800,30 @@ redpanda_cc_library(
         "@seastar",
     ],
 )
+
+redpanda_cc_library(
+    name = "suffix_truncation_stm",
+    srcs = [
+        "suffix_truncation_stm.cc",
+    ],
+    hdrs = [
+        "suffix_truncate_record.h",
+        "suffix_truncation_stm.h",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/v/cluster",
+        "//src/v/cluster:state_machine_registry",
+        "//src/v/model",
+        "//src/v/raft",
+        "//src/v/raft:fundamental",
+        "//src/v/serde",
+        "//src/v/serde:iobuf",
+        "//src/v/storage",
+        "//src/v/storage:record_batch_builder",
+        # "//src/v/storage:record_batch_utils",
+        "//src/v/utils:mutex",
+        "//src/v/ssx:future_util",
+        "@seastar",
+    ],
+)

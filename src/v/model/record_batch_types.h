@@ -62,6 +62,7 @@ enum class record_batch_type : int8_t {
     cluster_link = 39,               // cluster link update batches
     group_block = 40, // (un)blocks group names in a consumer offsets partition
     l1_stm = 41,      // cloud_topics::l1::*
+    suffix_truncate = 42, // suffix_truncation_stm, used for DR failback
     MAX = l1_stm,
 };
 

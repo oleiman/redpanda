@@ -722,6 +722,28 @@ redpanda_cc_gtest(
     ],
 )
 
+redpanda_cc_gtest(
+    name = "suffix_truncation_stm_test",
+    timeout = "short",
+    srcs = [
+        "suffix_truncation_stm_test.cc",
+    ],
+    deps = [
+        "//src/v/cluster",
+        "//src/v/cluster:suffix_truncation_stm",
+        "//src/v/config",
+        "//src/v/kafka/data:log_reader_config",
+        "//src/v/kafka/server:write_at_offset_stm",
+        "//src/v/model/tests:random",
+        "//src/v/raft",
+        "//src/v/raft/tests:stm_test_fixture",
+        "//src/v/redpanda/tests:fixture",
+        "//src/v/test_utils:gtest",
+        "//src/v/test_utils:scoped_config",
+        "@googletest//:gtest",
+    ],
+)
+
 redpanda_cc_bench(
     name = "partition_allocator_b_rpbench",
     srcs = ["allocation_bench.cc"],

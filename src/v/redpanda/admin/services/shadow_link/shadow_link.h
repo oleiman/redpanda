@@ -25,7 +25,8 @@ public:
     shadow_link_service_impl(
       admin::proxy::client proxy_client,
       ss::sharded<cluster_link::service>* service,
-      ss::sharded<cluster::metadata_cache>* md_cache);
+      ss::sharded<cluster::metadata_cache>* md_cache,
+      ss::sharded<cluster::data_migrations::frontend>* data_migrations_fe);
 
     ss::future<proto::admin::create_shadow_link_response> create_shadow_link(
       serde::pb::rpc::context,
@@ -55,6 +56,11 @@ public:
     ss::future<proto::admin::list_shadow_topics_response> list_shadow_topics(
       serde::pb::rpc::context, proto::admin::list_shadow_topics_request) final;
 
+    ss::future<proto::admin::truncate_and_restore_response>
+      truncate_and_restore(
+        serde::pb::rpc::context,
+        proto::admin::truncate_and_restore_request) override;
+
 private:
     /**
      * @brief Returns a node to redirect the message to
@@ -77,5 +83,6 @@ private:
 
     ss::sharded<cluster_link::service>* _service;
     ss::sharded<cluster::metadata_cache>* _md_cache;
+    ss::sharded<cluster::data_migrations::frontend>* _data_migrations_frontend;
 };
 } // namespace admin

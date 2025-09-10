@@ -38,6 +38,7 @@ redpanda_cc_library(
     implementation_deps = [
         ":converter",
         ":err",
+        "//src/v/cluster",
         "//src/v/cluster_link",
         "//src/v/redpanda/admin/services:utils",
     ],

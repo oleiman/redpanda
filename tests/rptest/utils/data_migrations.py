@@ -45,7 +45,10 @@ class DataMigrationTestMixin(RedpandaTest):
         return Admin(redpanda, timeout_seconds=5)
 
     def wait_partitions_appear(
-        self, topics: list[TopicSpec], redpanda: RedpandaService | None = None
+        self,
+        topics: list[TopicSpec],
+        redpanda: RedpandaService | None = None,
+        timeout_sec: int = 90,
     ):
         if redpanda is None:
             redpanda = self.redpanda
@@ -70,7 +73,7 @@ class DataMigrationTestMixin(RedpandaTest):
 
         wait_until(
             lambda: all(topic_has_all_partitions(t) for t in topics),
-            timeout_sec=90,
+            timeout_sec=timeout_sec,
             backoff_sec=1,
             err_msg=err_msg(),
         )

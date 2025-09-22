@@ -433,6 +433,8 @@ public:
 
     bool is_stopped() const { return _stopped; }
 
+    size_t bytes_consumed() const { return _config.bytes_consumed; }
+
 private:
     friend class single_record_consumer;
     ss::future<std::unique_ptr<storage::continuous_batch_parser>>

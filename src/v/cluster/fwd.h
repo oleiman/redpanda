@@ -122,6 +122,12 @@ class backend;
 class store;
 }; // namespace client_quota
 
+namespace suffix_truncation {
+class frontend;
+class backend;
+class table;
+} // namespace suffix_truncation
+
 } // namespace cluster
 
 namespace seastar {

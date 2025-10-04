@@ -44,6 +44,8 @@ class controller_stm final
       client_quota::backend,
       data_migrations::migrations_table,
       cluster_link::table> {
+    /* TODO(oren): This is where you wire up whatever data structure you're
+     * using to coordinate truncation state */
 public:
     template<typename... Args>
     controller_stm(

@@ -69,6 +69,9 @@
 #include "cluster/shard_balancer.h"
 #include "cluster/shard_placement_table.h"
 #include "cluster/shard_table.h"
+#include "cluster/suffix_truncation_frontend.h"
+#include "cluster/suffix_truncation_table.h"
+#include "cluster/suffix_truncation_types.h"
 #include "cluster/topic_table.h"
 #include "cluster/topics_frontend.h"
 #include "cluster/types.h"
@@ -181,6 +184,10 @@ ss::future<> controller::wire_up() {
             config::shard_local_cfg().cloud_storage_enabled()
               && config::shard_local_cfg()
                    .cloud_storage_disable_archiver_manager());
+      })
+      .then([this] {
+          return _suffix_truncation_table.start_on(
+            suffix_truncation::suffix_truncation_shard, std::ref(_tp_state));
       })
       .then([this] {
           return _authorizer.start(
@@ -373,6 +380,15 @@ ss::future<> controller::start(
       std::ref(_connections),
       std::ref(_partition_leaders),
       ss::sharded_parameter([this] { return std::ref(_as.local()); }));
+
+    co_await _suffix_truncation_frontend.start(
+      _raft0->self().id(),
+      std::ref(_suffix_truncation_table),
+      std::ref(_stm),
+      std::ref(_connections),
+      std::ref(_partition_leaders),
+      std::ref(_as));
+
     co_await _data_migration_worker.start(
       _raft0->self().id(),
       ss::sharded_parameter(
@@ -427,7 +443,8 @@ ss::future<> controller::start(
           std::ref(_recovery_manager),
           std::ref(_quota_backend),
           std::ref(_data_migration_table.local()),
-          std::ref(_cluster_link_table.local()));
+          std::ref(_cluster_link_table.local()),
+          std::ref(_suffix_truncation_table.local()));
     }
     co_await _epoch_service.start(_raft0->self().id(), &_connections);
     co_await _epoch_service.invoke_on_all(&cluster_epoch_service<>::start);

@@ -21,6 +21,7 @@
 #include "cluster/feature_backend.h"
 #include "cluster/plugin_backend.h"
 #include "cluster/security_manager.h"
+#include "cluster/suffix_truncation_table.h"
 #include "cluster/topic_updates_dispatcher.h"
 #include "raft/mux_state_machine.h"
 
@@ -43,7 +44,8 @@ class controller_stm final
       cluster_recovery_manager,
       client_quota::backend,
       data_migrations::migrations_table,
-      cluster_link::table> {
+      cluster_link::table,
+      suffix_truncation::table> {
     /* TODO(oren): This is where you wire up whatever data structure you're
      * using to coordinate truncation state */
 public:

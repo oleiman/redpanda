@@ -15,4 +15,8 @@ ss::logger txlog{"tx"};
 namespace data_migrations {
 ss::logger dm_log{"data-migrate"};
 }
+namespace suffix_truncation {
+ss::logger st_log{"suffix-truncate"};
+}
+
 } // namespace cluster

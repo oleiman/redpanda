@@ -404,6 +404,8 @@ private:
     ss::sharded<cluster_epoch_service<>> _epoch_service; // instance per core
 
     std::unique_ptr<controller_forced_reconfiguration_manager> _cfr_m;
+    ssx::single_sharded<suffix_truncation::table> _suffix_truncation_table;
+    ss::sharded<suffix_truncation::frontend> _suffix_truncation_frontend;
 
     bool _is_ready = false;
     ss::scheduling_group _scheduling_group;

@@ -126,6 +126,7 @@ namespace suffix_truncation {
 class frontend;
 class backend;
 class table;
+class metadata;
 } // namespace suffix_truncation
 
 } // namespace cluster

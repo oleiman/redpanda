@@ -14,6 +14,7 @@
 #include "cluster/client_quota_serde.h"
 #include "cluster/data_migration_types.h"
 #include "cluster/simple_batch_builder.h"
+#include "cluster/suffix_truncation_types.h"
 #include "cluster/types.h"
 #include "cluster_link/model/types.h"
 #include "model/metadata.h"
@@ -159,6 +160,9 @@ inline constexpr int8_t cluster_link_update_mirror_topic_properties_cmd_type
   = 4;
 inline constexpr int8_t cluster_link_update_cluster_link_configuration_cmd_type
   = 5;
+
+// suffix truncation commands
+inline constexpr int8_t suffix_truncation_truncate_cmd_type = 0;
 
 using create_topic_cmd = controller_command<
   model::topic_namespace,
@@ -493,6 +497,12 @@ using cluster_link_update_cluster_link_configuration_cmd = controller_command<
   cluster_link_update_cluster_link_configuration_cmd_type,
   model::record_batch_type::cluster_link,
   serde_opts::serde_only>;
+
+using suffix_truncation_truncate_cmd = controller_command<
+  int8_t /* unused */,
+  suffix_truncation::truncate_cmd_data,
+  suffix_truncation_truncate_cmd_type,
+  model::record_batch_type::suffix_truncation_cmd>;
 
 // typelist utils
 template<typename T>

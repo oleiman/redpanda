@@ -184,6 +184,10 @@ std::ostream& operator<<(std::ostream& o, cluster::errc err) {
         return o << "cluster::errc::invalid_target_node_id";
     case errc::topic_id_already_exists:
         return o << "cluster::errc::topic_id_already_exists";
+    case errc::suffix_truncation_already_exists:
+        return o << "cluster::errc::suffix_truncation_already_exists";
+    case errc::suffix_truncation_invalid:
+        return o << "cluster::errc::suffix_truncation_invalid";
     }
 }
 } // namespace cluster

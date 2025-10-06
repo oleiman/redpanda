@@ -1,5 +1,5 @@
 /*
- * Copyright 2020 Redpanda Data, Inc.
+ * Copyright 2025 Redpanda Data, Inc.
  *
  * Use of this software is governed by the Business Source License
  * included in the file licenses/BSL.md
@@ -13,15 +13,10 @@
 
 #include "base/seastarx.h"
 
-#include <seastar/util/log.hh>
+#include <seastar/core/sharded.hh>
 
-namespace cluster {
-extern ss::logger clusterlog;
-extern ss::logger txlog;
-namespace data_migrations {
-extern ss::logger dm_log;
-}
-namespace suffix_truncation {
-extern ss::logger st_log;
-}
-} // namespace cluster
+namespace cluster::suffix_truncation {
+
+class frontend : public ss::peering_sharded_service<frontend> {};
+
+} // namespace cluster::suffix_truncation

@@ -28,6 +28,7 @@ ss::future<std::error_code> table::apply_update(model::record_batch batch) {
 ss::future<std::error_code> table::apply(suffix_truncation_truncate_cmd cmd) {
     auto truncation = std::move(cmd.value.truncation);
     auto id = cmd.value.id;
+    auto create_ts = cmd.value.op_timestamp;
 
     vlog(st_log.debug, "applying create data migration: {}", cmd.value);
 
@@ -40,6 +41,22 @@ ss::future<std::error_code> table::apply(suffix_truncation_truncate_cmd cmd) {
         // TODO: error detail
         co_return err.error();
     }
+
+    auto [it, success] = _truncations.try_emplace(
+      id,
+      truncation_meta{
+        .id = id,
+        .truncation = std::move(truncation),
+        .created = create_ts,
+      });
+
+    if (!success) {
+        co_return errc::suffix_truncation_already_exists;
+    }
+    _last_applied = id;
+
+    // TODO: apply update to node-wide data structure
+    // TODO: notify backend
 
     co_return errc::success;
 }
@@ -60,7 +77,11 @@ std::expected<void, errc> table::validate(const suffix_truncation& trunc) {
             vlog(st_log.warn, "{}: topic does not exist", t.nt);
             return std::unexpected(errc::topic_not_exists);
         }
-        // TODO: should we accumulate remote / local right here?
+        // TODO: should we figure out remote / local right here? i guess that
+        // could change while we replicate the command.
+
+        // TODO: Need to implement resources data structure and check whether
+        // these truncations are already in it or whatever
     }
     return {};
 }

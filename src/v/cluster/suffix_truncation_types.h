@@ -18,11 +18,14 @@
 #include "model/fundamental.h"
 #include "model/metadata.h"
 #include "model/timestamp.h"
+#include "serde/envelope.h"
 #include "serde/rw/envelope.h"
 #include "serde/rw/named_type.h"
 #include "serde/rw/vector.h"
 
 #include <seastar/core/sharded.hh>
+
+#include <fmt/format.h>
 
 namespace cluster::suffix_truncation {
 
@@ -68,6 +71,8 @@ struct topic_truncation
     chunked_vector<partition_truncation> partitions;
 
     bool empty() const { return partitions.empty(); }
+
+    topic_truncation copy() const;
 
     auto serde_fields() { return std::tie(nt, partitions); }
     friend bool operator==(const topic_truncation&, const topic_truncation&)
@@ -131,4 +136,34 @@ struct truncate_cmd_data
     fmt::iterator format_to(fmt::iterator it) const;
 };
 
+struct truncation_meta
+  : serde::
+      envelope<truncation_meta, serde::version<0>, serde::compat_version<0>> {
+    id id;
+    suffix_truncation truncation;
+
+    state state{state::init};
+    // populated on creation
+    model::timestamp created{};
+    // populated once finished or cancelled state is reached
+    model::timestamp completed{};
+
+    auto serde_fields() {
+        return std::tie(id, truncation, state, created, completed);
+    }
+
+    friend bool operator==(const truncation_meta&, const truncation_meta&)
+      = default;
+
+    fmt::iterator format_to(fmt::iterator it) const;
+};
+
 } // namespace cluster::suffix_truncation
+
+template<>
+struct fmt::formatter<cluster::suffix_truncation::state>
+  : fmt::formatter<std::string_view> {
+    auto format(
+      const cluster::suffix_truncation::state&, fmt::format_context& ctx) const
+      -> decltype(ctx.out());
+};

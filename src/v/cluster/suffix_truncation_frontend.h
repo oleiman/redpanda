@@ -43,12 +43,17 @@ private:
     ss::future<std::expected<id, std::error_code>>
       do_local_truncate(suffix_truncation);
 
+    // TODO: does this help us here?
+    ss::future<std::error_code> insert_barrier();
+
     model::node_id _self;
     [[maybe_unused]] ssx::single_sharded<table>* _table;
     [[maybe_unused]] ss::sharded<controller_stm>* _controller;
     [[maybe_unused]] ss::sharded<rpc::connection_cache>* _connections;
     partition_leaders_table* _leaders_table;
     [[maybe_unused]] ss::sharded<ss::abort_source>& _as;
+
+    std::chrono::milliseconds _operation_timeout{std::chrono::seconds(10)};
 
     ss::gate _gate;
 };

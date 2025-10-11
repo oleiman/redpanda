@@ -11,6 +11,7 @@
 
 #include "cluster/suffix_truncation_frontend.h"
 
+#include "cluster/cluster_utils.h"
 #include "cluster/controller_stm.h"
 #include "cluster/partition_leaders_table.h"
 #include "cluster/suffix_truncation_types.h"
@@ -65,7 +66,65 @@ frontend::do_local_truncate(suffix_truncation trunc) {
       ss::this_shard_id() == suffix_truncation_shard,
       "This method can only be called on the suffix truncation shard");
 
-    co_return invalid_id;
+    if (auto ec = co_await insert_barrier(); ec != errc::success) {
+        co_return std::unexpected(ec);
+    }
+
+    if (trunc.empty()) {
+        co_return std::unexpected(errc::suffix_truncation_invalid);
+    }
+
+    if (auto v_err = _table->local().validate(trunc); !v_err) {
+        vlog(
+          st_log.warn,
+          "suffix_truncation {} validation error - {}",
+          trunc,
+          v_err.error());
+        co_return std::unexpected(v_err.error());
+    }
+
+    auto id = _table->local().get_next_id();
+
+    if (auto ec = co_await replicate_and_wait(
+          *_controller,
+          _as,
+          suffix_truncation_truncate_cmd(
+            0, /* ignored */
+            truncate_cmd_data{
+              .id = id,
+              .truncation = std::move(trunc),
+              .op_timestamp = model::timestamp::now(),
+            }),
+          _operation_timeout + model::timeout_clock::now());
+        ec != errc::success) {
+        co_return std::unexpected(ec);
+    }
+
+    co_return id;
+}
+
+ss::future<std::error_code> frontend::insert_barrier() {
+    const auto barrier_deadline = _operation_timeout
+                                  + model::timeout_clock::now();
+    /**
+     * Inject linearizable barrier before creating a new migration. This is not
+     * required for correctness but allows the fronted to do more accurate
+     * preliminary validation.
+     */
+    static_assert(controller_stm_shard == suffix_truncation_shard);
+    auto barrier_result
+      = co_await _controller->local().insert_linearizable_barrier(
+        _operation_timeout + model::timeout_clock::now());
+    if (!barrier_result) {
+        co_return barrier_result.error();
+    }
+    auto [barrier_offset, _] = barrier_result.value();
+    try {
+        co_await _controller->local().wait(barrier_offset, barrier_deadline);
+    } catch (...) {
+        co_return errc::timeout;
+    }
+    co_return errc::success;
 }
 
 } // namespace cluster::suffix_truncation

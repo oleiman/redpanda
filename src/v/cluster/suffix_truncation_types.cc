@@ -15,20 +15,57 @@ namespace cluster::suffix_truncation {
 fmt::iterator partition_truncation::format_to(fmt::iterator it) const {
     return fmt::format_to(it, "{{pid: {}, offset: {}}}", pid, offset);
 }
+topic_truncation topic_truncation::copy() const {
+    return topic_truncation{.nt = nt, .partitions = partitions.copy()};
+}
 fmt::iterator topic_truncation::format_to(fmt::iterator it) const {
     return fmt::format_to(it, "{{name: {}, partitions: {}}}", nt, partitions);
 }
 fmt::iterator suffix_truncation::format_to(fmt::iterator it) const {
-    return fmt::format_to(it, "topics_to_truncate: {}", topics);
+    return fmt::format_to(it, "{{topics_to_truncate: {}}}", topics);
 }
 fmt::iterator truncation_request::format_to(fmt::iterator it) const {
-    return fmt::format_to(it, "{}", truncation);
+    return fmt::format_to(it, "{{{}}}", truncation);
 }
 fmt::iterator truncation_reply::format_to(fmt::iterator it) const {
-    return fmt::format_to(it, "id: {}, ec: {}", id, ec);
+    return fmt::format_to(it, "{{id: {}, ec: {}}}", id, ec);
 }
 fmt::iterator truncate_cmd_data::format_to(fmt::iterator it) const {
     return fmt::format_to(
-      it, "id: {}, truncation: {}, op_ts: {}", id, truncation, op_timestamp);
+      it,
+      "{{id: {}, truncation: {}, op_ts: {}}}",
+      id,
+      truncation,
+      op_timestamp);
 }
+fmt::iterator truncation_meta::format_to(fmt::iterator it) const {
+    return fmt::format_to(
+      it,
+      "{{id: {}, topic_truncation: {}, state: {}, created: {}, completed{}}}",
+      id,
+      truncation,
+      state,
+      created,
+      completed);
+}
+
 } // namespace cluster::suffix_truncation
+
+auto fmt::formatter<cluster::suffix_truncation::state>::format(
+  const cluster::suffix_truncation::state& s, fmt::format_context& ctx) const
+  -> decltype(ctx.out()) {
+    constexpr std::string_view base = "cluster::suffix_truncation::{}";
+    switch (s) {
+        using enum cluster::suffix_truncation::state;
+    case init:
+        return fmt::format_to(ctx.out(), base, "init");
+    case preparing:
+        return fmt::format_to(ctx.out(), base, "preparing");
+    case truncating:
+        return fmt::format_to(ctx.out(), base, "truncating");
+    case finishing:
+        return fmt::format_to(ctx.out(), base, "finishing");
+    case done:
+        return fmt::format_to(ctx.out(), base, "done");
+    }
+}

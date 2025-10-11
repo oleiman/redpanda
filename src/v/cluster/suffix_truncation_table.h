@@ -62,6 +62,8 @@ private:
 
     id _next_id{0};
     id _last_applied{invalid_id};
+
+    absl::node_hash_map<id, truncation_meta> _truncations;
 };
 
 } // namespace cluster::suffix_truncation

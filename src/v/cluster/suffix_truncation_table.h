@@ -19,8 +19,9 @@ namespace cluster::suffix_truncation {
 
 class table {
 public:
-    static constexpr auto commands
-      = make_commands_list<suffix_truncation_truncate_cmd>();
+    static constexpr auto commands = make_commands_list<
+      suffix_truncation_truncate_cmd,
+      suffix_truncation_update_cmd>();
 
     explicit table(ss::sharded<topic_table>& topics);
 
@@ -53,10 +54,13 @@ public:
 
     std::expected<void, errc> validate(const suffix_truncation&);
 
+    static bool is_valid_state_transition(state current, state target);
+
     ss::future<> stop();
 
 private:
     ss::future<std::error_code> apply(suffix_truncation_truncate_cmd cmd);
+    ss::future<std::error_code> apply(suffix_truncation_update_cmd cmd);
 
     ss::sharded<topic_table>* _topics;
 

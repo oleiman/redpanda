@@ -101,6 +101,7 @@ enum class errc : int16_t {
     topic_id_already_exists,
     feature_sanctioned,
     suffix_truncation_already_exists,
+    suffix_truncation_not_exists,
     suffix_truncation_invalid,
 };
 
@@ -298,6 +299,8 @@ struct errc_category final : public std::error_category {
             return "Unable to use requested feature - license is invalid";
         case errc::suffix_truncation_already_exists:
             return "Suffix truncation with the given id already exists";
+        case errc::suffix_truncation_not_exists:
+            return "Requested suffix truncation does not exist";
         case errc::suffix_truncation_invalid:
             return "Suffix truncation request contains errors";
         }

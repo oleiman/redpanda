@@ -14,7 +14,10 @@
 #include "cluster/logger.h"
 #include "cluster/topic_table.h"
 
+#include <utility>
+
 namespace cluster::suffix_truncation {
+
 table::table(ss::sharded<topic_table>& topics)
   : _topics(&topics) {}
 
@@ -61,6 +64,38 @@ ss::future<std::error_code> table::apply(suffix_truncation_truncate_cmd cmd) {
     co_return errc::success;
 }
 
+ss::future<std::error_code> table::apply(suffix_truncation_update_cmd cmd) {
+    const auto [id, desired_state, op_ts] = cmd.value;
+
+    vlog(st_log.debug, "update truncaiton state {}", cmd.value);
+    auto it = _truncations.find(id);
+    if (it == _truncations.end()) {
+        vlog(st_log.warn, "Not found: {}", id);
+        co_return errc::suffix_truncation_not_exists;
+    }
+
+    auto& current_state = it->second.state;
+
+    if (!is_valid_state_transition(current_state, desired_state)) {
+        vlog(
+          st_log.info,
+          "Invalid state transition {} -> {}",
+          current_state,
+          desired_state);
+        // TODO(oren): want another error code
+        co_return errc::suffix_truncation_invalid;
+    }
+    current_state = desired_state;
+
+    if (current_state == state::done) {
+        it->second.completed = op_ts;
+    }
+
+    // TODO(oren): update resources and notify
+
+    co_return errc::success;
+}
+
 std::expected<void, errc> table::validate(const suffix_truncation& trunc) {
     if (trunc.empty()) {
         return std::unexpected(errc::suffix_truncation_invalid);
@@ -84,6 +119,26 @@ std::expected<void, errc> table::validate(const suffix_truncation& trunc) {
         // these truncations are already in it or whatever
     }
     return {};
+}
+
+bool table::is_valid_state_transition(state current, state target) {
+    // NOTE(oren): probably don't even need specific transitions since we'll
+    // just step through the stages. don't think we need any conept of
+    // cancelling or whatever
+    switch (current) {
+        using enum state;
+    case init:
+        return target == preparing;
+    case preparing:
+        return target == truncating;
+    case truncating:
+        return target == finishing;
+    case finishing:
+        return target == done;
+    case done:
+        return false;
+    }
+    std::unreachable();
 }
 
 ss::future<> table::stop() { return ss::now(); }

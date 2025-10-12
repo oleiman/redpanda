@@ -38,6 +38,14 @@ fmt::iterator truncate_cmd_data::format_to(fmt::iterator it) const {
       truncation,
       op_timestamp);
 }
+fmt::iterator update_cmd_data::format_to(fmt::iterator it) const {
+    return fmt::format_to(
+      it,
+      "{{id: {}, desired_state: {}, op_ts: {}}}",
+      id,
+      desired_state,
+      op_timestamp);
+}
 fmt::iterator truncation_meta::format_to(fmt::iterator it) const {
     return fmt::format_to(
       it,

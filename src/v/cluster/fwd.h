@@ -127,6 +127,7 @@ class frontend;
 class backend;
 class table;
 class metadata;
+class tracker;
 } // namespace suffix_truncation
 
 } // namespace cluster

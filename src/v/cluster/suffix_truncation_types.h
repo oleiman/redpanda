@@ -24,6 +24,7 @@
 #include "serde/rw/vector.h"
 
 #include <seastar/core/sharded.hh>
+#include <seastar/util/bool_class.hh>
 
 #include <fmt/format.h>
 
@@ -41,6 +42,8 @@ enum class state : uint8_t {
     finishing,
     done,
 };
+
+using topic_blocked = ss::bool_class<struct topic_blocked_tag>;
 
 // TODO: partition state stored in backend
 
@@ -163,6 +166,13 @@ struct truncation_meta
 
     auto serde_fields() {
         return std::tie(id, truncation, state, created, completed);
+    }
+
+    auto topics() const {
+        return truncation.topics
+               | std::views::transform([](const topic_truncation& tt) {
+                     return model::topic_namespace_view{tt.nt};
+                 });
     }
 
     friend bool operator==(const truncation_meta&, const truncation_meta&)

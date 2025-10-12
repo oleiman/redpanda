@@ -69,6 +69,7 @@
 #include "cluster/shard_table.h"
 #include "cluster/suffix_truncation_frontend.h"
 #include "cluster/suffix_truncation_table.h"
+#include "cluster/suffix_truncation_tracker.h"
 #include "cluster/suffix_truncation_types.h"
 #include "cluster/topic_table.h"
 #include "cluster/topics_frontend.h"
@@ -178,9 +179,12 @@ ss::future<> controller::wire_up() {
               && config::shard_local_cfg()
                    .cloud_storage_disable_archiver_manager());
       })
+      .then([this] { return _suffix_truncation_tracker.start(); })
       .then([this] {
           return _suffix_truncation_table.start_on(
-            suffix_truncation::suffix_truncation_shard, std::ref(_tp_state));
+            suffix_truncation::suffix_truncation_shard,
+            std::ref(_tp_state),
+            std::ref(_suffix_truncation_tracker));
       })
       .then([this] {
           return _authorizer.start(

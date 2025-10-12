@@ -23,7 +23,7 @@ public:
       suffix_truncation_truncate_cmd,
       suffix_truncation_update_cmd>();
 
-    explicit table(ss::sharded<topic_table>& topics);
+    explicit table(ss::sharded<topic_table>&, ss::sharded<tracker>&);
 
     bool is_batch_applicable(const model::record_batch& b) const {
         return b.header().type
@@ -63,6 +63,7 @@ private:
     ss::future<std::error_code> apply(suffix_truncation_update_cmd cmd);
 
     ss::sharded<topic_table>* _topics;
+    ss::sharded<tracker>* _tracker;
 
     id _next_id{0};
     id _last_applied{invalid_id};

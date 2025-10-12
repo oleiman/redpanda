@@ -163,6 +163,7 @@ inline constexpr int8_t cluster_link_update_cluster_link_configuration_cmd_type
 
 // suffix truncation commands
 inline constexpr int8_t suffix_truncation_truncate_cmd_type = 0;
+inline constexpr int8_t suffix_truncation_update_cmd_type = 1;
 
 using create_topic_cmd = controller_command<
   model::topic_namespace,
@@ -502,6 +503,12 @@ using suffix_truncation_truncate_cmd = controller_command<
   int8_t /* unused */,
   suffix_truncation::truncate_cmd_data,
   suffix_truncation_truncate_cmd_type,
+  model::record_batch_type::suffix_truncation_cmd>;
+
+using suffix_truncation_update_cmd = controller_command<
+  int8_t /* unused */,
+  suffix_truncation::update_cmd_data,
+  suffix_truncation_update_cmd_type,
   model::record_batch_type::suffix_truncation_cmd>;
 
 // typelist utils

@@ -100,6 +100,7 @@ enum class errc : int16_t {
     invalid_target_node_id,
     topic_id_already_exists,
     suffix_truncation_already_exists,
+    suffix_truncation_not_exists,
     suffix_truncation_invalid,
 };
 
@@ -295,6 +296,8 @@ struct errc_category final : public std::error_category {
             return "A topic with the given id already exists";
         case errc::suffix_truncation_already_exists:
             return "Suffix truncation with the given id already exists";
+        case errc::suffix_truncation_not_exists:
+            return "Requested suffix truncation does not exist";
         case errc::suffix_truncation_invalid:
             return "Suffix truncation request contains errors";
         }

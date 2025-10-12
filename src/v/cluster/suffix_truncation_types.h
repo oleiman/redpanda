@@ -136,6 +136,19 @@ struct truncate_cmd_data
     fmt::iterator format_to(fmt::iterator it) const;
 };
 
+struct update_cmd_data
+  : serde::
+      envelope<update_cmd_data, serde::version<0>, serde::compat_version<0>> {
+    id id;
+    state desired_state;
+    model::timestamp op_timestamp{};
+
+    auto serde_fields() { return std::tie(id, desired_state, op_timestamp); }
+    friend bool operator==(const update_cmd_data&, const update_cmd_data&)
+      = default;
+    fmt::iterator format_to(fmt::iterator it) const;
+};
+
 struct truncation_meta
   : serde::
       envelope<truncation_meta, serde::version<0>, serde::compat_version<0>> {

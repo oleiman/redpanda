@@ -12,14 +12,16 @@
 #include "cluster/suffix_truncation_table.h"
 
 #include "cluster/logger.h"
+#include "cluster/suffix_truncation_tracker.h"
 #include "cluster/topic_table.h"
 
 #include <utility>
 
 namespace cluster::suffix_truncation {
 
-table::table(ss::sharded<topic_table>& topics)
-  : _topics(&topics) {}
+table::table(ss::sharded<topic_table>& topics, ss::sharded<tracker>& tracker)
+  : _topics(&topics)
+  , _tracker(&tracker) {}
 
 ss::future<std::error_code> table::apply_update(model::record_batch batch) {
     auto cmd = co_await deserialize(std::move(batch), commands);
@@ -30,12 +32,12 @@ ss::future<std::error_code> table::apply_update(model::record_batch batch) {
 
 ss::future<std::error_code> table::apply(suffix_truncation_truncate_cmd cmd) {
     auto truncation = std::move(cmd.value.truncation);
-    auto id = cmd.value.id;
+    auto t_id = cmd.value.id;
     auto create_ts = cmd.value.op_timestamp;
 
     vlog(st_log.debug, "applying create data migration: {}", cmd.value);
 
-    if (id <= _last_applied) {
+    if (t_id <= _last_applied) {
         co_return errc::suffix_truncation_already_exists;
     }
 
@@ -46,9 +48,9 @@ ss::future<std::error_code> table::apply(suffix_truncation_truncate_cmd cmd) {
     }
 
     auto [it, success] = _truncations.try_emplace(
-      id,
+      t_id,
       truncation_meta{
-        .id = id,
+        .id = t_id,
         .truncation = std::move(truncation),
         .created = create_ts,
       });
@@ -56,9 +58,12 @@ ss::future<std::error_code> table::apply(suffix_truncation_truncate_cmd cmd) {
     if (!success) {
         co_return errc::suffix_truncation_already_exists;
     }
-    _last_applied = id;
+    _last_applied = t_id;
+    _next_id = std::max(_next_id, _last_applied + id{1});
 
-    // TODO: apply update to node-wide data structure
+    co_await _tracker->invoke_on_all(
+      [&meta = it->second](tracker& t) { t.apply_update(meta); });
+
     // TODO: notify backend
 
     co_return errc::success;
@@ -91,7 +96,10 @@ ss::future<std::error_code> table::apply(suffix_truncation_update_cmd cmd) {
         it->second.completed = op_ts;
     }
 
-    // TODO(oren): update resources and notify
+    co_await _tracker->invoke_on_all(
+      [&meta = it->second](tracker& t) { t.apply_update(meta); });
+
+    // TODO(oren): notify backend
 
     co_return errc::success;
 }

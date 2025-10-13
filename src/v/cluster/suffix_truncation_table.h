@@ -70,6 +70,11 @@ public:
 
     void unregister_cb(notification_id id) { _callbacks.unregister_cb(id); }
 
+    auto get_truncations() const {
+        return _truncations | std::views::keys
+               | std::ranges::to<chunked_vector<id>>();
+    }
+
 private:
     ss::future<std::error_code> apply(suffix_truncation_truncate_cmd cmd);
     ss::future<std::error_code> apply(suffix_truncation_update_cmd cmd);

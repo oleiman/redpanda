@@ -64,18 +64,18 @@ ss::future<std::error_code> table::apply(suffix_truncation_truncate_cmd cmd) {
     co_await _tracker->invoke_on_all(
       [&meta = it->second](tracker& t) { t.apply_update(meta); });
 
-    // TODO: notify backend
+    _callbacks.notify(t_id);
 
     co_return errc::success;
 }
 
 ss::future<std::error_code> table::apply(suffix_truncation_update_cmd cmd) {
-    const auto [id, desired_state, op_ts] = cmd.value;
+    const auto [t_id, desired_state, op_ts] = cmd.value;
 
     vlog(st_log.debug, "update truncaiton state {}", cmd.value);
-    auto it = _truncations.find(id);
+    auto it = _truncations.find(t_id);
     if (it == _truncations.end()) {
-        vlog(st_log.warn, "Not found: {}", id);
+        vlog(st_log.warn, "Not found: {}", t_id);
         co_return errc::suffix_truncation_not_exists;
     }
 
@@ -99,7 +99,7 @@ ss::future<std::error_code> table::apply(suffix_truncation_update_cmd cmd) {
     co_await _tracker->invoke_on_all(
       [&meta = it->second](tracker& t) { t.apply_update(meta); });
 
-    // TODO(oren): notify backend
+    _callbacks.notify(t_id);
 
     co_return errc::success;
 }

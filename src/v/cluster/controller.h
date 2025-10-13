@@ -407,6 +407,7 @@ private:
     ssx::single_sharded<suffix_truncation::table> _suffix_truncation_table;
     ss::sharded<suffix_truncation::frontend> _suffix_truncation_frontend;
     ss::sharded<suffix_truncation::tracker> _suffix_truncation_tracker;
+    ssx::single_sharded<suffix_truncation::backend> _suffix_truncation_backend;
 
     bool _is_ready = false;
     ss::scheduling_group _scheduling_group;

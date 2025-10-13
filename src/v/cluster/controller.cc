@@ -67,6 +67,7 @@
 #include "cluster/shard_balancer.h"
 #include "cluster/shard_placement_table.h"
 #include "cluster/shard_table.h"
+#include "cluster/suffix_truncation_backend.h"
 #include "cluster/suffix_truncation_frontend.h"
 #include "cluster/suffix_truncation_table.h"
 #include "cluster/suffix_truncation_tracker.h"
@@ -884,6 +885,17 @@ ss::future<> controller::start(
       &data_migrations::backend::start);
     co_await _data_migration_irpc_frontend.start(
       std::ref(_feature_table), std::ref(_data_migration_backend));
+
+    co_await _suffix_truncation_backend.start_on(
+      suffix_truncation::suffix_truncation_shard,
+      _raft0->self().id(),
+      std::ref(_suffix_truncation_table.local()),
+      std::ref(_suffix_truncation_frontend.local()),
+      std::ref(_partition_leaders.local()),
+      _cloud_storage_api.local_is_initialized()
+        ? std::make_optional(std::ref(_cloud_storage_api.local()))
+        : std::nullopt,
+      std::ref(_as.local()));
 
     co_await _topic_metrics_watcher.start(
       ss::sharded_parameter([this] { return std::ref(_tp_state.local()); }),

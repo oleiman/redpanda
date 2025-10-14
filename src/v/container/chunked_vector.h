@@ -26,6 +26,13 @@
 #include <utility>
 #include <vector>
 
+namespace detail {
+template<typename T>
+concept HasCopyFunction = requires(const T t) {
+    { t.copy() } -> std::same_as<T>;
+};
+} // namespace detail
+
 /**
  * A chunked vector is a container that provides random access like a
  * vector, but does not store its data in contiguous memory.
@@ -154,7 +161,20 @@ public:
     }
     ~chunked_vector() noexcept = default;
 
-    chunked_vector copy() const noexcept { return *this; }
+    chunked_vector copy() const noexcept {
+        if constexpr (std::is_copy_constructible_v<T>) {
+            return *this;
+        }
+        if constexpr (detail::HasCopyFunction<T>) {
+            chunked_vector result;
+            result.reserve(size());
+            std::ranges::transform(
+              *this, std::back_inserter(result), [](const T& e) {
+                  return e.copy();
+              });
+            return result;
+        }
+    }
 
     auto get_allocator() const { return _frags.get_allocator(); }
 

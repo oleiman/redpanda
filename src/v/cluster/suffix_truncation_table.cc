@@ -69,6 +69,24 @@ ss::future<std::error_code> table::apply(suffix_truncation_truncate_cmd cmd) {
     co_return errc::success;
 }
 
+std::optional<truncation_meta> table::get_truncation(id id) const {
+    return get_truncation_ref(id).transform(
+      [](auto ref) -> truncation_meta { return ref.get().copy(); });
+}
+
+std::optional<state> table::get_truncation_state(id id) const {
+    return get_truncation_ref(id).transform(
+      [](auto ref) { return ref.get().state; });
+}
+
+std::optional<std::reference_wrapper<const truncation_meta>>
+table::get_truncation_ref(id id) const {
+    if (auto it = _truncations.find(id); it != _truncations.end()) {
+        return std::cref(it->second);
+    }
+    return std::nullopt;
+}
+
 ss::future<std::error_code> table::apply(suffix_truncation_update_cmd cmd) {
     const auto [t_id, desired_state, op_ts] = cmd.value;
 

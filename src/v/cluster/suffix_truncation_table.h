@@ -75,9 +75,15 @@ public:
                | std::ranges::to<chunked_vector<id>>();
     }
 
+    std::optional<truncation_meta> get_truncation(id) const;
+    std::optional<state> get_truncation_state(id) const;
+
 private:
     ss::future<std::error_code> apply(suffix_truncation_truncate_cmd cmd);
     ss::future<std::error_code> apply(suffix_truncation_update_cmd cmd);
+
+    std::optional<std::reference_wrapper<const truncation_meta>>
+      get_truncation_ref(id) const;
 
     ss::sharded<topic_table>* _topics;
     ss::sharded<tracker>* _tracker;

@@ -183,6 +183,10 @@ public:
         return _data_migration_router;
     }
 
+    ss::sharded<suffix_truncation::frontend>& get_suffix_truncation_frontend() {
+        return _suffix_truncation_frontend;
+    }
+
     std::optional<std::reference_wrapper<cloud_metadata::uploader>>
     metadata_uploader() {
         if (_metadata_uploader) {

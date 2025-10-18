@@ -252,11 +252,12 @@ message ListShadowTopicsResponse {
 
 message TruncateAndRestoreRequest {
     repeated RestoreTopic topics = 1;
+    // TODO(oren): unused. REMOVE.
     RestoreAction action = 2;
 }
 
 message TruncateAndRestoreResponse {
-    int64 migration_id = 1;
+    int64 truncation_id = 1;
 }
 
 /* Other Messages */

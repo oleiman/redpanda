@@ -11,9 +11,9 @@
 
 #include "redpanda/admin/services/shadow_link/shadow_link.h"
 
-#include "cluster/data_migration_frontend.h"
-#include "cluster/data_migration_types.h"
 #include "cluster/metadata_cache.h"
+#include "cluster/suffix_truncation_frontend.h"
+#include "cluster/suffix_truncation_types.h"
 #include "cluster_link/service.h"
 #include "redpanda/admin/services/shadow_link/converter.h"
 #include "redpanda/admin/services/shadow_link/err.h"
@@ -27,11 +27,11 @@ shadow_link_service_impl::shadow_link_service_impl(
   admin::proxy::client proxy_client,
   ss::sharded<cluster_link::service>* service,
   ss::sharded<cluster::metadata_cache>* md_cache,
-  ss::sharded<cluster::data_migrations::frontend>* data_migrations_fe)
+  ss::sharded<cluster::suffix_truncation::frontend>* suffix_truncation_fe)
   : _proxy_client(std::move(proxy_client))
   , _service(service)
   , _md_cache(md_cache)
-  , _data_migrations_frontend(data_migrations_fe) {}
+  , _suffix_truncation_frontend(suffix_truncation_fe) {}
 
 ss::future<proto::admin::create_shadow_link_response>
 shadow_link_service_impl::create_shadow_link(
@@ -334,68 +334,49 @@ shadow_link_service_impl::truncate_and_restore(
   serde::pb::rpc::context, proto::admin::truncate_and_restore_request req) {
     auto& tps = req.get_topics();
 
-    cluster::data_migrations::data_migration migration;
-    switch (req.get_action()) {
-        using enum proto::admin::restore_action;
-    case unspecified:
-        throw serde::pb::rpc::invalid_argument_exception(
-          "Must specify a RestoreAction");
-    case unmount_topic:
-        migration = cluster::data_migrations::outbound_migration{};
-        break;
-    case mount_and_truncate_topic:
-        migration = cluster::data_migrations::inbound_migration{};
-        break;
-    }
+    // cluster::data_migrations::data_migration migration;
+    // switch (req.get_action()) {
+    //     using enum proto::admin::restore_action;
+    // case unspecified:
+    //     throw serde::pb::rpc::invalid_argument_exception(
+    //       "Must specify a RestoreAction");
+    // case unmount_topic:
+    //     migration = cluster::data_migrations::outbound_migration{};
+    //     break;
+    // case mount_and_truncate_topic:
+    //     migration = cluster::data_migrations::inbound_migration{};
+    //     break;
+    // }
 
-    ss::visit(
-      migration,
-      [&tps](cluster::data_migrations::outbound_migration& migration) {
-          migration.auto_advance = true;
-          migration.topics.reserve(tps.size());
+    cluster::suffix_truncation::suffix_truncation trunc;
+    trunc.topics.reserve(tps.size());
+    std::ranges::transform(
+      tps,
+      std::back_inserter(trunc.topics),
+      [](const proto::admin::restore_topic& t) {
+          cluster::suffix_truncation::topic_truncation tp;
+          tp.nt = model::topic_namespace{
+            model::kafka_namespace, model::topic{t.get_name()}};
+          tp.partitions.reserve(t.get_partitions().size());
           std::ranges::transform(
-            tps,
-            std::back_inserter(migration.topics),
-            [](const proto::admin::restore_topic& t) {
-                return model::topic_namespace{
-                  model::kafka_namespace, model::topic{t.get_name()}};
+            t.get_partitions(),
+            std::back_inserter(tp.partitions),
+            [](const proto::admin::restore_topic_partition_info& p_info)
+              -> cluster::suffix_truncation::partition_truncation {
+                return {
+                  .pid = model::partition_id{p_info.get_partition_id()},
+                  .offset = p_info.has_last_offset()
+                              ? kafka::offset{p_info.get_last_offset()}
+                              : kafka::offset::max(),
+                };
             });
-      },
-      [&tps](cluster::data_migrations::inbound_migration& migration) {
-          migration.auto_advance = true;
-          migration.topics.reserve(tps.size());
-          std::ranges::transform(
-            tps,
-            std::back_inserter(migration.topics),
-            [](const proto::admin::restore_topic& t) {
-                cluster::data_migrations::inbound_topic res;
-                res.source_topic_name = model::topic_namespace{
-                  model::kafka_namespace, model::topic{t.get_name()}};
-                std::ranges::for_each(
-                  t.get_partitions(),
-                  [&restore_to = res.restore_to](
-                    const proto::admin::restore_topic_partition_info& p_info) {
-                      model::partition_id pid{p_info.get_partition_id()};
-                      kafka::offset offset
-                        = p_info.has_last_offset()
-                            ? kafka::offset{p_info.get_last_offset()}
-                            : kafka::offset::max();
-                      auto [_, added] = restore_to.emplace(pid, offset);
-                      if (!added) {
-                          // ill formed partition list, partition appears more
-                          // than once
-                          throw serde::pb::rpc::invalid_argument_exception(
-                            fmt::format("Repeaded pid {}", pid));
-                      }
-                  });
-                return res;
-            });
+          return tp;
       });
 
-    auto result = co_await _data_migrations_frontend->local().create_migration(
-      std::move(migration));
+    auto result = co_await _suffix_truncation_frontend->local().truncate(
+      std::move(trunc));
 
-    if (result.has_error()) {
+    if (!result) {
         vlog(
           sllog.warn,
           "unable to create data migration for topic restore - error: {}",
@@ -406,7 +387,7 @@ shadow_link_service_impl::truncate_and_restore(
     }
 
     proto::admin::truncate_and_restore_response tar_resp;
-    tar_resp.set_migration_id(result.value());
+    tar_resp.set_truncation_id(result.value());
     co_return tar_resp;
 }
 } // namespace admin

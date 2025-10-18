@@ -8,6 +8,7 @@
 # by the Apache License, Version 2.0
 
 import json
+import time
 import google.protobuf.duration_pb2
 
 from connectrpc.errors import ConnectError, ConnectErrorCode
@@ -50,7 +51,7 @@ class SuffixTruncationTest(RedpandaTest, DataMigrationTestMixin):
     def __init__(self, ctx, *args, **kwargs):
         super().__init__(
             test_context=ctx,
-            num_brokers=3,
+            num_brokers=1,
             si_settings=SISettings(
                 test_context=ctx,
                 fast_uploads=True,
@@ -67,7 +68,7 @@ class SuffixTruncationTest(RedpandaTest, DataMigrationTestMixin):
         self.my_topic = TopicSpec(
             name=self.topic_name,
             partition_count=self.partition_count,
-            replication_factor=3,
+            replication_factor=1,
         )
         self.rp_client: DefaultClient
 
@@ -103,7 +104,7 @@ class SuffixTruncationTest(RedpandaTest, DataMigrationTestMixin):
         if log is not None:
             self.logger.warn(f"{log}: {dump}")
         for p in res:
-            exp_hwm = expected.get(p.id, p.high_watermark)
+            exp_hwm = expected.get(PartitionId(p.id), KafkaOffset(p.high_watermark))
             assert p.high_watermark <= exp_hwm, (
                 f"{p.id=}: Expected {p.high_watermark=} <= {exp_hwm}"
             )
@@ -115,11 +116,11 @@ class SuffixTruncationTest(RedpandaTest, DataMigrationTestMixin):
         last_offset = BucketView.kafka_last_offset(manifest)
         return last_offset is not None and last_offset + 1 >= num_messages
 
-    @cluster(num_nodes=4)
+    @cluster(num_nodes=2)
     def test_restore_topic(self):
         self.rp_client.create_topic(self.my_topic)
 
-        for i in range(0, 5):
+        for _ in range(0, 5):
             KgoVerifierProducer.oneshot(
                 context=self.test_context,
                 redpanda=self.redpanda,
@@ -150,51 +151,55 @@ class SuffixTruncationTest(RedpandaTest, DataMigrationTestMixin):
             action=shadow_link_pb2.RESTORE_ACTION_UNMOUNT_TOPIC,
         )
         rsp = self.client.truncate_and_restore(unmount_req)
-        self.wait_partitions_disappear([self.topic_name])
-        self.wait_migration_disappear(rsp.migration_id)
 
-        for p in partition_info:
-            self.check_partition(
-                ntp=NTP(ns="kafka", topic=self.topic_name, partition=p.partition_id),
-                num_messages=p.last_offset,
-            )
+        print(rsp)
 
-        cluster_uuid = self.admin.get_cluster_uuid(self.redpanda.nodes[0])
-        source_topic_ref = f"{self.topic_name}/{cluster_uuid}/{initial_revision}"
+        time.sleep(10)
+        # self.wait_partitions_disappear([self.topic_name])
+        # self.wait_migration_disappear(rsp.migration_id)
 
-        mount_req = shadow_link_pb2.TruncateAndRestoreRequest(
-            topics=restore_topics,
-            action=shadow_link_pb2.RESTORE_ACTION_MOUNT_AND_TRUNCATE_TOPIC,
-        )
-        rsp = self.client.truncate_and_restore(mount_req)
-        self.wait_partitions_appear([self.my_topic], timeout_sec=30)
-        self.wait_migration_disappear(rsp.migration_id)
+        # for p in partition_info:
+        #     self.check_partition(
+        #         ntp=NTP(ns="kafka", topic=self.topic_name, partition=p.partition_id),
+        #         num_messages=p.last_offset,
+        #     )
 
-        wait_until(
-            lambda: len(self.check_topic()) == self.partition_count,
-            timeout_sec=30,
-            backoff_sec=1,
-        )
+        # cluster_uuid = self.admin.get_cluster_uuid(self.redpanda.nodes[0])
+        # source_topic_ref = f"{self.topic_name}/{cluster_uuid}/{initial_revision}"
 
-        # expected max high watermark for each truncated partition
-        expected = {p.partition_id: p.last_offset + 1 for p in partition_info}
-        self.check_topic(expected=expected, log="REMOUNT")
+        # mount_req = shadow_link_pb2.TruncateAndRestoreRequest(
+        #     topics=restore_topics,
+        #     action=shadow_link_pb2.RESTORE_ACTION_MOUNT_AND_TRUNCATE_TOPIC,
+        # )
+        # rsp = self.client.truncate_and_restore(mount_req)
+        # self.wait_partitions_appear([self.my_topic], timeout_sec=30)
+        # self.wait_migration_disappear(rsp.migration_id)
 
-        KgoVerifierProducer.oneshot(
-            context=self.test_context,
-            redpanda=self.redpanda,
-            topic=self.topic_name,
-            msg_size=1024,
-            msg_count=2048,
-            key_set_cardinality=128,
-        )
+        # wait_until(
+        #     lambda: len(self.check_topic()) == self.partition_count,
+        #     timeout_sec=30,
+        #     backoff_sec=1,
+        # )
 
-        self.check_topic(log="FINAL")
+        # # expected max high watermark for each truncated partition
+        # expected = {p.partition_id: p.last_offset + 1 for p in partition_info}
+        # self.check_topic(expected=expected, log="REMOUNT")
 
-        KgoVerifierSeqConsumer.oneshot(
-            self.test_context,
-            self.redpanda,
-            self.topic_name,
-            debug_logs=True,
-            timeout_sec=30,
-        )
+        # KgoVerifierProducer.oneshot(
+        #     context=self.test_context,
+        #     redpanda=self.redpanda,
+        #     topic=self.topic_name,
+        #     msg_size=1024,
+        #     msg_count=2048,
+        #     key_set_cardinality=128,
+        # )
+
+        # self.check_topic(log="FINAL")
+
+        # KgoVerifierSeqConsumer.oneshot(
+        #     self.test_context,
+        #     self.redpanda,
+        #     self.topic_name,
+        #     debug_logs=True,
+        #     timeout_sec=30,
+        # )

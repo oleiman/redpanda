@@ -26,7 +26,7 @@ public:
       admin::proxy::client proxy_client,
       ss::sharded<cluster_link::service>* service,
       ss::sharded<cluster::metadata_cache>* md_cache,
-      ss::sharded<cluster::data_migrations::frontend>* data_migrations_fe);
+      ss::sharded<cluster::suffix_truncation::frontend>* suffix_truncation_fe);
 
     ss::future<proto::admin::create_shadow_link_response> create_shadow_link(
       serde::pb::rpc::context,
@@ -83,6 +83,7 @@ private:
 
     ss::sharded<cluster_link::service>* _service;
     ss::sharded<cluster::metadata_cache>* _md_cache;
-    ss::sharded<cluster::data_migrations::frontend>* _data_migrations_frontend;
+    ss::sharded<cluster::suffix_truncation::frontend>*
+      _suffix_truncation_frontend;
 };
 } // namespace admin

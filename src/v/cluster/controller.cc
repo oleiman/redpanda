@@ -1001,6 +1001,7 @@ ss::future<> controller::stop() {
     if (_metadata_uploader) {
         co_await _metadata_uploader->stop_and_wait();
     }
+    co_await _suffix_truncation_backend.stop();
     co_await _data_migration_irpc_frontend.stop();
     co_await _data_migration_backend.stop();
     if (_recovery_backend) {
@@ -1018,6 +1019,7 @@ ss::future<> controller::stop() {
     co_await _health_manager.stop();
     co_await _members_backend.stop();
     co_await _data_migration_router.stop();
+    co_await _suffix_truncation_frontend.stop();
     co_await _data_migration_worker.stop();
     co_await _data_migration_frontend.stop();
     co_await _topic_mount_handler.stop();
@@ -1038,6 +1040,8 @@ ss::future<> controller::stop() {
     co_await _oidc_service.stop();
     co_await _authorizer.stop();
     co_await _ephemeral_credentials.stop();
+    co_await _suffix_truncation_table.stop();
+    co_await _suffix_truncation_tracker.stop();
     co_await _data_migration_table.stop();
     co_await _data_migrated_resources.stop();
     co_await _roles.stop();

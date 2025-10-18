@@ -31,19 +31,26 @@ ss::future<std::error_code> table::apply_update(model::record_batch batch) {
 }
 
 ss::future<std::error_code> table::apply(suffix_truncation_truncate_cmd cmd) {
+    // TODO(oren): remove (maybe)
+    vassert(
+      ss::this_shard_id() == suffix_truncation_shard,
+      "Should only run on shard {}",
+      suffix_truncation_shard);
+    vlog(st_log.debug, "applying create truncation: {}", cmd.value);
+
     auto truncation = std::move(cmd.value.truncation);
     auto t_id = cmd.value.id;
     auto create_ts = cmd.value.op_timestamp;
 
-    vlog(st_log.debug, "applying create data migration: {}", cmd.value);
-
     if (t_id <= _last_applied) {
+        vlog(st_log.warn, "Truncation already exists: {}", t_id);
         co_return errc::suffix_truncation_already_exists;
     }
 
     auto err = validate(truncation);
     if (!err.has_value()) {
         // TODO: error detail
+        vlog(st_log.warn, "Invalid truncation: {}", err.error());
         co_return err.error();
     }
 
@@ -56,6 +63,7 @@ ss::future<std::error_code> table::apply(suffix_truncation_truncate_cmd cmd) {
       });
 
     if (!success) {
+        vlog(st_log.warn, "Truncation already exists: {}", t_id);
         co_return errc::suffix_truncation_already_exists;
     }
     _last_applied = t_id;
@@ -64,8 +72,8 @@ ss::future<std::error_code> table::apply(suffix_truncation_truncate_cmd cmd) {
     co_await _tracker->invoke_on_all(
       [&meta = it->second](tracker& t) { t.apply_update(meta); });
 
-    _callbacks.notify(t_id);
 
+    _callbacks.notify(t_id);
     co_return errc::success;
 }
 

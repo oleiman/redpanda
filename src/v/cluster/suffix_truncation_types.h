@@ -88,6 +88,8 @@ struct suffix_truncation
       envelope<suffix_truncation, serde::version<0>, serde::compat_version<0>> {
     chunked_vector<topic_truncation> topics;
 
+    suffix_truncation copy() const;
+
     bool empty() const {
         return topics.empty()
                || std::ranges::all_of(
@@ -163,6 +165,8 @@ struct truncation_meta
     model::timestamp created{};
     // populated once finished or cancelled state is reached
     model::timestamp completed{};
+
+    truncation_meta copy() const;
 
     auto serde_fields() {
         return std::tie(id, truncation, state, created, completed);

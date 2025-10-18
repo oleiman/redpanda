@@ -21,6 +21,10 @@ topic_truncation topic_truncation::copy() const {
 fmt::iterator topic_truncation::format_to(fmt::iterator it) const {
     return fmt::format_to(it, "{{name: {}, partitions: {}}}", nt, partitions);
 }
+
+suffix_truncation suffix_truncation::copy() const {
+    return {.topics = topics.copy()};
+}
 fmt::iterator suffix_truncation::format_to(fmt::iterator it) const {
     return fmt::format_to(it, "{{topics_to_truncate: {}}}", topics);
 }
@@ -45,6 +49,15 @@ fmt::iterator update_cmd_data::format_to(fmt::iterator it) const {
       id,
       desired_state,
       op_timestamp);
+}
+truncation_meta truncation_meta::copy() const {
+    return {
+      .id = id,
+      .truncation = truncation.copy(),
+      .state = state,
+      .created = created,
+      .completed = completed,
+    };
 }
 fmt::iterator truncation_meta::format_to(fmt::iterator it) const {
     return fmt::format_to(

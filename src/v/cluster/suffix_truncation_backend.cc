@@ -49,9 +49,12 @@ ss::future<> backend::start() {
     // for local-only truncation is TBD
 
     _table_notification = _table->register_cb([this](id id) {
+        vlog(st_log.info, "Calling back truncation {}", id);
         ssx::spawn_with_gate(
           _gate, [this, id]() { return handle_truncation(id); });
     });
+
+    vlog(st_log.info, "Registered notification: {}", _table_notification);
 
     co_await ss::do_with(
       _table->get_truncations(), [this](const chunked_vector<id>& tids) {
@@ -63,7 +66,7 @@ ss::future<> backend::start() {
           });
       });
 
-    // TODO(oren): spawn a consumer fiber
+    // TODO(oren): spawn a fiber to consume truncation steps
 
     co_return;
 }
@@ -75,11 +78,36 @@ ss::future<> backend::stop() {
 
 ss::future<> backend::handle_truncation(id id) noexcept {
     // TODO(oren): kick off to a work queue or something
-    if (!_gate.is_closed()) {
-        auto h = _gate.hold();
+    if (_gate.is_closed()) {
+        co_return;
     }
-    vlog(st_log.info, "Handling truncation {}", id);
-    return ss::now();
+    auto h = _gate.hold();
+    auto guard = co_await _mutex.get_units(_as);
+
+    // TODO(oren); seems like you could just store one metadata object on the
+    // backend, skip the table, and just reject any commands w/ the wrong ID.
+    auto trunc = _table->get_truncation(id);
+    if (!trunc.has_value()) {
+        vlog(st_log.warn, "Truncation not found: {}", id);
+        co_return;
+    }
+
+    vlog(st_log.info, "Handling truncation {} {}", id, trunc);
+
+    auto [it, added] = _outstanding.try_emplace(id, truncation_work{});
+
+    /*
+        topic_work work;
+        for (const auto& tp : trunc.value().truncation.topics) {
+            partition_work pw;
+            for (const auto& p : tp.partitions) {
+              pw.partition_ops
+            }
+        }
+      _outstanding.emplace(id, work);
+     */
+
+    co_return;
 }
 
 } // namespace cluster::suffix_truncation

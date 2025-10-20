@@ -16,6 +16,7 @@
 #include "cluster/suffix_truncation_table.h"
 #include "cluster/suffix_truncation_types.h"
 #include "model/fundamental.h"
+#include "utils/mutex.h"
 
 #include <functional>
 #include <optional>
@@ -48,6 +49,20 @@ private:
     ss::gate _gate;
 
     table::notification_id _table_notification;
+
+    struct topic_work {
+        chunked_hash_map<model::partition_id, std::optional<state>>
+          partition_ops;
+        kafka::offset truncate_from;
+    };
+
+    struct truncation_work {
+        state next_state;
+        chunked_hash_map<model::topic_namespace, topic_work> topics;
+    };
+
+    chunked_hash_map<id, truncation_work> _outstanding;
+    mutex _mutex{"truncation-backend-lock"};
 };
 
 } // namespace cluster::suffix_truncation

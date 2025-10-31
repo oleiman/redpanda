@@ -91,7 +91,8 @@ public:
       model::topic topic_name,
       pid_to_kvs_map_t records_per_partition,
       std::optional<model::timestamp> ts = model::timestamp::now(),
-      model::compression compression_type = model::compression::none);
+      model::compression compression_type = model::compression::none,
+      bool idempotent = false);
 
     // Produces the given records to the given topic partition.
     ss::future<model::offset> produce_to_partition(
@@ -99,10 +100,14 @@ public:
       model::partition_id pid,
       std::vector<kv_t> records,
       std::optional<model::timestamp> ts = model::timestamp::now(),
-      model::compression compression_type = model::compression::none);
+      model::compression compression_type = model::compression::none,
+      bool idempotent = false);
 
     ss::future<kafka::offset> produce_to_partition(
-      model::topic topic_name, model::partition_id pid, model::record_batch);
+      model::topic topic_name,
+      model::partition_id pid,
+      model::record_batch,
+      bool idempotent = false);
 
     ss::future<kafka::offset>
     produce_to_partition(const model::ntp& ntp, model::record_batch batch);

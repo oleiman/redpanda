@@ -174,6 +174,7 @@ redpanda_cc_gtest(
     ],
     cpu = 1,
     deps = [
+        "//src/v/cluster",
         "//src/v/cluster_link",
         "//src/v/cluster_link/replication:deps",
         "//src/v/cluster_link/replication:mux_remote_consumer",

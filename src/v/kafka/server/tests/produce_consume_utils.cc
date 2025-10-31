@@ -45,7 +45,8 @@ kafka_produce_transport::produce(
   model::topic topic_name,
   pid_to_kvs_map_t records_per_partition,
   std::optional<model::timestamp> ts,
-  model::compression compression_type) {
+  model::compression compression_type,
+  bool idempotent) {
     kafka::produce_request::topic tp;
     tp.name = topic_name;
     tp.partitions = produce_partition_requests(
@@ -54,7 +55,7 @@ kafka_produce_transport::produce(
     topics.push_back(std::move(tp));
     kafka::produce_request req(std::nullopt, -1, std::move(topics));
     req.data.timeout_ms = std::chrono::seconds(10);
-    req.has_idempotent = false;
+    req.has_idempotent = idempotent;
     req.has_transactional = false;
     auto resp = co_await _transport.dispatch(
       std::move(req), kafka::api_version(7));
@@ -80,11 +81,12 @@ ss::future<model::offset> kafka_produce_transport::produce_to_partition(
   model::partition_id pid,
   std::vector<kv_t> records,
   std::optional<model::timestamp> ts,
-  model::compression compression_type) {
+  model::compression compression_type,
+  bool idempotent) {
     pid_to_kvs_map_t m;
     m.emplace(pid, std::move(records));
     auto ret_m = co_await produce(
-      topic_name, std::move(m), ts, compression_type);
+      topic_name, std::move(m), ts, compression_type, idempotent);
     if (ret_m.size() != 1) {
         throw std::runtime_error(
           fmt::format(
@@ -137,7 +139,10 @@ kafka_produce_transport::produce_partition_requests(
 }
 
 ss::future<kafka::offset> kafka_produce_transport::produce_to_partition(
-  model::topic topic_name, model::partition_id pid, model::record_batch batch) {
+  model::topic topic_name,
+  model::partition_id pid,
+  model::record_batch batch,
+  bool idempotent) {
     chunked_vector<kafka::partition_produce_data> partition_data;
     kafka::produce_request::partition partition;
     auto num_records = batch.record_count();
@@ -152,7 +157,7 @@ ss::future<kafka::offset> kafka_produce_transport::produce_to_partition(
     topics.push_back(std::move(tp));
     kafka::produce_request req(std::nullopt, -1, std::move(topics));
     req.data.timeout_ms = std::chrono::seconds(10);
-    req.has_idempotent = false;
+    req.has_idempotent = idempotent;
     req.has_transactional = false;
     auto resp = co_await _transport.dispatch(
       std::move(req), kafka::api_version(7));

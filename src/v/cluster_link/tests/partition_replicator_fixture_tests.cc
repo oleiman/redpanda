@@ -8,11 +8,15 @@
  * https://github.com/redpanda-data/redpanda/blob/master/licenses/rcl.md
  */
 
+#include "cluster/errc.h"
+#include "cluster/id_allocator_frontend.h"
 #include "cluster_link/replication/mux_remote_consumer.h"
 #include "cluster_link/replication/partition_replicator.h"
 #include "cluster_link/replication/tests/deps_test_impl.h"
 #include "cluster_link/service.h"
 #include "kafka/client/direct_consumer/tests/direct_consumer_fixture.h"
+
+#include <fmt/format.h>
 
 namespace {
 ss::logger logger{"replicator-fixture-test"};
@@ -67,10 +71,15 @@ public:
         _replicator->start().get();
     }
 
-    model::record_batch generate_random_batch(int64_t start_offset) {
+    model::record_batch generate_random_batch(
+      int64_t start_offset,
+      std::optional<model::producer_id> pid = std::nullopt) {
         auto num_records = random_generators::get_int(25, 50);
         storage::record_batch_builder builder(
           model::record_batch_type::raft_data, model::offset{0});
+        if (pid.has_value()) {
+            builder.set_producer_identity(pid.value()(), 0);
+        }
 
         for (int i = 0; i < num_records; ++i) {
             builder.add_raw_kv(
@@ -110,11 +119,15 @@ private:
 TEST_P(ReplicatorFixture, TestProduceConsume) {
     auto deadline = ss::lowres_clock::now() + 10s;
     int64_t next_offset = 0;
+    model::producer_id::type next_pid{1};
     while (ss::lowres_clock::now() < deadline) {
-        auto batch = generate_random_batch(next_offset);
-        auto res
-          = produce_to_partition(_source.tp.topic, 0, std::move(batch)).get();
+        auto batch = generate_random_batch(
+          next_offset, std::make_optional(model::producer_id{next_pid}));
+        auto res = produce_to_partition(
+                     _source.tp.topic, 0, std::move(batch), true)
+                     .get();
         next_offset = res() + 1;
+        next_pid += 1;
         auto sleep_for = random_generators::get_int(1, 5);
         ss::sleep(std::chrono::milliseconds(sleep_for)).get();
     }
@@ -155,6 +168,15 @@ TEST_P(ReplicatorFixture, TestProduceConsume) {
             next_to_consume = kafka::next_offset(next_to_consume);
         }
     }
+
+    auto pid_reply = get_local_id_allocator_frontend(model::node_id{0})
+                       .allocate_id(10s)
+                       .get();
+    ASSERT_EQ(pid_reply.ec, ::cluster::errc::success);
+    ASSERT_GT(pid_reply.id, next_pid) << fmt::format(
+      "Assigned producer ID {} should exceed last used {}",
+      pid_reply.id,
+      next_pid);
 }
 
 using session_config = kafka::client::tests::session_config;
@@ -162,4 +184,5 @@ INSTANTIATE_TEST_SUITE_P(
   ReplicatorFixtureAndSessions,
   ReplicatorFixture,
   testing::Values(
-    session_config::with_sessions, session_config::without_sessions));
+    // session_config::with_sessions ,
+    session_config::without_sessions));

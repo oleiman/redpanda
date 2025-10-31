@@ -687,6 +687,10 @@ produce_handler::handle(request_context ctx, ss::smp_service_group ssg) {
                                                 || hdr.attrs.is_transactional();
                     request.has_idempotent = request.has_idempotent
                                              || hdr.producer_id >= 0;
+                    if (hdr.producer_id >= 0) {
+                        std::cerr << "HAS IDEMPOTENT, PRODUCER_ID: " << hdr
+                                  << std::endl;
+                    }
                 }
             }
         }
@@ -716,6 +720,7 @@ produce_handler::handle(request_context ctx, ss::smp_service_group ssg) {
         // ProducerId authorization</kafka>
 
     } else if (request.has_idempotent) {
+        std::cerr << "HAS IDEMPOTENT " << std::endl;
         if (!ctx.is_idempotence_enabled()) {
             return process_result_stages::single_stage(
               ctx.respond(request.make_error_response(

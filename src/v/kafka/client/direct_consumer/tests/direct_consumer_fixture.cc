@@ -86,7 +86,10 @@ model::node_id consumer_fixture::get_partition_leader(const model::ntp& ntp) {
 }
 
 ss::future<kafka::offset> consumer_fixture::produce_to_partition(
-  const model::topic& topic, int partition, model::record_batch batch) {
+  const model::topic& topic,
+  int partition,
+  model::record_batch batch,
+  bool idempotent) {
     model::ntp ntp(
       model::kafka_namespace, topic, model::partition_id(partition));
     auto leader_id = get_partition_leader(ntp);
@@ -98,19 +101,23 @@ ss::future<kafka::offset> consumer_fixture::produce_to_partition(
       ntp);
 
     return instance(leader_id)->make_kafka_client().then(
-      [topic, partition, batch = std::move(batch)](auto transport) mutable {
+      [topic, partition, batch = std::move(batch), idempotent](
+        auto transport) mutable {
           return ss::do_with(
             ::tests::kafka_produce_transport(std::move(transport)),
-            [topic, partition, batch = std::move(batch)](
+            [topic, partition, batch = std::move(batch), idempotent](
               auto& producer) mutable {
                 return producer.start().then([&producer,
                                               topic,
                                               partition,
-                                              batch = std::move(
-                                                batch)] mutable {
+                                              batch = std::move(batch),
+                                              idempotent] mutable {
                     return producer
                       .produce_to_partition(
-                        topic, model::partition_id(partition), std::move(batch))
+                        topic,
+                        model::partition_id(partition),
+                        std::move(batch),
+                        idempotent)
                       .then(
                         [](kafka::offset offset) { return ssx::now(offset); })
                       .finally([&producer] { return producer.stop(); });

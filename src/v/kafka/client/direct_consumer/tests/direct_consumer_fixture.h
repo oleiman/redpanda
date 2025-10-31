@@ -37,7 +37,10 @@ public:
     model::node_id get_partition_leader(const model::ntp& ntp);
 
     ss::future<kafka::offset> produce_to_partition(
-      const model::topic& topic, int partition, model::record_batch);
+      const model::topic& topic,
+      int partition,
+      model::record_batch,
+      bool idempotent = false);
 
     ss::future<> produce_to_partition(
       const model::topic& topic, int partition, size_t record_count);

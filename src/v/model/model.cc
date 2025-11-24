@@ -798,6 +798,33 @@ std::istream& operator>>(std::istream& is, fips_mode_flag& f) {
     return is;
 }
 
+std::string_view to_string_view(const kvstore_type& t) {
+    switch (t) {
+    case kvstore_type::none:
+        return "none";
+    case kvstore_type::cloud:
+        return "cloud";
+    }
+    return "unknown";
+}
+
+fmt::iterator format_to(kvstore_type t, fmt::iterator out) {
+    return fmt::format_to(out, "{}", to_string_view(t));
+}
+
+std::istream& operator>>(std::istream& is, kvstore_type& t) {
+    ss::sstring s;
+    is >> s;
+    try {
+        t = string_switch<kvstore_type>(s)
+              .match("none", kvstore_type::none)
+              .match("cloud", kvstore_type::cloud);
+    } catch (const std::runtime_error&) {
+        is.setstate(std::ios::failbit);
+    }
+    return is;
+}
+
 fmt::iterator topic_id::format_to(fmt::iterator it) const {
     const auto& uuid = (*this)().uuid();
     const bytes_view bv{uuid.begin(), uuid.size()};

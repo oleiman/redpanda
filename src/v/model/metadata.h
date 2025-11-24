@@ -789,6 +789,19 @@ enum class iceberg_invalid_record_action : uint8_t {
 fmt::iterator format_to(iceberg_invalid_record_action a, fmt::iterator out);
 std::istream& operator>>(std::istream&, iceberg_invalid_record_action&);
 
+// If a key-value store is enabled for the topic, what is the configuration for
+// it?
+enum class kvstore_type : uint8_t {
+    // No key value store enabled; the default.
+    none = 0,
+    // The kvstore lives in cloud storage; requires enterprise license.
+    cloud = 1,
+};
+
+std::string_view to_string_view(const kvstore_type& t);
+fmt::iterator format_to(kvstore_type t, fmt::iterator out);
+std::istream& operator>>(std::istream&, kvstore_type&);
+
 enum class kafka_batch_validation_mode : uint8_t {
     legacy = 0,
     relaxed = 1,

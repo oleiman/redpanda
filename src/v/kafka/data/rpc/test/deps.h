@@ -13,6 +13,10 @@ namespace rpc {
 class rpc_server;
 } // namespace rpc
 
+namespace kvstore {
+class db;
+} // namespace kvstore
+
 namespace kafka::data::rpc::test {
 
 // A small helper struct to allow copies for easier to read tests and
@@ -543,6 +547,24 @@ public:
 
     std::optional<model::term_id> get_term(const model::ntp&) const override {
         return std::nullopt;
+    }
+
+    ss::future<cluster::errc> invoke_on_shard_kvstore(
+      ss::shard_id,
+      const model::ktp&,
+      ss::noncopyable_function<ss::future<cluster::errc>(kvstore::db*)>)
+      override {
+        return ss::make_ready_future<cluster::errc>(
+          cluster::errc::feature_disabled);
+    }
+
+    ss::future<cluster::errc> invoke_on_shard_kvstore(
+      ss::shard_id,
+      const model::ntp&,
+      ss::noncopyable_function<ss::future<cluster::errc>(kvstore::db*)>)
+      override {
+        return ss::make_ready_future<cluster::errc>(
+          cluster::errc::feature_disabled);
     }
 
 private:

@@ -43,6 +43,8 @@ inline std::string_view name(serialization_format fmt) {
         return "application/vnd.schemaregistry.v1+json";
     case pandaproxy::json::serialization_format::schema_registry_json:
         return "application/vnd.schemaregistry.json";
+    case pandaproxy::json::serialization_format::application_proto:
+        return "application/proto";
     case pandaproxy::json::serialization_format::application_json:
         return "application/json";
     case pandaproxy::json::serialization_format::application_octet:

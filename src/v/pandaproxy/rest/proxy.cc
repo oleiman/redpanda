@@ -137,15 +137,38 @@ proxy::proxy(
   : _config(config)
   , _client_cfg(client_cfg)
   , _mem_sem(max_memory, "pproxy/mem")
-  , _inflight_sem(config::shard_local_cfg().max_in_flight_pandaproxy_requests_per_shard(), "pproxy/inflight")
-  , _inflight_config_binding(config::shard_local_cfg().max_in_flight_pandaproxy_requests_per_shard.bind())
+  , _inflight_sem(
+      config::shard_local_cfg().max_in_flight_pandaproxy_requests_per_shard(),
+      "pproxy/inflight")
+  , _inflight_config_binding(
+      config::shard_local_cfg()
+        .max_in_flight_pandaproxy_requests_per_shard.bind())
   , _client(client)
   , _client_cache(client_cache)
   , _controller(controller)
   , _dl_frontend(dl_frontend)
-  , _ctx{{{{}, max_memory, _mem_sem, _inflight_config_binding(), _inflight_sem, {}, smp_sg}, *this},
-  {config::always_true(), config::shard_local_cfg().superusers.bind(), controller},
-_config.pandaproxy_api.value(), rpc_client}
+  , _ctx {
+    {
+      {
+        .advertised_listeners = {},
+        .max_memory = max_memory,
+        .mem_sem = _mem_sem,
+        .max_inflight = _inflight_config_binding(),
+        .inflight_sem = _inflight_sem,
+        .as = {},
+        .smp_sg = smp_sg,
+      },
+      *this,
+    },
+      {
+        config::always_true(),
+        config::shard_local_cfg().superusers.bind(),
+        controller,
+      },
+      _config.pandaproxy_api.value(),
+      rpc_client,
+      &controller->get_authorizer().local(),
+    }
   , _topic_table(controller->get_topics_state())
   , _server(
       "pandaproxy",

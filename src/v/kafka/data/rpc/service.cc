@@ -15,7 +15,6 @@
 #include "cluster/errc.h"
 #include "kafka/data/log_reader_config.h"
 #include "kafka/data/partition_proxy.h"
-#include "kafka/data/rpc/logger.h"
 #include "kafka/data/rpc/serde.h"
 #include "kvstore/db.h"
 #include "logger.h"

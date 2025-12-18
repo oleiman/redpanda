@@ -608,9 +608,28 @@ seastar::future<> level_zero_gc::worker() {
 
 seastar::future<std::expected<size_t, level_zero_gc::collection_error>>
 level_zero_gc::try_to_collect() {
-    if (!delete_worker_->has_capacity()) {
-        co_return 0;
+    // ultra-temporaty cache to avoid repeatedly querying for max gc-able epoch.
+    // since the result will always be valid clusterwide, once we have one, use
+    // it for the remainder of the iteration by passing the cached value
+    // through.
+    std::optional<cluster_epoch> max_gc_epoch;
+    size_t total_eligible{0};
+    while (delete_worker_->has_capacity()) {
+        auto res = co_await do_try_to_collect(std::ref(max_gc_epoch));
+        if (!res.has_value()) {
+            co_return res;
+        }
+        if (res.value() == 0) {
+            break;
+        }
+        total_eligible += res.value();
     }
+
+    co_return total_eligible;
+}
+
+seastar::future<std::expected<size_t, level_zero_gc::collection_error>>
+level_zero_gc::do_try_to_collect(std::optional<cluster_epoch>& max_gc_epoch) {
     auto candidate_objects = co_await delete_worker_->next_page();
     if (!candidate_objects.has_value()) {
         vlog(
@@ -620,17 +639,19 @@ level_zero_gc::try_to_collect() {
         co_return std::unexpected(collection_error::service_error);
     }
 
-    const auto maybe_max_gc_epoch
-      = co_await epoch_source_->max_gc_eligible_epoch(&asrc_);
-    if (!maybe_max_gc_epoch.has_value()) {
-        vlog(
-          cd_log.debug,
-          "Received error retrieving GC eligible epoch: {}",
-          maybe_max_gc_epoch.error());
-        co_return std::unexpected(collection_error::service_error);
+    if (!max_gc_epoch.has_value()) {
+        const auto maybe_max_gc_epoch
+          = co_await epoch_source_->max_gc_eligible_epoch(&asrc_);
+        if (!maybe_max_gc_epoch.has_value()) {
+            vlog(
+              cd_log.debug,
+              "Received error retrieving GC eligible epoch: {}",
+              maybe_max_gc_epoch.error());
+            co_return std::unexpected(collection_error::service_error);
+        }
+        max_gc_epoch = maybe_max_gc_epoch.value();
     }
 
-    const auto max_gc_epoch = maybe_max_gc_epoch.value();
     if (!max_gc_epoch.has_value()) {
         vlog(cd_log.info, "No GC eligible epoch currently exists");
         co_return std::unexpected(collection_error::no_collectible_epoch);

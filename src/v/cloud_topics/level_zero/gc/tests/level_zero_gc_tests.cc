@@ -390,3 +390,34 @@ TEST_F(LevelZeroGCScaleOutTest, CleanShutdown) {
     // then immediately shutdown gc
     gc.stop().get();
 }
+
+TEST_F(LevelZeroGCScaleOutTest, ConcurrentDeletes) {
+    static constexpr size_t list_page_size{20};
+    int n = list_page_size * 20;
+    for (int i = 0; i < n; i++) {
+        add_listed(i, 24h);
+    }
+    this->max_epoch = n;
+    this->cfg.list_page_size = list_page_size;
+    this->cfg.delete_cost = 100ms;
+    gc.start();
+    EXPECT_TRUE(Eventually(
+      [this, expected = (size_t)n] { return deleted.size() == expected; }));
+}
+
+// make sure we make progress when the total size of eligible keys exceeds the
+// in-flight limit
+// i.e. 50 * 500 * len(key)=72 ~= 1.5MiB > 1MiB
+TEST_F(LevelZeroGCScaleOutTest, ConcurrentDeletesPipelineSaturation) {
+    static constexpr size_t list_page_size{500};
+    int n = list_page_size * 50;
+    for (int i = 0; i < n; i++) {
+        add_listed(i, 24h);
+    }
+    this->max_epoch = n;
+    this->cfg.list_page_size = list_page_size;
+    this->cfg.delete_cost = 50ms;
+    gc.start();
+    EXPECT_TRUE(Eventually(
+      [this, expected = (size_t)n] { return deleted.size() == expected; }));
+}

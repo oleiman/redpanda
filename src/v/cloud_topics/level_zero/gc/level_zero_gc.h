@@ -278,6 +278,8 @@ private:
     seastar::future<> worker();
     enum class collection_error : int8_t;
     seastar::future<std::expected<size_t, collection_error>> try_to_collect();
+    seastar::future<std::expected<size_t, collection_error>>
+    do_try_to_collect(std::optional<cluster_epoch>&);
 
     level_zero_gc_probe probe_;
 

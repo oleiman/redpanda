@@ -355,3 +355,38 @@ TEST_F(LevelZeroGCMaxEpochTest, EmptySnapshotNonEmptyReport) {
     ASSERT_TRUE(max_gc().has_value());
     ASSERT_FALSE(max_gc().value().has_value());
 }
+
+class LevelZeroGCScaleOutTest : public LevelZeroGCTest {
+public:
+    LevelZeroGCScaleOutTest()
+      : LevelZeroGCTest(1s, 2s) {}
+};
+
+TEST_F(LevelZeroGCScaleOutTest, MultiPageDelete) {
+    static constexpr size_t list_page_size{100};
+    int n = list_page_size * 4;
+    for (int i = 0; i < n; i++) {
+        add_listed(i, 24h);
+    }
+    this->max_epoch = n;
+    this->cfg.list_page_size = list_page_size;
+    gc.start();
+    EXPECT_TRUE(Eventually(
+      [this, expected = (size_t)n] { return deleted.size() == expected; }));
+}
+
+TEST_F(LevelZeroGCScaleOutTest, CleanShutdown) {
+    static constexpr size_t list_page_size{10};
+    int n = list_page_size * 10;
+    for (int i = 0; i < n; i++) {
+        add_listed(i, 24h);
+    }
+    this->max_epoch = n;
+    this->cfg.list_page_size = list_page_size;
+    this->cfg.delete_cost = 200ms;
+    gc.start();
+    // wait until we process one page
+    EXPECT_TRUE(Eventually([this] { return !deleted.empty(); }));
+    // then immediately shutdown gc
+    gc.stop().get();
+}

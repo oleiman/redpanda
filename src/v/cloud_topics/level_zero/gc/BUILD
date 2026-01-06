@@ -38,6 +38,8 @@ redpanda_cc_library(
         "//src/v/cloud_topics:types",
         "//src/v/container:chunked_hash_map",
         "//src/v/model",
+        "//src/v/ssx:semaphore",
+        "//src/v/ssx:work_queue",
         "@seastar",
     ],
 )

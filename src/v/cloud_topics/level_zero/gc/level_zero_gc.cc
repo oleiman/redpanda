@@ -22,6 +22,160 @@
 
 namespace cloud_topics {
 
+class level_zero_gc::list_delete_worker {
+public:
+    explicit list_delete_worker(
+      std::unique_ptr<object_storage> storage, level_zero_gc_probe& probe)
+      : storage_(std::move(storage))
+      , probe_(&probe)
+      , worker_([](std::exception_ptr eptr) {
+          vlog(cd_log.warn, "Exception from delete worker: {}", eptr);
+      }) {}
+    void start() {
+        vlog(cd_log.info, "Starting cloud topics list/delete worker");
+        if (as_.abort_requested()) {
+            as_ = {};
+        }
+        if (gate_.is_closed()) {
+            gate_ = {};
+        }
+    }
+    void pause() {
+        as_.request_abort();
+        continuation_token_.reset();
+    }
+    seastar::future<> stop() {
+        if (gate_.is_closed()) {
+            co_return;
+        }
+        vlog(cd_log.info, "Stopping cloud topics list/delete worker");
+        as_.request_abort();
+        delete_sem_.broken();
+        page_sem_.broken();
+        co_await worker_.shutdown();
+        co_await gate_.close();
+        vlog(cd_log.info, "Stopped cloud topics list/delete worker");
+    }
+
+    seastar::future<std::expected<size_t, level_zero_gc::collection_error>>
+    collect() {
+        throw std::runtime_error("not implemented");
+    }
+
+    bool has_capacity() const { return page_sem_.available_units() > 0; }
+
+    seastar::future<std::expected<
+      cloud_storage_clients::client::list_bucket_result,
+      cloud_storage_clients::error_outcome>>
+    next_page() {
+        // cached continuation is single use. pass it to list_objects and null
+        // it out immediately.
+        auto objects = co_await storage_->list_objects(
+          &as_, std::exchange(continuation_token_, std::nullopt));
+
+        // fairly naive approach to caching the token. if the list request
+        // failed, we leave the cached token empty, but if some other error
+        // occurs while processing a page, we keep the token and "skip" that
+        // page. with lexicographically ordered list results and monotonic
+        // epochs, any eligible keys in a skipped page are guaranteed to appear
+        // in a subsequent round. given the volume of L0 objects at higher
+        // throughput rates, we're going to err on the side of making progress
+        // (vs performing a perfect sweep of outstanding objects).
+        if (objects.has_value()) {
+            continuation_token_.emplace(
+              std::move(objects.value().next_continuation_token));
+        }
+        co_return objects;
+    }
+
+    size_t delete_objects(
+      std::vector<cloud_storage_clients::client::list_bucket_item> objects,
+      size_t keys_total_bytes) {
+        auto n_objects = objects.size();
+        if (n_objects > 0) {
+            auto u = seastar::try_get_units(page_sem_, keys_total_bytes);
+            if (!u.has_value()) {
+                vlog(cd_log.trace, "Delete pipeline saturated");
+                // take the units unsafely. we don't really care about the
+                // memory limit in particular, just don't want to grow
+                // unbounded.
+                u.emplace(seastar::consume_units(page_sem_, keys_total_bytes));
+            }
+            worker_.submit([this,
+                            o = std::move(objects),
+                            u = std::move(u).value()]() mutable {
+                return do_delete_objects(std::move(o), std::move(u));
+            });
+        }
+        return n_objects;
+    }
+
+    seastar::future<> do_delete_objects(
+      std::vector<cloud_storage_clients::client::list_bucket_item>
+        eligible_objects,
+      ssx::semaphore_units page_u) noexcept {
+        auto u_fut = co_await ss::coroutine::as_future(
+          seastar::get_units(delete_sem_, 1, as_));
+        if (u_fut.failed()) {
+            vlog(
+              cd_log.debug,
+              "Failed to get units in delete worker: {}",
+              u_fut.get_exception());
+            co_return;
+        }
+
+        if (gate_.is_closed()) {
+            vlog(cd_log.trace, "Gate closed");
+            co_return;
+        }
+
+        auto u = std::move(u_fut.get());
+
+        ssx::spawn_with_gate(
+          gate_,
+          [this,
+           u = std::move(u),
+           pu = std::move(page_u),
+           eo = std::move(eligible_objects)]() mutable {
+              const auto num_eligible = eo.size();
+              return storage_->delete_objects(&as_, std::move(eo))
+                .then([this, num_eligible](
+                        std::expected<void, cloud_io::upload_result> res) {
+                    if (!res.has_value()) {
+                        vlog(
+                          cd_log.info,
+                          "Received an error deleting L0 data objects: {}",
+                          res.error());
+                    } else {
+                        probe_->objects_deleted(num_eligible);
+                        vlog(
+                          cd_log.debug,
+                          "Deleted {} L0 data objects eligible for GC",
+                          num_eligible);
+                    }
+                })
+                .finally([u = std::move(u), pu = std::move(pu)] {})
+                .handle_exception([](std::exception_ptr eptr) {
+                    vlog(cd_log.debug, "Delete objects failed: {}", eptr);
+                });
+          });
+    }
+
+private:
+    std::unique_ptr<object_storage> storage_;
+    level_zero_gc_probe* probe_;
+    ssx::work_queue worker_;
+    // TODO: configurable limits?
+    // max number of in-flight delete ops
+    ssx::semaphore delete_sem_{5, "ct/gc/delete"};
+    // control (approximate) total memory held by gc-eligible list pages in
+    // flight (these may be queued depending on delete concurrency)
+    ssx::semaphore page_sem_{1_MiB, "ct/gc/page"};
+    seastar::abort_source as_{};
+    seastar::gate gate_{};
+    std::optional<ss::sstring> continuation_token_{};
+};
+
 class object_storage_remote_impl : public level_zero_gc::object_storage {
 public:
     // TODO(noah) some random-but-not-awful values for the retry chain that

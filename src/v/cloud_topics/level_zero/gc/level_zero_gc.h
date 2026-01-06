@@ -276,6 +276,8 @@ private:
     seastar::future<std::expected<size_t, collection_error>> try_to_collect();
 
     level_zero_gc_probe probe_;
+
+    class list_delete_worker;
 };
 
 } // namespace cloud_topics

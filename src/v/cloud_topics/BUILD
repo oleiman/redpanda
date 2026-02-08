@@ -99,6 +99,7 @@ redpanda_cc_library(
     deps = [
         "//src/v/base",
         "//src/v/cloud_io:admission_control_types",
+        "//src/v/cloud_topics:types",
         "//src/v/cloud_topics/level_zero/common:extent_meta",
         "//src/v/container:chunked_vector",
         "//src/v/model",
@@ -199,6 +200,7 @@ redpanda_cc_library(
         "//src/v/cloud_io:remote",
         "//src/v/cloud_topics:cluster_services_interface",
         "//src/v/cloud_topics:data_plane_api",
+        "//src/v/cloud_topics:inflight_write_tracker",
         "//src/v/cloud_topics/batch_cache",
         "//src/v/cloud_topics/level_zero/batcher",
         "//src/v/cloud_topics/level_zero/cluster_services_impl",

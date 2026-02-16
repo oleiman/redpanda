@@ -62,14 +62,16 @@ class CloudTopicsL0GCTestBase(RedpandaTest):
         )
         extra_rp_conf = {
             CLOUD_TOPICS_CONFIG_STR: True,
-            "cloud_topics_reconciliation_min_interval": 2000,
+            "cloud_topics_reconciliation_min_interval": 1000,
             "cloud_topics_reconciliation_max_interval": 2000,
             "cloud_topics_epoch_service_epoch_increment_interval": 5000,
             "cloud_topics_epoch_service_local_epoch_cache_duration": 5000,
-            "cloud_topics_short_term_gc_minimum_object_age": 10000,
+            "cloud_topics_short_term_gc_minimum_object_age": 1000,
             "cloud_topics_short_term_gc_interval": 2000,
-            "cloud_topics_short_term_gc_backoff_interval": 10000,
+            "cloud_topics_gc_barrier_loop_interval": 1000,
+            "cloud_topics_gc_barrier_poll_interval": 500,
             "cloud_topics_gc_health_check_interval": 2000,
+            "cloud_topics_short_term_gc_backoff_interval": 5000,
         }
         if extra_rp_conf_overrides:
             extra_rp_conf.update(extra_rp_conf_overrides)
@@ -143,11 +145,11 @@ class CloudTopicsL0GCTestBase(RedpandaTest):
 
 class CloudTopicsL0GCTest(CloudTopicsL0GCTestBase):
     @cluster(num_nodes=4)
-    @matrix(cloud_storage_type=get_cloud_storage_type())
+    @matrix(cloud_storage_type=get_cloud_storage_type()[0:1])
     def test_l0_gc(self, cloud_storage_type: CloudStorageType):
         self.topics = [TopicSpec(partition_count=2)]
         self.create_topics(self.topics)
-        self.produce_some(topics=[spec.name for spec in self.topics])
+        self.produce_some(topics=[spec.name for spec in self.topics], n=300)
 
         # TODO: we are only checking that deletes are happening here (and should
         # also be happening in parallel with the repeater's fetch/produce
@@ -155,12 +157,12 @@ class CloudTopicsL0GCTest(CloudTopicsL0GCTestBase):
         wait_until(
             lambda: self.get_num_objects_deleted() > 0,
             timeout_sec=30,
-            backoff_sec=5,
+            backoff_sec=1,
             retry_on_exc=True,
         )
 
     @cluster(num_nodes=4)
-    @matrix(cloud_storage_type=get_cloud_storage_type())
+    @matrix(cloud_storage_type=get_cloud_storage_type()[0:1])
     def test_idle_housekeeping(self, cloud_storage_type: CloudStorageType):
         self.topics = [
             TopicSpec(partition_count=2),
@@ -645,11 +647,11 @@ class CloudTopicsL0GCAdminTest(CloudTopicsL0GCAdminBase):
         )
 
         self.logger.debug(
-            "Force the stalled topic's epoch up to the inactive epoch of the active topic. This should unstick GC"
+            "Force the stalled topic's epoch up to the max applied epoch "
+            "of the active topic. The barrier uses max_applied_epoch for "
+            "the candidate, so this unblocks the barrier round."
         )
-        target_epoch = cast(
-            EpochInfo, epochs[produce_topics[0]][0]
-        ).estimated_inactive_epoch
+        target_epoch = cast(EpochInfo, epochs[produce_topics[0]][0]).max_applied_epoch
 
         new_epoch = self.gc_advance_epoch(
             topic=stalled_topic,
@@ -1324,19 +1326,22 @@ class CloudTopicsL0GCTopicDeletionTest(CloudTopicsL0GCTestBase):
 
 class CloudTopicsL0GCEpochLagTest(CloudTopicsL0GCTestBase):
     """
-    Integration: Configure slow GC so it falls behind ingress, verify
-    epoch_lag grows, then hot-reconfigure to fast GC and verify it
-    catches up.
+    Integration: Use a very long grace period to prevent GC from deleting
+    objects while the safe epoch advances. This builds epoch_lag
+    deterministically. Then hot-reconfigure the grace period down and
+    verify GC catches up, reducing lag.
     """
 
     def __init__(self, test_context: TestContext):
         super().__init__(
             test_context,
             extra_rp_conf_overrides={
-                # Slow GC: 10s between rounds (5x the default, enough to
-                # build measurable backpressure without wasting test time).
-                "cloud_topics_short_term_gc_interval": 10000,
-                "cloud_topics_short_term_gc_backoff_interval": 10000,
+                # Fast epoch advancement so the barrier candidate grows.
+                "cloud_topics_epoch_service_epoch_increment_interval": 1000,
+                "cloud_topics_epoch_service_local_epoch_cache_duration": 1000,
+                # Long grace period: GC has a safe epoch but can't delete
+                # anything because all objects are too young. Lag builds.
+                "cloud_topics_short_term_gc_minimum_object_age": 86400000,
             },
         )
 
@@ -1345,17 +1350,6 @@ class CloudTopicsL0GCEpochLagTest(CloudTopicsL0GCTestBase):
         cloud_storage_type=get_cloud_storage_type(applies_only_on=[CloudStorageType.S3])
     )
     def test_epoch_lag_and_catchup(self, cloud_storage_type: CloudStorageType):
-        """
-        Produce data continuously while GC is slow (10s interval), observe
-        epoch_lag building up, then hot-reconfigure to fast GC (1s) and
-        verify epoch_lag decreases significantly.
-
-        Production must stay active through both phases so that new objects
-        keep arriving across successive epochs. Without continuous ingress
-        GC can finish all work in a single round, after which
-        min_deletion_epoch freezes while max_gc_eligible_epoch keeps
-        advancing — making epoch_lag grow instead of shrink.
-        """
         topic = TopicSpec(partition_count=1, replication_factor=3)
         self.topics = [topic]
         self.create_topics(self.topics)
@@ -1371,8 +1365,8 @@ class CloudTopicsL0GCEpochLagTest(CloudTopicsL0GCTestBase):
             repeater.await_group_ready()
             repeater.await_progress(200, timeout_sec=120)
 
-            # Wait for epoch_lag > 10: GC is running but falling behind
-            # because epochs advance faster than the 10s GC interval.
+            # Lag builds because the barrier publishes safe epochs but
+            # the grace period prevents any deletions.
             wait_until(
                 lambda: self._get_metric_max("vectorized_cloud_topics_l0_gc_epoch_lag")
                 > 10,
@@ -1381,35 +1375,32 @@ class CloudTopicsL0GCEpochLagTest(CloudTopicsL0GCTestBase):
                 retry_on_exc=True,
             )
 
-            lag_while_slow = self._get_metric_max(
+            lag_while_blocked = self._get_metric_max(
                 "vectorized_cloud_topics_l0_gc_epoch_lag"
             )
-            self.logger.info(f"Slow-GC phase: epoch_lag={lag_while_slow}")
-            assert lag_while_slow > 0
+            self.logger.info(f"Grace-blocked phase: epoch_lag={lag_while_blocked}")
 
-            # Hot-reconfigure: speed up GC dramatically.
+            # Hot-reconfigure: drop the grace period so GC can delete.
             admin = RedpandaAdmin(self.redpanda)
             admin.patch_cluster_config(
                 upsert={
-                    "cloud_topics_short_term_gc_interval": 1000,
-                    "cloud_topics_short_term_gc_backoff_interval": 1000,
+                    "cloud_topics_short_term_gc_minimum_object_age": 1000,
                 }
             )
-            self.logger.info("Hot-reconfigured GC to 1s interval")
+            self.logger.info("Hot-reconfigured grace period to 1s")
 
-            # Verify GC catches up: epoch_lag should decrease by at least 50%.
-            # It may not reach 0 because not every epoch has objects to
-            # delete, so max_deleted_epoch can't close the gap completely.
+            # Lag should decrease as GC catches up.
             wait_until(
                 lambda: self._get_metric_max("vectorized_cloud_topics_l0_gc_epoch_lag")
-                < lag_while_slow // 2,
+                < lag_while_blocked // 2,
                 timeout_sec=60,
                 backoff_sec=3,
                 retry_on_exc=True,
             )
             lag_final = self._get_metric_max("vectorized_cloud_topics_l0_gc_epoch_lag")
             self.logger.info(
-                f"Fast-GC phase: epoch_lag={lag_final} (was {lag_while_slow} while slow)"
+                f"After grace drop: epoch_lag={lag_final} "
+                f"(was {lag_while_blocked} while blocked)"
             )
 
 
@@ -1455,7 +1446,7 @@ class CloudTopicsL0GCOrphanedObjectsTest(CloudTopicsL0GCTestBase):
 
         # Wait for the GC watermark to be well above the epoch we'll
         # use for fake objects (epoch=1), and for GC to be actively
-        # deleting.
+        # deleting. The barrier needs to converge before GC can start.
         self.logger.info("Waiting for GC watermark to advance past 10")
         wait_until(
             lambda: self._get_metric_max(

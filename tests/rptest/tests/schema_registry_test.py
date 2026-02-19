@@ -7568,6 +7568,20 @@ class SchemaRegistryTest(SchemaRegistryTestMethods):
         )
 
 
+class SchemaRegistryRpcTransportTest(SchemaRegistryTestMethods):
+    """
+    Test schema registry using the internal RPC transport instead of the
+    Kafka client transport.
+
+    This derived class inherits all the tests from SchemaRegistryTestMethods.
+    """
+
+    def __init__(self, context):
+        super(SchemaRegistryRpcTransportTest, self).__init__(
+            context, extra_rp_conf={"schema_registry_use_rpc": True}
+        )
+
+
 class SchemaRegistryAutoAuthTest(SchemaRegistryTestMethods):
     """
     Test schema registry against a redpanda cluster with Auto Auth enabled.

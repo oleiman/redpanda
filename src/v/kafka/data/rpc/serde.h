@@ -66,17 +66,23 @@ struct produce_request
 struct kafka_topic_data_result
   : serde::envelope<
       kafka_topic_data_result,
-      serde::version<0>,
+      serde::version<1>,
       serde::compat_version<0>> {
     kafka_topic_data_result() = default;
     kafka_topic_data_result(model::topic_partition tp, cluster::errc ec)
       : tp(std::move(tp))
       , err(ec) {}
+    kafka_topic_data_result(
+      model::topic_partition tp, cluster::errc ec, model::offset base_offset)
+      : tp(std::move(tp))
+      , err(ec)
+      , base_offset(base_offset) {}
 
     model::topic_partition tp;
     cluster::errc err{cluster::errc::success};
+    std::optional<model::offset> base_offset;
 
-    auto serde_fields() { return std::tie(tp, err); }
+    auto serde_fields() { return std::tie(tp, err, base_offset); }
 
     fmt::iterator format_to(fmt::iterator it) const;
 };

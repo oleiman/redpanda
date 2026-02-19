@@ -33,7 +33,7 @@ constexpr int max_client_retries = 5;
 
 template<typename T>
 concept ResponseWithErrorCode = requires(T resp) {
-    { resp.ec } -> std::same_as<cluster::errc>;
+    { resp.ec } -> std::same_as<cluster::errc&>;
 };
 
 template<typename Func>
@@ -156,8 +156,9 @@ ss::future<cluster::errc> client::produce(
     produce_request req;
     req.topic_data.emplace_back(std::move(tp), std::move(batches));
     req.timeout = timeout;
-    co_return co_await retry(
+    auto result = co_await retry(
       [this, &req]() { return do_produce_once(req.share()); });
+    co_return result.ec;
 }
 
 ss::future<cluster::errc>
@@ -165,11 +166,21 @@ client::produce(model::topic_partition tp, model::record_batch batch) {
     produce_request req;
     req.topic_data.emplace_back(std::move(tp), std::move(batch));
     req.timeout = timeout;
+    auto result = co_await retry(
+      [this, &req]() { return do_produce_once(req.share()); });
+    co_return result.ec;
+}
+
+ss::future<produce_result>
+client::produce_with_offset(model::topic_partition tp, model::record_batch b) {
+    produce_request req;
+    req.topic_data.emplace_back(std::move(tp), std::move(b));
+    req.timeout = timeout;
     co_return co_await retry(
       [this, &req]() { return do_produce_once(req.share()); });
 }
 
-ss::future<cluster::errc> client::do_produce_once(produce_request req) {
+ss::future<produce_result> client::do_produce_once(produce_request req) {
     vassert(
       req.topic_data.size() == 1,
       "expected a single batch: {}",
@@ -179,7 +190,7 @@ ss::future<cluster::errc> client::do_produce_once(produce_request req) {
       model::topic_namespace_view(model::kafka_namespace, tp.topic),
       tp.partition);
     if (!leader) {
-        co_return cluster::errc::not_leader;
+        co_return produce_result{.ec = cluster::errc::not_leader};
     }
     vlog(log.trace, "do_produce_once_request(node={}): {}", *leader, req);
     auto reply = co_await (
@@ -190,8 +201,8 @@ ss::future<cluster::errc> client::do_produce_once(produce_request req) {
       reply.results.size() == 1,
       "expected a single result: {}",
       reply.results.size());
-
-    co_return reply.results.front().err;
+    const auto& front = reply.results.front();
+    co_return produce_result{.ec = front.err, .base_offset = front.base_offset};
 }
 
 ss::future<cluster::errc> client::create_topic(

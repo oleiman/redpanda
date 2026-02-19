@@ -14,12 +14,15 @@
 #include "base/seastarx.h"
 #include "cluster/metrics_reporter.h"
 #include "kafka/client/fwd.h"
+#include "kafka/data/rpc/fwd.h"
 #include "model/metadata.h"
 #include "pandaproxy/schema_registry/fwd.h"
 #include "security/fwd.h"
 
 #include <seastar/core/gate.hh>
 #include <seastar/core/sharded.hh>
+
+#include <memory>
 
 namespace YAML {
 class Node;
@@ -36,6 +39,8 @@ class registry;
 
 namespace pandaproxy::schema_registry {
 
+class transport;
+
 class api {
 public:
     api(
@@ -46,7 +51,8 @@ public:
       configuration& cfg,
       ss::sharded<cluster::metadata_cache>* metadata_cache,
       std::unique_ptr<cluster::controller>&,
-      ss::sharded<security::audit::audit_log_manager>&) noexcept;
+      ss::sharded<security::audit::audit_log_manager>&,
+      ss::sharded<kafka::data::rpc::client>* rpc_client = nullptr) noexcept;
     ~api() noexcept;
 
     ss::future<> start();
@@ -74,6 +80,9 @@ private:
     std::unique_ptr<cluster::controller>& _controller;
 
     ss::sharded<kafka::client::client> _client;
+    ss::sharded<kafka::data::rpc::client>* _rpc_client;
+    // Per-shard transport instance. Lifetime is managed by the api.
+    std::vector<std::unique_ptr<transport>> _transports;
     std::unique_ptr<pandaproxy::schema_registry::sharded_store> _store;
     ss::sharded<schema_id_validation_probe> _schema_id_validation_probe;
     ss::sharded<schema_id_cache> _schema_id_cache;

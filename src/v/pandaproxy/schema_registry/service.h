@@ -16,6 +16,7 @@
 #include "pandaproxy/schema_registry/configuration.h"
 #include "pandaproxy/schema_registry/seq_writer.h"
 #include "pandaproxy/schema_registry/sharded_store.h"
+#include "pandaproxy/schema_registry/transport.h"
 #include "pandaproxy/server.h"
 #include "pandaproxy/util.h"
 #include "security/fwd.h"
@@ -46,6 +47,7 @@ public:
       ss::smp_service_group smp_sg,
       size_t max_memory,
       ss::sharded<kafka::client::client>& client,
+      transport& transport,
       sharded_store& store,
       ss::sharded<seq_writer>& sequencer,
       std::unique_ptr<kafka::data::rpc::topic_metadata_cache>
@@ -92,6 +94,7 @@ private:
     config::binding<size_t> _inflight_config_binding;
     ss::gate _gate;
     ss::sharded<kafka::client::client>& _client;
+    transport& _transport;
     ctx_server<service>::context_t _ctx;
     ctx_server<service> _server;
     sharded_store& _store;

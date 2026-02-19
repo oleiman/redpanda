@@ -602,25 +602,16 @@ ss::future<> service::fetch_internal_topic() {
     // TODO: should check the replication_factor of the topic is
     // what our config calls for
 
-    auto offset_res = co_await _client.local().list_offsets(
-      model::schema_registry_internal_tp);
-    if (
-      offset_res.data.topics.size() != 1
-      || offset_res.data.topics[0].partitions.size() != 1) {
-        throw kafka::exception(
-          kafka::error_code::unknown_server_error,
-          "Malformed ListOffsets Kafka response for internal topic");
-    }
-
-    auto max_offset = offset_res.data.topics[0].partitions[0].offset;
+    auto max_offset = co_await _transport.get_high_watermark();
     vlog(srlog.debug, "Schema registry: _schemas max_offset: {}", max_offset);
 
-    co_await kafka::client::make_client_fetch_batch_reader(
-      _client.local(),
-      model::schema_registry_internal_tp,
+    co_await _transport.consume_range(
       model::offset{0},
-      max_offset)
-      .consume(consume_to_store{_store, writer()}, model::no_timeout);
+      max_offset,
+      [this](model::record_batch batch) -> ss::future<> {
+          consume_to_store c{_store, writer()};
+          co_await c(std::move(batch));
+      });
 
     // If a schema failed to be compiled, it will be marked. We attempt to
     // reprocess them once now that the whole topic has been read, in case
@@ -704,6 +695,7 @@ service::service(
   ss::smp_service_group smp_sg,
   size_t max_memory,
   ss::sharded<kafka::client::client>& client,
+  schema_registry::transport& transport,
   sharded_store& store,
   ss::sharded<seq_writer>& sequencer,
   std::unique_ptr<kafka::data::rpc::topic_metadata_cache> topic_metadata_cache,
@@ -720,6 +712,7 @@ service::service(
       config::shard_local_cfg()
         .max_in_flight_schema_registry_requests_per_shard.bind())
   , _client(client)
+  , _transport(transport)
   , _ctx{{{}, max_memory, _mem_sem, _inflight_config_binding(), _inflight_sem, {}, smp_sg}, *this}
   , _server(
       "schema_registry", // server_name

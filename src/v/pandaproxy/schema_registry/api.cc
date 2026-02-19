@@ -12,15 +12,20 @@
 #include "cluster/cluster_link/frontend.h"
 #include "cluster/controller.h"
 #include "config/configuration.h"
+#include "features/feature_table.h"
 #include "kafka/client/configuration.h"
+#include "kafka/data/rpc/client.h"
 #include "kafka/data/rpc/deps.h"
 #include "model/metadata.h"
 #include "model/namespace.h"
 #include "pandaproxy/logger.h"
 #include "pandaproxy/schema_registry/configuration.h"
+#include "pandaproxy/schema_registry/kafka_client_transport.h"
+#include "pandaproxy/schema_registry/rpc_transport.h"
 #include "pandaproxy/schema_registry/schema_id_cache.h"
 #include "pandaproxy/schema_registry/service.h"
 #include "pandaproxy/schema_registry/sharded_store.h"
+#include "pandaproxy/schema_registry/transport.h"
 #include "pandaproxy/schema_registry/types.h"
 #include "pandaproxy/schema_registry/validation_metrics.h"
 
@@ -56,7 +61,8 @@ api::api(
   configuration& cfg,
   ss::sharded<cluster::metadata_cache>* metadata_cache,
   std::unique_ptr<cluster::controller>& c,
-  ss::sharded<security::audit::audit_log_manager>& audit_mgr) noexcept
+  ss::sharded<security::audit::audit_log_manager>& audit_mgr,
+  ss::sharded<kafka::data::rpc::client>* rpc_client) noexcept
   : _node_id{node_id}
   , _sg{sg}
   , _max_memory{max_memory}
@@ -64,6 +70,7 @@ api::api(
   , _cfg{cfg}
   , _metadata_cache(metadata_cache)
   , _controller(c)
+  , _rpc_client(rpc_client)
   , _audit_mgr(audit_mgr) {}
 
 api::~api() noexcept = default;
@@ -90,10 +97,55 @@ ss::future<> api::start() {
       [this](std::exception_ptr ex) {
           return _service.local().mitigate_error(ex);
       });
+
+    // Determine transport mode: RPC or kafka::client
+    const bool use_rpc = [this] {
+        if (!config::shard_local_cfg().schema_registry_use_rpc()) {
+            return false;
+        }
+        if (!_rpc_client) {
+            vlog(
+              srlog.warn,
+              "schema_registry_use_rpc enabled but RPC client not available. "
+              "Falling back to Kafka client.");
+            return false;
+        }
+        const bool rpc_available
+          = _controller->get_feature_table().local().get_active_version()
+            >= features::to_cluster_version(features::release_version::v26_1_1);
+        if (!rpc_available) {
+            vlog(
+              srlog.warn,
+              "schema_registry_use_rpc enabled but cluster version too old. "
+              "Falling back to Kafka client. RPC mode will be available "
+              "on the next restart after all brokers are upgraded.");
+            return false;
+        }
+        return true;
+    }();
+
+    // Create per-shard transports
+    _transports.resize(ss::smp::count);
+    if (use_rpc) {
+        vlog(srlog.info, "Schema registry in RPC mode");
+        co_await ss::smp::invoke_on_all([this] {
+            _transports[ss::this_shard_id()] = std::make_unique<rpc_transport>(
+              _rpc_client->local());
+        });
+    } else {
+        vlog(srlog.info, "Schema registry in Kafka client mode");
+        co_await ss::smp::invoke_on_all([this] {
+            _transports[ss::this_shard_id()]
+              = std::make_unique<kafka_client_transport>(_client);
+        });
+    }
+
     co_await _sequencer.start(
       _node_id,
       _sg,
-      std::ref(_client),
+      ss::sharded_parameter([this] {
+          return std::ref<transport>(*_transports[ss::this_shard_id()]);
+      }),
       std::ref(*_store),
       ss::sharded_parameter([this] {
           return std::make_unique<sequence_state_checker_impl>(_controller);
@@ -104,6 +156,9 @@ ss::future<> api::start() {
       _sg,
       _max_memory,
       std::ref(_client),
+      ss::sharded_parameter([this] {
+          return std::ref<transport>(*_transports[ss::this_shard_id()]);
+      }),
       std::ref(*_store),
       std::ref(_sequencer),
       ss::sharded_parameter([this]() {
@@ -149,6 +204,10 @@ ss::future<> api::stop() {
     co_await _service.stop();
     co_await _sequencer.stop();
     co_await _client.stop();
+    // Destroy transports on their owning shards
+    co_await ss::smp::invoke_on_all(
+      [this] { _transports[ss::this_shard_id()].reset(); });
+    _transports.clear();
     co_await _schema_id_cache.stop();
     co_await _schema_id_validation_probe.stop();
     if (_store) {

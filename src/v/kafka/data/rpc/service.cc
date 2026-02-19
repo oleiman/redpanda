@@ -248,8 +248,11 @@ ss::future<kafka_topic_data_result> local_service::produce(
   kafka_topic_data data, model::timeout_clock::duration timeout) {
     auto ktp = model::ktp(data.tp.topic, data.tp.partition);
     auto result = co_await produce(ktp, std::move(data.batches), timeout);
-    auto ec = result.has_error() ? result.error() : cluster::errc::success;
-    co_return kafka_topic_data_result(data.tp, ec);
+    if (result.has_error()) {
+        co_return kafka_topic_data_result(data.tp, result.error());
+    }
+    co_return kafka_topic_data_result(
+      data.tp, cluster::errc::success, result.value());
 }
 
 ss::future<result<model::offset, cluster::errc>> local_service::produce(

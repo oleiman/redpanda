@@ -156,7 +156,7 @@ public:
     ss::future<result<model::offset>> replicate(
       chunked_vector<model::record_batch> batches,
       raft::replicate_options) final {
-        auto offset = latest_offset();
+        auto offset = model::next_offset(latest_offset());
         for (const auto& batch : batches) {
             auto b = batch.copy();
             b.header().base_offset = offset++;
@@ -202,7 +202,7 @@ public:
 
 private:
     model::offset latest_offset() {
-        auto o = model::offset(0);
+        auto o = model::offset(-1);
         for (const auto& b : *_produced_batches) {
             if (b.ntp == _ntp) {
                 o = b.batch.last_offset();

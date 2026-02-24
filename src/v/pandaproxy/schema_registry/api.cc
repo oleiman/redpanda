@@ -18,6 +18,7 @@
 #include "model/namespace.h"
 #include "pandaproxy/logger.h"
 #include "pandaproxy/schema_registry/configuration.h"
+#include "pandaproxy/schema_registry/kafka_client_transport.h"
 #include "pandaproxy/schema_registry/schema_id_cache.h"
 #include "pandaproxy/schema_registry/service.h"
 #include "pandaproxy/schema_registry/sharded_store.h"
@@ -85,25 +86,22 @@ ss::future<> api::start() {
         return config::shard_local_cfg()
           .kafka_schema_id_validation_cache_capacity.bind();
     }));
-    co_await _client.start(
-      config::to_yaml(_client_cfg, config::redact_secrets::no),
-      [this](std::exception_ptr ex) {
-          return _service.local().mitigate_error(ex);
-      });
+    co_await _transport.start(std::ref(_client_cfg), std::ref(_controller));
     co_await _sequencer.start(
       _node_id,
       _sg,
-      std::ref(_client),
+      ss::sharded_parameter(
+        [this]() -> transport* { return &_transport.local(); }),
       std::ref(*_store),
       ss::sharded_parameter([this] {
           return std::make_unique<sequence_state_checker_impl>(_controller);
       }));
     co_await _service.start(
       config::to_yaml(_cfg, config::redact_secrets::no),
-      config::to_yaml(_client_cfg, config::redact_secrets::no),
       _sg,
       _max_memory,
-      std::ref(_client),
+      ss::sharded_parameter(
+        [this]() -> transport* { return &_transport.local(); }),
       std::ref(*_store),
       std::ref(_sequencer),
       ss::sharded_parameter([this]() {
@@ -145,10 +143,10 @@ ss::future<> api::stop() {
         // Reset gate to support api restart
         _metrics_gate = ss::gate{};
     }
-    co_await _client.invoke_on_all(&kafka::client::client::stop);
+    co_await _transport.invoke_on_all(&kafka_client_transport::stop);
     co_await _service.stop();
     co_await _sequencer.stop();
-    co_await _client.stop();
+    co_await _transport.stop();
     co_await _schema_id_cache.stop();
     co_await _schema_id_validation_probe.stop();
     if (_store) {

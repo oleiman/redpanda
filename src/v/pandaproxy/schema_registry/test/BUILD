@@ -510,6 +510,27 @@ redpanda_cc_bench(
     ],
 )
 
+redpanda_cc_gtest(
+    name = "rpc_transport_test",
+    timeout = "short",
+    srcs = ["rpc_transport_test.cc"],
+    cpu = 1,
+    memory = "256MiB",
+    deps = [
+        "//src/v/kafka/data/rpc",
+        "//src/v/kafka/data/rpc/test:test_deps",
+        "//src/v/kafka/protocol",
+        "//src/v/model",
+        "//src/v/net",
+        "//src/v/pandaproxy/schema_registry:rpc_transport",
+        "//src/v/rpc",
+        "//src/v/storage:record_batch_builder",
+        "//src/v/test_utils:gtest",
+        "@googletest//:gtest",
+        "@seastar",
+    ],
+)
+
 redpanda_test_cc_library(
     name = "random",
     hdrs = [

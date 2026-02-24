@@ -22,6 +22,13 @@
 
 namespace kafka::data::rpc {
 
+/// Result of a produce operation that includes both base and last offset.
+struct produce_result {
+    cluster::errc ec{cluster::errc::success};
+    std::optional<model::offset> base_offset;
+    std::optional<model::offset> last_offset;
+};
+
 /**
  * A client for kafka data plane rpcs.
  *
@@ -88,7 +95,7 @@ public:
       model::timeout_clock::duration timeout);
 
 private:
-    ss::future<cluster::errc> do_produce_once(produce_request);
+    ss::future<produce_result> do_produce_once(produce_request);
     ss::future<produce_reply> do_local_produce(produce_request);
     ss::future<produce_reply>
       do_remote_produce(model::node_id, produce_request);

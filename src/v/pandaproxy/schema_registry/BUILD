@@ -337,6 +337,7 @@ redpanda_cc_library(
         ":server",
         ":transport",
         "//src/v/config:startup_config",
+        "//src/v/kafka/data/rpc",
         "//src/v/pandaproxy:core",
     ],
 )

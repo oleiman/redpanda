@@ -9,6 +9,9 @@
 
 #pragma once
 #include "pandaproxy/schema_registry/seq_writer.h"
+#include "pandaproxy/schema_registry/transport.h"
+
+#include <stdexcept>
 
 class sequence_state_checker_test
   : public pandaproxy::schema_registry::sequence_state_checker {
@@ -20,4 +23,34 @@ public:
 
 private:
     writes_disabled_t _wd;
+};
+
+/// No-op transport used in tests where seq_writer is only instantiated to
+/// receive consume_to_store offset updates.
+class noop_transport final : public pandaproxy::schema_registry::transport {
+public:
+    ss::future<> stop() final { return ss::now(); }
+    ss::future<pandaproxy::schema_registry::produce_result>
+    produce(model::record_batch) override {
+        throw std::runtime_error("noop_transport::produce not implemented");
+    }
+    ss::future<model::offset> get_high_watermark() override {
+        throw std::runtime_error(
+          "noop_transport::get_high_watermark not implemented");
+    }
+    ss::future<> consume_range(
+      model::offset,
+      model::offset,
+      ss::noncopyable_function<ss::future<>(model::record_batch)>) override {
+        throw std::runtime_error(
+          "noop_transport::consume_range not implemented");
+    }
+    ss::future<> mitigate_error(std::exception_ptr eptr) final {
+        return ss::make_exception_future<>(eptr);
+    }
+    ss::future<> validate_topic_creation_authorization(
+      int16_t /*replication_factor*/) final {
+        return ss::now();
+    }
+    bool has_ephemeral_credentials() const final { return false; }
 };

@@ -2898,6 +2898,9 @@ class AuditLogTestSchemaRegistryBase(AuditLogTestBase):
         sr_config = SchemaRegistryConfig()
         sr_config.authn_method = "http_basic"
         sr_config.mode_mutability = True
+        extra_rp_conf = {"schema_registry_use_rpc": False}
+        if "extra_rp_conf" in kwargs:
+            extra_rp_conf.update(kwargs.pop("extra_rp_conf"))
         super(AuditLogTestSchemaRegistryBase, self).__init__(
             test_context=test_context,
             audit_log_config=AuditLogConfig(
@@ -2907,6 +2910,7 @@ class AuditLogTestSchemaRegistryBase(AuditLogTestBase):
                 "info", logger_levels={"auditing": "trace", "schemaregistry": "trace"}
             ),
             schema_registry_config=sr_config,
+            extra_rp_conf=extra_rp_conf,
             **kwargs,
         )
 

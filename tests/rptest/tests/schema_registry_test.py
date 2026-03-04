@@ -1351,6 +1351,9 @@ class SchemaRegistryEndpoints(RedpandaTest):
         merged_rp_conf = {"auto_create_topics_enabled": False}
         if extra_rp_conf:
             merged_rp_conf.update(extra_rp_conf)
+        assert "schema_registry_use_rpc" in merged_rp_conf, (
+            "schema_registry_use_rpc must be explicitly set by each test class"
+        )
         super(SchemaRegistryEndpoints, self).__init__(
             context,
             extra_rp_conf=merged_rp_conf,
@@ -3898,7 +3901,10 @@ class SchemaRegistryModeNotMutableTest(SchemaRegistryEndpoints):
         self.schema_registry_config.mode_mutability = False
 
         super(SchemaRegistryModeNotMutableTest, self).__init__(
-            context, schema_registry_config=self.schema_registry_config, **kwargs
+            context,
+            schema_registry_config=self.schema_registry_config,
+            extra_rp_conf={"schema_registry_use_rpc": True},
+            **kwargs,
         )
 
     @cluster(num_nodes=3)
@@ -3946,7 +3952,10 @@ class SchemaRegistryModeMutableTest(SchemaRegistryEndpoints):
         self.schema_registry_config = SchemaRegistryConfig()
         self.schema_registry_config.mode_mutability = True
         super(SchemaRegistryModeMutableTest, self).__init__(
-            context, schema_registry_config=self.schema_registry_config, **kwargs
+            context,
+            schema_registry_config=self.schema_registry_config,
+            extra_rp_conf={"schema_registry_use_rpc": True},
+            **kwargs,
         )
 
     @cluster(num_nodes=3)
@@ -7758,6 +7767,8 @@ class SchemaRegistryAutoAuthTest(SchemaRegistryTestMethods):
     Test schema registry against a redpanda cluster with Auto Auth enabled.
 
     This derived class inherits all the tests from SchemaRegistryTestMethods.
+
+    No RPC variant in this case. RPC transport doesn't require auth at all..
     """
 
     def __init__(self, context):
@@ -7766,7 +7777,11 @@ class SchemaRegistryAutoAuthTest(SchemaRegistryTestMethods):
         security.endpoint_authn_method = "sasl"
         security.auto_auth = True
 
-        super(SchemaRegistryAutoAuthTest, self).__init__(context, security=security)
+        super(SchemaRegistryAutoAuthTest, self).__init__(
+            context,
+            security=security,
+            extra_rp_conf={"schema_registry_use_rpc": False},
+        )
 
 
 class SchemaRegistryMTLSBase(SchemaRegistryEndpoints):
@@ -7775,7 +7790,9 @@ class SchemaRegistryMTLSBase(SchemaRegistryEndpoints):
     ]
 
     def __init__(self, *args, **kwargs):
-        super(SchemaRegistryMTLSBase, self).__init__(*args, **kwargs)
+        super(SchemaRegistryMTLSBase, self).__init__(
+            *args, extra_rp_conf={"schema_registry_use_rpc": False}, **kwargs
+        )
 
         self.security = SecurityConfig()
 
@@ -8201,7 +8218,9 @@ class SchemaRegistryConfluentClient(SchemaRegistryEndpoints):
     """
 
     def __init__(self, context, **kwargs):
-        super(SchemaRegistryConfluentClient, self).__init__(context, **kwargs)
+        super(SchemaRegistryConfluentClient, self).__init__(
+            context, extra_rp_conf={"schema_registry_use_rpc": True}, **kwargs
+        )
 
         # Replace the Redpanda SR client.
         self._base_uri = self.sr_client.base_uri()
@@ -8413,7 +8432,12 @@ CompatDataset = NamedTuple(
 
 class SchemaRegistryCompatibilityModes(SchemaRegistryEndpoints):
     def __init__(self, test_context, **kwargs):
-        super().__init__(test_context, num_brokers=1, **kwargs)
+        super().__init__(
+            test_context,
+            num_brokers=1,
+            extra_rp_conf={"schema_registry_use_rpc": True},
+            **kwargs,
+        )
         self._csr_client = SchemaRegistryClient({"url": self.sr_client.base_uri()})
         self._topic = "test-topic"
 
@@ -8662,7 +8686,9 @@ class SchemaRegistryACLTest(SchemaRegistryEndpoints):
     VALID_PATTERN_TYPES = ["LITERAL", "PREFIXED"]
 
     def __init__(self, context, **kwargs):
-        super(SchemaRegistryACLTest, self).__init__(context, **kwargs)
+        super(SchemaRegistryACLTest, self).__init__(
+            context, extra_rp_conf={"schema_registry_use_rpc": True}, **kwargs
+        )
 
     def _create_test_acl(
         self,
@@ -9962,12 +9988,16 @@ class SchemaRegistryAclAuthzTestBase(SchemaRegistryEndpoints):
         schema_registry_config.authn_method = "http_basic"
         schema_registry_config.mode_mutability = True
 
+        merged_rp_conf = {"schema_registry_use_rpc": False}
+        if extra_rp_conf:
+            merged_rp_conf.update(extra_rp_conf)
+
         super().__init__(
             context,
             security=security,
             num_brokers=1,
             schema_registry_config=schema_registry_config,
-            extra_rp_conf=extra_rp_conf,
+            extra_rp_conf=merged_rp_conf,
             **kwargs,
         )
 

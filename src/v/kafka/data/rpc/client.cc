@@ -591,11 +591,24 @@ ss::future<result<consume_reply, cluster::errc>> client::consume(
   size_t min_bytes,
   size_t max_bytes,
   model::timeout_clock::duration timeout) {
-    using ret_t = result<consume_reply, cluster::errc>;
+    co_return co_await retry_with_leader_mitigation(
+      [this, tp, start_offset, max_offset, min_bytes, max_bytes, timeout]() {
+          return do_consume_once(
+            tp, start_offset, max_offset, min_bytes, max_bytes, timeout);
+      });
+}
 
-    // Check if topic exists first
-    auto topic_cfg = _metadata_cache->find_topic_cfg(
-      model::topic_namespace_view(model::kafka_namespace, tp.topic));
+ss::future<result<consume_reply, cluster::errc>> client::do_consume_once(
+  model::topic_partition tp,
+  kafka::offset start_offset,
+  kafka::offset max_offset,
+  size_t min_bytes,
+  size_t max_bytes,
+  model::timeout_clock::duration timeout) {
+    using ret_t = result<consume_reply, cluster::errc>;
+    model::topic_namespace_view tp_ns(model::kafka_namespace, tp.topic);
+
+    auto topic_cfg = _metadata_cache->find_topic_cfg(tp_ns);
     if (!topic_cfg) {
         consume_reply reply;
         reply.tp = tp;
@@ -603,25 +616,25 @@ ss::future<result<consume_reply, cluster::errc>> client::consume(
         co_return ret_t(std::move(reply));
     }
 
-    // Find the leader for this partition
-    auto ktp = model::ktp(tp.topic, tp.partition);
-    auto leader = _leaders->get_leader_node(
-      model::topic_namespace_view(model::kafka_namespace, tp.topic),
-      tp.partition);
-
+    auto leader = _leaders->get_leader_node(tp_ns, tp.partition);
     if (!leader) {
-        consume_reply reply;
-        reply.tp = tp;
-        reply.err = cluster::errc::not_leader;
-        co_return ret_t(std::move(reply));
+        co_return ret_t(cluster::errc::not_leader);
     }
 
     consume_request req(
       tp, start_offset, max_offset, min_bytes, max_bytes, timeout);
 
+    auto is_retriable = [](cluster::errc ec) -> bool {
+        return ec == cluster::errc::not_leader || ec == cluster::errc::timeout
+               || ec == cluster::errc::partition_operation_failed;
+    };
+
     // If leader is local, call local service
     if (*leader == _self) {
         auto reply = co_await _local_service->local().consume(std::move(req));
+        if (is_retriable(reply.err)) {
+            co_return ret_t(reply.err);
+        }
         co_return ret_t(std::move(reply));
     }
 
@@ -645,12 +658,13 @@ ss::future<result<consume_reply, cluster::errc>> client::consume(
           });
 
     if (result.has_error()) {
-        consume_reply reply;
-        reply.tp = tp;
-        reply.err = map_errc(result.assume_error());
-        co_return ret_t(std::move(reply));
+        co_return ret_t(map_errc(result.assume_error()));
     }
 
-    co_return ret_t(std::move(result.value()));
+    auto reply = std::move(result).value();
+    if (is_retriable(reply.err)) {
+        co_return ret_t(reply.err);
+    }
+    co_return ret_t(std::move(reply));
 }
 } // namespace kafka::data::rpc

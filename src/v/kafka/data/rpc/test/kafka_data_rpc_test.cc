@@ -455,6 +455,24 @@ TEST_P(KafkaDataRpcTest, GetSinglePartitionOffsetsRetries) {
     EXPECT_EQ(res.value().high_watermark, kafka::offset(0));
     EXPECT_EQ(res.value().last_stable_offset, kafka::offset(-1));
 }
+
+TEST_P(KafkaDataRpcTest, ConsumeRetries) {
+    auto ntp = make_ntp("retry_consume");
+    create_topic(model::topic_namespace(ntp.ns, ntp.tp.topic));
+
+    auto batches = record_batches::make();
+    cluster::errc ec = produce(ntp, batches);
+    ASSERT_EQ(ec, cluster::errc::success);
+
+    // Inject timeouts on the first 2 consume attempts; the basic retry
+    // policy should back off and succeed on the 3rd attempt.
+    set_errors_to_inject(2);
+    auto r = consume(ntp.tp, kafka::offset(0), kafka::offset::max());
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(r.value().err, cluster::errc::success);
+    EXPECT_EQ(r.value().batches.size(), batches.size());
+}
+
 INSTANTIATE_TEST_SUITE_P(
   WorksLocallyAndRemotely,
   KafkaDataRpcTest,

@@ -13,6 +13,7 @@
 
 #include "kafka/data/rpc/rpc_service.h"
 #include "logger.h"
+#include "random/simple_time_jitter.h"
 #include "rpc/connection_cache.h"
 #include "ssx/async_algorithm.h"
 #include "utils/backoff_policy.h"
@@ -33,6 +34,13 @@ constexpr int max_client_retries = 5;
 constexpr auto base_backoff_duration = 100ms;
 constexpr auto max_backoff_duration = base_backoff_duration
                                       * max_client_retries;
+/// Per-attempt sleep applied on not_leader mitigations: gives gossip time
+/// to propagate a new leader between attempts. Sized so 4 mitigations stay
+/// safely under typical RPC caller deadlines (e.g. SR's 10s HTTP timeout).
+/// Jitter prevents a thundering herd when many concurrent requests retry
+/// against the same partition after a leadership transfer.
+constexpr auto mitigation_interval = std::chrono::seconds(2);
+constexpr auto mitigation_jitter = 500ms;
 
 template<typename T>
 concept ResponseWithErrorCode = requires(T resp) {
@@ -79,6 +87,37 @@ struct backoff_retry_policy {
         auto dur = _backoff.current_backoff_duration();
         _backoff.next_backoff();
         return ss::sleep_abortable<ss::lowres_clock>(dur, _as);
+    }
+
+    ss::abort_source& as() { return _as; }
+};
+
+/// Retry policy for callers that need to ride out leadership churn (e.g.
+/// schema registry RPCs). Behaves like backoff_retry_policy on transient
+/// errors, but additionally sleeps a jittered interval on not_leader so
+/// leadership has time to stabilize before the next attempt — without
+/// burning through the retry budget faster than gossip can refresh the
+/// local leader cache.
+struct leader_mitigating_retry_policy {
+    ss::abort_source& _as;
+    backoff_policy _backoff = make_exponential_backoff_policy<ss::lowres_clock>(
+      base_backoff_duration, max_backoff_duration);
+    simple_time_jitter<ss::lowres_clock> _interval{
+      mitigation_interval, mitigation_jitter};
+
+    explicit leader_mitigating_retry_policy(ss::abort_source& as)
+      : _as(as) {}
+
+    void prepare_for_request() {}
+
+    ss::future<> handle_error(cluster::errc ec) {
+        auto dur = _backoff.current_backoff_duration();
+        _backoff.next_backoff();
+        co_await ss::sleep_abortable<ss::lowres_clock>(dur, _as);
+        if (ec == cluster::errc::not_leader) {
+            co_await ss::sleep_abortable<ss::lowres_clock>(
+              _interval.next_duration(), _as);
+        }
     }
 
     ss::abort_source& as() { return _as; }
@@ -181,6 +220,13 @@ std::invoke_result_t<Func> client::retry(Func&& func) {
     auto holder = _gate.hold();
     co_return co_await retry_with_backoff(
       std::forward<Func>(func), backoff_retry_policy{_as});
+}
+
+template<typename Func>
+std::invoke_result_t<Func> client::retry_with_leader_mitigation(Func&& func) {
+    auto holder = _gate.hold();
+    co_return co_await retry_with_backoff(
+      std::forward<Func>(func), leader_mitigating_retry_policy{_as});
 }
 
 ss::future<cluster::errc> client::produce(

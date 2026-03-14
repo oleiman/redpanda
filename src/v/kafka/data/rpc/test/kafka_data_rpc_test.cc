@@ -174,6 +174,14 @@ public:
           .offsets.high_watermark;
     }
 
+    result<partition_offsets, cluster::errc>
+    get_single_partition_offsets(model::topic_partition tp) {
+        return _kd->client()
+          .local()
+          .get_single_partition_offsets(std::move(tp))
+          .get();
+    }
+
     result<consume_reply, cluster::errc> consume(
       model::topic_partition tp,
       kafka::offset start_offset,
@@ -404,6 +412,48 @@ TEST_P(KafkaDataRpcTest, ProduceWithLeaderMitigationRetries) {
     ASSERT_TRUE(r.base_offset.has_value());
     ASSERT_TRUE(r.last_offset.has_value());
     EXPECT_EQ(get_hwm(ntp), kafka::offset(model::next_offset(*r.last_offset)));
+}
+
+TEST_P(KafkaDataRpcTest, ClientCanGetSinglePartitionOffsets) {
+    auto ntp = make_ntp("single_offsets");
+    create_topic(model::topic_namespace(ntp.ns, ntp.tp.topic));
+
+    auto res = get_single_partition_offsets(ntp.tp);
+    ASSERT_TRUE(res.has_value());
+    // No records produced — HWM is 0 (next of -1), LSO is -1
+    EXPECT_EQ(res.value().high_watermark, kafka::offset(0));
+    EXPECT_EQ(res.value().last_stable_offset, kafka::offset(-1));
+
+    // After producing a record, offsets should advance.
+    auto batch = model::test::make_random_batch({.count = 1, .records = 1});
+    auto pr = produce_with_leader_mitigation(ntp, std::move(batch));
+    ASSERT_EQ(pr.ec, cluster::errc::success);
+
+    auto res2 = get_single_partition_offsets(ntp.tp);
+    ASSERT_TRUE(res2.has_value());
+    EXPECT_EQ(
+      res2.value().high_watermark,
+      kafka::offset(model::next_offset(*pr.last_offset)));
+}
+
+TEST_P(KafkaDataRpcTest, GetSinglePartitionOffsetsReturnsTopicNotExists) {
+    auto ntp = make_ntp("does-not-exist");
+    auto res = get_single_partition_offsets(ntp.tp);
+    ASSERT_TRUE(res.has_error());
+    EXPECT_EQ(res.error(), cluster::errc::topic_not_exists);
+}
+
+TEST_P(KafkaDataRpcTest, GetSinglePartitionOffsetsRetries) {
+    auto ntp = make_ntp("retry_offsets");
+    create_topic(model::topic_namespace(ntp.ns, ntp.tp.topic));
+
+    // Inject timeouts on the first 2 attempts; the basic retry policy
+    // should back off and succeed on the 3rd attempt.
+    set_errors_to_inject(2);
+    auto res = get_single_partition_offsets(ntp.tp);
+    ASSERT_TRUE(res.has_value());
+    EXPECT_EQ(res.value().high_watermark, kafka::offset(0));
+    EXPECT_EQ(res.value().last_stable_offset, kafka::offset(-1));
 }
 INSTANTIATE_TEST_SUITE_P(
   WorksLocallyAndRemotely,

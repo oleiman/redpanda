@@ -83,6 +83,58 @@ struct backoff_retry_policy {
     ss::abort_source& as() { return _as; }
 };
 
+/// Leadership-aware policy: on not_leader, waits for a leadership change
+/// notification using a term snapshot taken before the attempt. Falls back
+/// to backoff on timeout errors.
+struct leader_mitigating_retry_policy {
+    ss::abort_source& _as;
+    partition_leader_cache& _leaders;
+    model::topic_namespace_view _tp_ns;
+    model::partition_id _pid;
+    model::term_id _stale_term{};
+    backoff_policy _backoff = make_exponential_backoff_policy<ss::lowres_clock>(
+      base_backoff_duration, max_backoff_duration);
+
+    leader_mitigating_retry_policy(
+      ss::abort_source& as,
+      partition_leader_cache& leaders,
+      model::topic_namespace_view tp_ns,
+      model::partition_id pid)
+      : _as(as)
+      , _leaders(leaders)
+      , _tp_ns(tp_ns)
+      , _pid(pid) {}
+
+    // Snapshot the current term so mitigate() can detect whether
+    // leadership changed since this attempt. The term may advance
+    // between this snapshot and the actual RPC dispatch — that's
+    // fine: mitigate() will see the newer term and return
+    // immediately, and the next attempt will re-snapshot.
+    void prepare() {
+        auto lt = _leaders.get_leader_term(_tp_ns, _pid);
+        _stale_term = (lt && lt->term) ? *lt->term : model::term_id{};
+    }
+
+    ss::future<> mitigate(cluster::errc ec) {
+        if (ec == cluster::errc::not_leader) {
+            co_await _leaders.wait_for_term_change(
+              _tp_ns,
+              _pid,
+              _stale_term,
+              ss::lowres_clock::now() + timeout,
+              _as);
+        }
+        // Always backoff between attempts — even after a successful
+        // leadership notification — to give the cluster time to
+        // stabilize during rapid transfers.
+        auto dur = _backoff.current_backoff_duration();
+        _backoff.next_backoff();
+        co_await ss::sleep_abortable<ss::lowres_clock>(dur, _as);
+    }
+
+    ss::abort_source& as() { return _as; }
+};
+
 template<typename Func, RetryPolicy Policy>
 std::invoke_result_t<Func> retry_with_backoff(Func func, Policy policy) {
     int attempts = 0;
@@ -179,6 +231,15 @@ std::invoke_result_t<Func> client::retry(Func&& func) {
     auto holder = _gate.hold();
     co_return co_await retry_with_backoff(
       std::forward<Func>(func), backoff_retry_policy{_as});
+}
+
+template<typename Func>
+std::invoke_result_t<Func> client::retry_with_leader_mitigation(
+  model::topic_namespace_view tp_ns, model::partition_id pid, Func&& func) {
+    auto holder = _gate.hold();
+    co_return co_await retry_with_backoff(
+      std::forward<Func>(func),
+      leader_mitigating_retry_policy{_as, *_leaders, tp_ns, pid});
 }
 
 ss::future<cluster::errc> client::produce(

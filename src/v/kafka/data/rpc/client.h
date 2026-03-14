@@ -100,6 +100,10 @@ private:
     template<typename Func>
     std::invoke_result_t<Func> retry(Func&&);
 
+    template<typename Func>
+    std::invoke_result_t<Func> retry_with_leader_mitigation(
+      model::topic_namespace_view, model::partition_id, Func&&);
+
     model::node_id _self;
     std::unique_ptr<kafka::data::rpc::partition_leader_cache> _leaders;
     std::unique_ptr<kafka::data::rpc::topic_creator> _topic_creator;

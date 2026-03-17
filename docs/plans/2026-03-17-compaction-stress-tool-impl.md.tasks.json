@@ -1,0 +1,17 @@
+{
+  "planPath": "docs/plans/2026-03-17-compaction-stress-tool-impl.md",
+  "tasks": [
+    {"id": 0, "subject": "Task 0: Scaffold project and packaging", "status": "pending"},
+    {"id": 1, "subject": "Task 1: Config dataclasses and YAML loading", "status": "pending", "blockedBy": [0]},
+    {"id": 2, "subject": "Task 2: Dual logger (stdout + JSON file)", "status": "pending", "blockedBy": [0]},
+    {"id": 3, "subject": "Task 3: Producer wrapper with rate limiting", "status": "pending", "blockedBy": [0]},
+    {"id": 4, "subject": "Task 4: Metrics scraper", "status": "pending", "blockedBy": [0]},
+    {"id": 5, "subject": "Task 5: rpk-based setup module", "status": "pending", "blockedBy": [1]},
+    {"id": 6, "subject": "Task 6: Scenario classes", "status": "pending", "blockedBy": [0]},
+    {"id": 7, "subject": "Task 7: Runner orchestrator", "status": "pending", "blockedBy": [1, 2, 3, 4, 5, 6]},
+    {"id": 8, "subject": "Task 8: CLI entry point", "status": "pending", "blockedBy": [7]},
+    {"id": 9, "subject": "Task 9: End-to-end smoke test", "status": "pending", "blockedBy": [8]},
+    {"id": 10, "subject": "Task 10: README", "status": "pending", "blockedBy": [9]}
+  ],
+  "lastUpdated": "2026-03-17T00:00:00Z"
+}

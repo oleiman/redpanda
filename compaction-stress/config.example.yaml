@@ -1,0 +1,72 @@
+# Compaction Stress Tool — Example Configuration
+# Copy to config.yaml and edit for your cluster.
+
+cluster:
+  brokers: "seed1:9092,seed2:9092,seed3:9092"
+  # sasl_mechanism: "SCRAM-SHA-256"
+  # sasl_user: "admin"
+  # sasl_password: "secret"
+  # tls_enabled: false
+  admin_hosts:
+    - "node1:9644"
+    - "node2:9644"
+    - "node3:9644"
+    - "node4:9644"
+    - "node5:9644"
+    - "node6:9644"
+
+# Cluster-level configs set via rpk at startup (skipped with --no-setup)
+cluster_config:
+  cloud_topics_compaction_interval_ms: 5000
+  cloud_topics_compaction_max_object_size: 134217728   # 128 MB
+  cloud_topics_compaction_key_map_memory: 134217728    # 128 MB
+
+scenarios:
+  key_cardinality:
+    enabled: true
+    key_count: 200000
+    msg_size: 512
+    rate_limit_bps: 10485760       # 10 MB/s
+    partitions: 1
+    topic_config:
+      "min.cleanable.dirty.ratio": "0.0"
+
+  extreme_dedup:
+    enabled: true
+    key_count: 10
+    msg_size: 256
+    rate_limit_bps: 5242880        # 5 MB/s
+    partitions: 1
+
+  continuous_write:
+    enabled: true
+    key_count: 50000
+    msg_size: 512
+    rate_limit_bps: 10485760       # 10 MB/s
+    partitions: 4
+    topic_config:
+      "min.compaction.lag.ms": "30000"
+
+  tombstone:
+    enabled: true
+    key_count: 10000
+    msg_size: 256
+    tombstone_probability: 0.15
+    rate_limit_bps: 5242880        # 5 MB/s
+    partitions: 2
+    topic_config:
+      "delete.retention.ms": "60000"
+
+  multi_partition:
+    enabled: true
+    key_count: 20000
+    msg_size: 512
+    rate_limit_bps: 20971520       # 20 MB/s
+    num_topics: 4
+    partitions: 8
+
+# Duration: "1h", "30m", "12h", or "indefinite"
+duration: "1h"
+
+log_dir: "./logs"
+report_interval: 30

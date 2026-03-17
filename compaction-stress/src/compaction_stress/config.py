@@ -78,6 +78,7 @@ ALL_SCENARIOS = list(SCENARIO_DEFAULTS.keys())
 class Config:
     cluster: ClusterConfig = field(default_factory=ClusterConfig)
     cluster_config: dict[str, Any] = field(default_factory=lambda: {
+        "cloud_topics_enabled": True,
         "cloud_topics_compaction_interval_ms": 5000,
         "cloud_topics_compaction_max_object_size": 128 * 1024 * 1024,
         "cloud_topics_compaction_key_map_memory": 128 * 1024 * 1024,
@@ -85,6 +86,7 @@ class Config:
     scenarios: dict[str, ScenarioConfig] = field(default_factory=dict)
     duration: str | None = "1h"  # None = indefinite
     no_setup: bool = False
+    delete_existing_topics: bool = False
     log_dir: str = "./logs"
     report_interval: int = 30  # seconds between stdout reports
 
@@ -161,6 +163,7 @@ def load_config(
     config = Config(
         cluster=cluster,
         cluster_config=raw.get("cluster_config", {
+            "cloud_topics_enabled": True,
             "cloud_topics_compaction_interval_ms": 5000,
             "cloud_topics_compaction_max_object_size": 128 * 1024 * 1024,
             "cloud_topics_compaction_key_map_memory": 128 * 1024 * 1024,
@@ -168,6 +171,7 @@ def load_config(
         scenarios=scenarios,
         duration=cli_overrides.get("duration", raw.get("duration", "1h")),
         no_setup=cli_overrides.get("no_setup", False),
+        delete_existing_topics=cli_overrides.get("delete_existing_topics", False),
         log_dir=cli_overrides.get("log_dir", raw.get("log_dir", "./logs")),
         report_interval=raw.get("report_interval", 30),
     )

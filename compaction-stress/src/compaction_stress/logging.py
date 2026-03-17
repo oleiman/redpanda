@@ -67,6 +67,7 @@ class DualLogger:
         elapsed: float,
         scenario_stats: dict[str, dict[str, Any]],
         cluster_metrics: dict[str, Any] | None,
+        offset_stats: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         header = f"── {format_elapsed(elapsed)} elapsed "
         print(f"\n[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] {header:─<66}")
@@ -83,6 +84,24 @@ class DualLogger:
                 extra += f" ({stats['num_topics']} topics)"
             print(f"  {name:<20s}: {records:>8s} records │ {bps:>10s} │ {errors} errors{extra}")
 
+        if offset_stats:
+            print("  ── compaction progress ──")
+            for topic, ts in sorted(offset_stats.items()):
+                if "error" in ts:
+                    print(f"  {topic}: {ts['error']}")
+                    continue
+                offset_range = ts.get("offset_range", 0)
+                remaining = ts.get("records_remaining", 0)
+                ratio = ts.get("compaction_ratio", 0.0)
+                removed = offset_range - remaining
+                print(
+                    f"  {topic}: "
+                    f"{format_count(remaining)} remaining / "
+                    f"{format_count(offset_range)} offsets │ "
+                    f"{format_count(removed)} removed │ "
+                    f"ratio {ratio:.2f}"
+                )
+
         if cluster_metrics:
             print("  ── cluster compaction ──")
             rounds = format_count(cluster_metrics.get("compaction_rounds", 0))
@@ -98,6 +117,7 @@ class DualLogger:
             "elapsed": elapsed,
             "scenarios": scenario_stats,
             "cluster_metrics": cluster_metrics,
+            "offset_stats": offset_stats,
         })
 
     def close(self) -> None:

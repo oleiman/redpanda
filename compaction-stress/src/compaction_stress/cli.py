@@ -47,6 +47,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Skip cluster config and topic creation",
     )
     parser.add_argument(
+        "--delete-existing-topics",
+        action="store_true",
+        help="Delete and recreate topics if they already exist",
+    )
+    parser.add_argument(
+        "--set-cluster-config",
+        action="store_true",
+        help="Set cluster configs via admin API (requires admin API access)",
+    )
+    parser.add_argument(
         "--log-dir",
         help="Directory for JSON log output (default: ./logs)",
     )
@@ -67,13 +77,19 @@ def main(argv: list[str] | None = None) -> None:
         cli_overrides["duration"] = args.duration
     if args.no_setup:
         cli_overrides["no_setup"] = True
+    if args.delete_existing_topics:
+        cli_overrides["delete_existing_topics"] = True
     if args.log_dir:
         cli_overrides["log_dir"] = args.log_dir
 
     config = load_config(args.config, cli_overrides)
 
     scenario = args.scenario if args.scenario != "kitchen_sink" else None
-    runner = Runner(config, scenario_name=scenario)
+    runner = Runner(
+        config,
+        scenario_name=scenario,
+        set_cluster_config=args.set_cluster_config,
+    )
     runner.run()
 
 

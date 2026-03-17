@@ -2,21 +2,20 @@
 # Copy to config.yaml and edit for your cluster.
 
 cluster:
-  brokers: "seed1:9092,seed2:9092,seed3:9092"
+  # A single seed broker is sufficient — the client discovers the rest
+  brokers: "localhost:9092"
   # sasl_mechanism: "SCRAM-SHA-256"
   # sasl_user: "admin"
   # sasl_password: "secret"
-  # tls_enabled: false
-  admin_hosts:
-    - "node1:9644"
-    - "node2:9644"
-    - "node3:9644"
-    - "node4:9644"
-    - "node5:9644"
-    - "node6:9644"
+  # tls_enabled: false  # set true for BYOC/cloud clusters
+  # Admin API hosts for metrics scraping and cluster config (optional;
+  # if omitted, derived from broker address with port 9644)
+  # admin_hosts:
+  #   - "localhost:9644"
 
 # Cluster-level configs set via rpk at startup (skipped with --no-setup)
 cluster_config:
+  cloud_topics_enabled: true
   cloud_topics_compaction_interval_ms: 5000
   cloud_topics_compaction_max_object_size: 134217728   # 128 MB
   cloud_topics_compaction_key_map_memory: 134217728    # 128 MB

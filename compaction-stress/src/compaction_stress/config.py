@@ -160,7 +160,11 @@ def load_config(
 
     config = Config(
         cluster=cluster,
-        cluster_config=raw.get("cluster_config", Config.cluster_config),
+        cluster_config=raw.get("cluster_config", {
+            "cloud_topics_compaction_interval_ms": 5000,
+            "cloud_topics_compaction_max_object_size": 128 * 1024 * 1024,
+            "cloud_topics_compaction_key_map_memory": 128 * 1024 * 1024,
+        }),
         scenarios=scenarios,
         duration=cli_overrides.get("duration", raw.get("duration", "1h")),
         no_setup=cli_overrides.get("no_setup", False),

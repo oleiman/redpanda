@@ -124,7 +124,9 @@ def start_repeater(
         "--keys", str(config.key_count),
         "--payload-size", str(config.msg_size),
         "--workers", str(config.num_producers),
-        "--initial-data-mb", "64",
+        # kgo-repeater has a hardcoded channel of 128K slots. Stay under
+        # that: (120000 / workers) * payload_size, converted to MB.
+        "--initial-data-mb", str(max(4, 120000 // config.num_producers * config.msg_size // (1024 * 1024))),
         "--max-buffered-records", "8192",
         "--remote",
         "--remote-port", str(port),

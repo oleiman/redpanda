@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import multiprocessing
 import signal
-import subprocess
 import time
 from typing import Any
 
@@ -13,12 +12,12 @@ from compaction_stress.logging import DualLogger
 from compaction_stress.metrics import MetricsScraper
 from compaction_stress.offset_tracker import OffsetTracker
 from compaction_stress.scenarios.base import (
-    GO_BINARY,
+    KGO_VERIFIER,
+    KgoWorker,
     STATS_SIZE,
     ScenarioHandle,
     key_prefixes_for,
-    scenario_worker,
-    start_go_worker,
+    start_kgo_worker,
 )
 from compaction_stress.setup import run_setup
 
@@ -34,18 +33,22 @@ class Runner:
         self.scenario_name = scenario_name
         self.set_cluster_config = set_cluster_config
         self.logger = DualLogger(config.log_dir)
-        self.shutdown = multiprocessing.Event()
-        self._shutdown_flag = False  # plain bool for signal-responsive polling
+        self._shutdown_flag = False
         self.handles: list[ScenarioHandle] = []
-        self.processes: list[multiprocessing.Process] = []  # Python fallback
-        self.go_procs: list[subprocess.Popen] = []  # Go subprocesses
+        self.workers: list[KgoWorker] = []
         self.scraper: MetricsScraper | None = None
         self.tracker: OffsetTracker | None = None
-        self._use_go = GO_BINARY is not None
 
     def run(self) -> None:
         signal.signal(signal.SIGINT, self._handle_signal)
         signal.signal(signal.SIGTERM, self._handle_signal)
+
+        if not KGO_VERIFIER:
+            self.logger.error("kgo-verifier binary not found. Build it or add to PATH.")
+            self.logger.close()
+            return
+
+        self.logger.info(f"Using kgo-verifier: {KGO_VERIFIER}")
 
         enabled = self.config.enabled_scenarios(self.scenario_name)
         self.logger.info(f"Enabled scenarios: {', '.join(enabled)}")
@@ -73,52 +76,41 @@ class Runner:
             self._cleanup()
             return
 
-        # Launch producer processes
-        if self._use_go:
-            self.logger.info(f"Using Go producer: {GO_BINARY}")
-        else:
-            self.logger.info("Go producer not found, using Python fallback")
-
+        # Launch kgo-verifier workers: one per (scenario, topic) pair.
+        # Each kgo-verifier process handles one topic. num_producers controls
+        # how many processes share the rate for that scenario's topics.
         for name in enabled:
             if self._shutdown_flag:
                 break
             topics = topic_map.get(name, [])
             sc = self.config.get_scenario(name)
-            prefixes = key_prefixes_for(name, topics)
-            handle = ScenarioHandle(name, sc.num_topics)
+            handle = ScenarioHandle(name, sc.num_topics, sc.msg_size)
             self.handles.append(handle)
 
-            if self._use_go:
-                # Go mode: one subprocess per worker, each handling all topics.
-                # Single franz-go client per process = fewer broker connections.
-                worker_rate = max(1024, sc.rate_limit_bps // sc.num_producers)
-                prefix = prefixes[0]  # all topics use the same prefix (except multi_partition)
-                for wid in range(sc.num_producers):
+            # Split rate across all (producers × topics) workers
+            total_workers = sc.num_producers * len(topics)
+            per_worker_rate = max(1024, sc.rate_limit_bps // max(total_workers, 1))
+
+            wid = 0
+            for _ in range(sc.num_producers):
+                for topic in topics:
+                    if self._shutdown_flag:
+                        break
                     stats = multiprocessing.Array('d', STATS_SIZE)
                     handle.add_worker_stats(stats)
-                    proc = start_go_worker(
+                    worker = start_kgo_worker(
                         name, wid, self.config.cluster, sc,
-                        topics, prefix, worker_rate, stats,
+                        topic, per_worker_rate, stats,
                     )
-                    self.go_procs.append(proc)
-            else:
-                # Python fallback: one process per worker
-                for wid in range(sc.num_producers):
-                    stats = multiprocessing.Array('d', STATS_SIZE)
-                    handle.add_worker_stats(stats)
-                    p = multiprocessing.Process(
-                        target=scenario_worker,
-                        args=(name, wid, sc.num_producers, self.config.cluster,
-                              sc, topics, prefixes, self.shutdown, stats),
-                        name=f"scenario-{name}-w{wid}",
-                        daemon=True,
-                    )
-                    self.processes.append(p)
-                    p.start()
+                    self.workers.append(worker)
+                    wid += 1
 
         if self._shutdown_flag:
             self._cleanup()
             return
+
+        total_procs = len(self.workers)
+        self.logger.info(f"Launched {total_procs} kgo-verifier process(es)")
 
         all_topics = [t for topics in topic_map.values() for t in topics]
         self.tracker = OffsetTracker(
@@ -140,10 +132,8 @@ class Runner:
             elapsed = time.monotonic() - start_time
             if duration and elapsed >= duration:
                 self.logger.info("Duration reached, shutting down...")
-                self.shutdown.set()
                 break
 
-            # Poll with short sleeps so signals are handled promptly.
             wait_time = self.config.report_interval
             if duration:
                 remaining = duration - elapsed
@@ -165,29 +155,10 @@ class Runner:
         if self.scraper:
             self.scraper.stop()
 
-        has_workers = self.processes or self.go_procs
-        if has_workers:
-            self.logger.info("Waiting for scenarios to finish...")
-
-        # Terminate Go subprocesses
-        for proc in self.go_procs:
-            if proc.poll() is None:
-                proc.terminate()
-        for proc in self.go_procs:
-            try:
-                proc.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                self.logger.warn(f"Killing stuck Go process pid={proc.pid}")
-                proc.kill()
-                proc.wait(timeout=5)
-
-        # Join Python fallback processes
-        for p in self.processes:
-            p.join(timeout=10)
-            if p.is_alive():
-                self.logger.warn(f"Terminating stuck process: {p.name}")
-                p.terminate()
-                p.join(timeout=5)
+        if self.workers:
+            self.logger.info("Shutting down kgo-verifier processes...")
+            for w in self.workers:
+                w.shutdown()
 
         self.logger.info("Done.")
         self.logger.close()
@@ -203,16 +174,13 @@ class Runner:
 
     def _handle_signal(self, signum: int, frame: Any) -> None:
         if self._shutdown_flag:
-            # Second signal — force exit immediately
             self.logger.info("Forced exit.")
-            for proc in self.go_procs:
-                if proc.poll() is None:
-                    proc.kill()
-            for p in self.processes:
-                if p.is_alive():
-                    p.terminate()
+            for w in self.workers:
+                try:
+                    w.proc.kill()
+                except Exception:
+                    pass
             import sys
             sys.exit(1)
         self.logger.info(f"Received signal {signum}, shutting down gracefully... (repeat to force)")
         self._shutdown_flag = True
-        self.shutdown.set()

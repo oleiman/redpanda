@@ -1,8 +1,7 @@
-"""Scenario workers: Go subprocess (preferred) or Python multiprocessing fallback."""
+"""Scenario workers using kgo-verifier subprocesses."""
 
 from __future__ import annotations
 
-import json
 import multiprocessing
 import os
 import shutil
@@ -12,15 +11,28 @@ import time
 from pathlib import Path
 from typing import Any
 
+import requests
+
 from compaction_stress.config import ClusterConfig, ScenarioConfig
 
 
-# Shared stats array indices (used by both Go reader and Python fallback)
+# Shared stats array indices
 _RECORDS = 0
 _BYTES = 1
 _ERRORS = 2
 _TOMBSTONES = 3
 STATS_SIZE = 4
+
+# Base port for kgo-verifier --remote-port. Each worker gets base + offset.
+_REMOTE_PORT_BASE = 7900
+_next_port = _REMOTE_PORT_BASE
+
+
+def _alloc_port() -> int:
+    global _next_port
+    port = _next_port
+    _next_port += 1
+    return port
 
 
 def key_prefixes_for(name: str, topics: list[str]) -> list[str]:
@@ -36,169 +48,167 @@ def key_prefixes_for(name: str, topics: list[str]) -> list[str]:
     return [prefix_map.get(name, name[:2])] * len(topics)
 
 
-def _find_go_binary() -> str | None:
-    """Find the ct-producer Go binary."""
-    # Check next to the Python package first
-    pkg_dir = Path(__file__).resolve().parent.parent.parent.parent
-    candidate = pkg_dir / "ct-producer" / "ct-producer"
-    if candidate.is_file() and os.access(candidate, os.X_OK):
-        return str(candidate)
-    # Check PATH
-    return shutil.which("ct-producer")
+def _find_kgo_verifier() -> str | None:
+    """Find the kgo-verifier binary."""
+    # Check common locations
+    for candidate in [
+        Path.home() / "co" / "kgo-verifier" / "kgo-verifier",
+        Path(__file__).resolve().parent.parent.parent.parent / "kgo-verifier",
+    ]:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return shutil.which("kgo-verifier")
 
 
-GO_BINARY = _find_go_binary()
+KGO_VERIFIER = _find_kgo_verifier()
 
 
-def _go_worker_cmd(
+def _kgo_cmd(
     cluster: ClusterConfig,
-    topics: list[str],
-    key_prefix: str,
+    topic: str,
     config: ScenarioConfig,
     rate_limit_bps: int,
+    remote_port: int,
 ) -> list[str]:
-    """Build the ct-producer command line."""
+    """Build a kgo-verifier producer command line."""
     cmd = [
-        GO_BINARY,
+        KGO_VERIFIER,
         "--brokers", cluster.brokers,
-        "--topics", ",".join(topics),
-        "--key-prefix", key_prefix,
-        "--key-count", str(config.key_count),
-        "--msg-size", str(config.msg_size),
-        "--rate-limit", str(rate_limit_bps),
+        "--topic", topic,
+        "--msg_size", str(config.msg_size),
+        # Large produce count — effectively infinite; we kill the process on shutdown
+        "--produce_msgs", str(10_000_000_000),
+        "--produce-throughput-bps", str(rate_limit_bps),
+        "--key-set-cardinality", str(config.key_count),
+        "--max-buffered-records", "8192",
+        "--batch_max_bytes", "1048576",
+        "--tolerate-failed-produce",
+        "--remote",
+        "--remote-port", str(remote_port),
     ]
     if config.tombstone_probability > 0:
-        cmd += ["--tombstone-prob", str(config.tombstone_probability)]
-    if cluster.sasl_mechanism and cluster.sasl_user:
-        cmd += [
-            "--sasl-mechanism", cluster.sasl_mechanism,
-            "--sasl-user", cluster.sasl_user,
-            "--sasl-password", cluster.sasl_password or "",
-        ]
+        cmd += ["--tombstone-probability", str(config.tombstone_probability)]
+    if cluster.sasl_user:
+        cmd += ["--username", cluster.sasl_user]
+    if cluster.sasl_password:
+        cmd += ["--password", cluster.sasl_password]
     if cluster.tls_enabled:
-        cmd += ["--tls"]
+        cmd += ["--enable-tls"]
     return cmd
 
 
-def start_go_worker(
+def _redact_cmd(cmd: list[str]) -> str:
+    safe = []
+    skip_next = False
+    for arg in cmd:
+        if skip_next:
+            safe.append("***")
+            skip_next = False
+        elif arg == "--password":
+            safe.append(arg)
+            skip_next = True
+        else:
+            safe.append(arg)
+    return " ".join(safe)
+
+
+class KgoWorker:
+    """Manages a kgo-verifier subprocess and polls its HTTP status endpoint."""
+
+    def __init__(
+        self,
+        name: str,
+        proc: subprocess.Popen,
+        remote_port: int,
+        stats: multiprocessing.Array,
+    ):
+        self.name = name
+        self.proc = proc
+        self.port = remote_port
+        self._stats = stats
+        self._poll_thread: threading.Thread | None = None
+
+    def start_polling(self, interval: float = 2.0) -> None:
+        self._poll_thread = threading.Thread(
+            target=self._poll_loop, args=(interval,), daemon=True,
+        )
+        self._poll_thread.start()
+
+    def _poll_loop(self, interval: float) -> None:
+        url = f"http://localhost:{self.port}/status"
+        while self.proc.poll() is None:
+            try:
+                resp = requests.get(url, timeout=2)
+                if resp.ok:
+                    d = resp.json()
+                    # kgo-verifier status returns various fields; extract what we need
+                    produced = d.get("produced", 0)
+                    bad_offsets = d.get("bad_offsets", 0)
+                    # Approximate bytes from produced * msg_size (kgo-verifier
+                    # doesn't report bytes directly in status)
+                    self._stats[_RECORDS] = produced
+                    self._stats[_ERRORS] = bad_offsets
+            except Exception:
+                pass
+            time.sleep(interval)
+
+    def activate(self) -> None:
+        """Tell kgo-verifier to start producing (remote mode waits for activation)."""
+        url = f"http://localhost:{self.port}/activate"
+        for _ in range(30):
+            try:
+                resp = requests.put(url, timeout=2)
+                if resp.ok:
+                    return
+            except Exception:
+                pass
+            time.sleep(0.5)
+        print(f"[{self.name}] WARNING: failed to activate kgo-verifier", flush=True)
+
+    def shutdown(self) -> None:
+        """Graceful shutdown via HTTP, then SIGTERM if needed."""
+        try:
+            requests.put(f"http://localhost:{self.port}/shutdown", timeout=2)
+        except Exception:
+            pass
+        try:
+            self.proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            self.proc.terminate()
+            try:
+                self.proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+                self.proc.wait(timeout=5)
+
+
+def start_kgo_worker(
     name: str,
     worker_id: int,
     cluster: ClusterConfig,
     config: ScenarioConfig,
-    topics: list[str],
-    key_prefix: str,
+    topic: str,
     rate_limit_bps: int,
     stats: multiprocessing.Array,
-) -> subprocess.Popen:
-    """Start a ct-producer Go subprocess and a reader thread for its stats."""
-    cmd = _go_worker_cmd(cluster, topics, key_prefix, config, rate_limit_bps)
-    label = f"{name}/w{worker_id}"
-    # Log the command (redact password)
-    safe_cmd = []
-    skip_next = False
-    for _, arg in enumerate(cmd):
-        if skip_next:
-            safe_cmd.append("***")
-            skip_next = False
-        elif arg == "--sasl-password":
-            safe_cmd.append(arg)
-            skip_next = True
-        else:
-            safe_cmd.append(arg)
-    print(f"[{label}] cmd: {' '.join(safe_cmd)}", flush=True)
-    print(f"[{label}] Starting Go producer: {','.join(topics)} at "
-          f"{rate_limit_bps // (1024*1024)} MB/s", flush=True)
+) -> KgoWorker:
+    """Start a kgo-verifier producer subprocess."""
+    port = _alloc_port()
+    cmd = _kgo_cmd(cluster, topic, config, rate_limit_bps, port)
+    label = f"{name}/w{worker_id}/{topic}"
+    print(f"[{label}] cmd: {_redact_cmd(cmd)}", flush=True)
+    print(f"[{label}] Starting kgo-verifier: {topic} at "
+          f"{rate_limit_bps // (1024*1024)} MB/s (port {port})", flush=True)
 
     proc = subprocess.Popen(
         cmd,
-        stdout=subprocess.PIPE,
-        stderr=None,  # inherit stderr for error visibility
-        bufsize=0,  # unbuffered — we read line by line below
+        stdout=None,  # inherit stdout for kgo-verifier's own logging
+        stderr=None,  # inherit stderr
     )
 
-    # Reader thread: parse JSON stats lines from stdout, update shared array.
-    # Use readline() instead of iterating (which buffers in 8KB chunks and
-    # blocks until a full chunk is available).
-    def reader():
-        while True:
-            line = proc.stdout.readline()
-            if not line:
-                break  # EOF — process exited
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                d = json.loads(line)
-                stats[_RECORDS] = d.get("records", 0)
-                stats[_BYTES] = d.get("bytes", 0)
-                stats[_ERRORS] = d.get("errors", 0)
-                stats[_TOMBSTONES] = d.get("tombstones", 0)
-            except (json.JSONDecodeError, ValueError):
-                pass
-
-    t = threading.Thread(target=reader, daemon=True)
-    t.start()
-    return proc
-
-
-# ── Python fallback (used when Go binary not found) ──────────────────
-
-
-def _update_stats(stats: multiprocessing.Array, producers: list) -> None:
-    stats[_RECORDS] = sum(sp.records for sp in producers)
-    stats[_BYTES] = sum(sp.total_bytes for sp in producers)
-    stats[_ERRORS] = sum(sp.errors for sp in producers)
-    stats[_TOMBSTONES] = sum(sp.tombstones for sp in producers)
-
-
-def scenario_worker(
-    name: str,
-    worker_id: int,
-    num_workers: int,
-    cluster: ClusterConfig,
-    config: ScenarioConfig,
-    topics: list[str],
-    key_prefixes: list[str],
-    shutdown: multiprocessing.Event,
-    stats: multiprocessing.Array,
-) -> None:
-    """Python fallback worker — used when Go binary is not available."""
-    import signal as _signal
-    _signal.signal(_signal.SIGINT, _signal.SIG_IGN)
-    _signal.signal(_signal.SIGTERM, _signal.SIG_IGN)
-
-    from compaction_stress.producer import StressProducer, make_producer
-
-    worker_rate = max(1024, config.rate_limit_bps // num_workers)
-    per_topic_rate = max(1024, worker_rate // max(len(topics), 1))
-    producers: list[StressProducer] = []
-
-    for topic, prefix in zip(topics, key_prefixes):
-        p = make_producer(cluster)
-        sp = StressProducer(
-            producer=p,
-            topic=topic,
-            key_prefix=prefix,
-            key_count=config.key_count,
-            msg_size=config.msg_size,
-            rate_limit_bps=per_topic_rate,
-            tombstone_probability=config.tombstone_probability,
-        )
-        producers.append(sp)
-
-    label = f"{name}/w{worker_id}" if num_workers > 1 else name
-    print(f"[{label}] Starting Python producer to {len(topics)} topic(s) "
-          f"at {per_topic_rate // (1024*1024)} MB/s per topic", flush=True)
-
-    while not shutdown.is_set():
-        for sp in producers:
-            sp.produce_batch(batch_size=10000)
-        _update_stats(stats, producers)
-
-    print(f"[{label}] Shutting down, flushing producers...", flush=True)
-    for sp in producers:
-        sp.flush(timeout=5.0)
-    _update_stats(stats, producers)
+    worker = KgoWorker(label, proc, port, stats)
+    worker.start_polling()
+    worker.activate()
+    return worker
 
 
 # ── ScenarioHandle: aggregates stats from multiple workers ───────────
@@ -207,11 +217,13 @@ def scenario_worker(
 class ScenarioHandle:
     """Main-process handle for reading stats from one or more worker processes."""
 
-    def __init__(self, name: str, num_topics: int):
+    def __init__(self, name: str, num_topics: int, msg_size: int):
         self.name = name
         self.num_topics = num_topics
+        self.msg_size = msg_size
         self._stats_arrays: list = []
         self._prev_bytes = 0.0
+        self._prev_records = 0
         self._prev_time = time.monotonic()
 
     def add_worker_stats(self, stats: multiprocessing.Array) -> None:
@@ -220,18 +232,19 @@ class ScenarioHandle:
     def get_stats(self) -> dict[str, Any]:
         now = time.monotonic()
         records = 0
-        total_bytes = 0.0
         errors = 0
         tombstones = 0
         for sa in self._stats_arrays:
             records += int(sa[_RECORDS])
-            total_bytes += sa[_BYTES]
             errors += int(sa[_ERRORS])
             tombstones += int(sa[_TOMBSTONES])
 
+        # Approximate bytes from records * msg_size
+        total_bytes = float(records * self.msg_size)
         elapsed = now - self._prev_time
         bps = (total_bytes - self._prev_bytes) / elapsed if elapsed > 0 else 0.0
         self._prev_bytes = total_bytes
+        self._prev_records = records
         self._prev_time = now
 
         return {

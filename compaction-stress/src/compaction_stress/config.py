@@ -48,7 +48,7 @@ SCENARIO_DEFAULTS: dict[str, dict[str, Any]] = {
         # Set cloud_topics_compaction_key_map_memory to 1-4MB to force
         # multi-pass (each pass handles ~25K-100K keys).
         "key_count": 500_000,
-        "msg_size": 512,
+        "msg_size": 16384,
         "rate_limit_bps": 200 * 1024 * 1024,
         "num_producers": 3,
         "partitions": 8,
@@ -58,7 +58,7 @@ SCENARIO_DEFAULTS: dict[str, dict[str, Any]] = {
         # 100 keys, each updated millions of times. Each compaction pass
         # must read and discard enormous amounts of data for minimal output.
         "key_count": 100,
-        "msg_size": 1024,
+        "msg_size": 16384,
         "rate_limit_bps": 200 * 1024 * 1024,
         "num_producers": 3,
         "partitions": 4,
@@ -67,7 +67,7 @@ SCENARIO_DEFAULTS: dict[str, dict[str, Any]] = {
         # High key count + compaction lag = compaction always has a moving
         # frontier it can't reach. Many partitions spread the load.
         "key_count": 200_000,
-        "msg_size": 512,
+        "msg_size": 16384,
         "rate_limit_bps": 200 * 1024 * 1024,
         "num_producers": 3,
         "partitions": 12,
@@ -85,7 +85,7 @@ SCENARIO_DEFAULTS: dict[str, dict[str, Any]] = {
         # (it generates payload once at init), so we rely on key churn
         # + retention instead.
         "key_count": 5_000,
-        "msg_size": 512,
+        "msg_size": 16384,
         "rate_limit_bps": 150 * 1024 * 1024,
         "num_producers": 3,
         "partitions": 8,
@@ -98,7 +98,7 @@ SCENARIO_DEFAULTS: dict[str, dict[str, Any]] = {
         # 6 topics x 16 partitions = 96 partitions competing for
         # compaction scheduler slots across 6 nodes.
         "key_count": 50_000,
-        "msg_size": 512,
+        "msg_size": 16384,
         "rate_limit_bps": 300 * 1024 * 1024,
         "num_producers": 4,
         "num_topics": 6,

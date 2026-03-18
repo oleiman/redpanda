@@ -1,5 +1,9 @@
 # Compaction Stress Tool — Example Configuration
 # Copy to config.yaml and edit for your cluster.
+#
+# Default settings target ~1 GB/s aggregate produce across 15 processes
+# and 128 partitions. This is designed to overwhelm compaction on a
+# 6-node cluster, especially with a small key_map_memory.
 
 cluster:
   # A single seed broker is sufficient — the client discovers the rest
@@ -13,7 +17,9 @@ cluster:
   # admin_hosts:
   #   - "localhost:9644"
 
-# Cluster-level configs set via rpk at startup (skipped with --no-setup)
+# Cluster-level configs set via rpk with --set-cluster-config.
+# To really stress compaction, shrink key_map_memory to force multi-pass:
+#   cloud_topics_compaction_key_map_memory: 1048576  # 1 MB (~25K keys/pass)
 cluster_config:
   cloud_topics_enabled: true
   cloud_topics_compaction_interval_ms: 5000
@@ -22,47 +28,64 @@ cluster_config:
 
 scenarios:
   key_cardinality:
+    # 500K unique keys — with default 128MB map fits in one pass.
+    # Shrink key_map_memory to 1-4MB to force 5-20 passes per compaction.
     enabled: true
-    key_count: 200000
+    key_count: 500000
     msg_size: 512
-    rate_limit_bps: 104857600      # 100 MB/s
-    partitions: 1
+    rate_limit_bps: 209715200      # 200 MB/s
+    num_producers: 3
+    partitions: 8
     topic_config:
       "min.cleanable.dirty.ratio": "0.0"
 
   extreme_dedup:
+    # 100 keys updated millions of times — compaction must read and
+    # discard enormous amounts of data for minimal output.
     enabled: true
-    key_count: 10
-    msg_size: 256
-    rate_limit_bps: 52428800       # 50 MB/s
-    partitions: 1
+    key_count: 100
+    msg_size: 1024
+    rate_limit_bps: 209715200      # 200 MB/s
+    num_producers: 3
+    partitions: 4
 
   continuous_write:
+    # High key count + 15s compaction lag = compaction always has a
+    # moving frontier it can't reach. 12 partitions spread the load.
+    enabled: true
+    key_count: 200000
+    msg_size: 512
+    rate_limit_bps: 209715200      # 200 MB/s
+    num_producers: 3
+    partitions: 12
+    topic_config:
+      "min.compaction.lag.ms": "15000"
+      "min.cleanable.dirty.ratio": "0.0"
+
+  tombstone:
+    # 25% tombstones with 30s retention — forces frequent tombstone
+    # removal passes alongside normal dedup.
     enabled: true
     key_count: 50000
     msg_size: 512
-    rate_limit_bps: 104857600      # 100 MB/s
-    partitions: 4
+    tombstone_probability: 0.25
+    rate_limit_bps: 157286400      # 150 MB/s
+    num_producers: 2
+    partitions: 8
     topic_config:
-      "min.compaction.lag.ms": "30000"
-
-  tombstone:
-    enabled: true
-    key_count: 10000
-    msg_size: 256
-    tombstone_probability: 0.15
-    rate_limit_bps: 52428800       # 50 MB/s
-    partitions: 2
-    topic_config:
-      "delete.retention.ms": "60000"
+      "delete.retention.ms": "30000"
+      "min.cleanable.dirty.ratio": "0.0"
 
   multi_partition:
+    # 6 topics x 16 partitions = 96 partitions competing for
+    # compaction scheduler slots across the cluster.
     enabled: true
-    key_count: 20000
+    key_count: 50000
     msg_size: 512
-    rate_limit_bps: 209715200      # 200 MB/s
-    num_topics: 4
-    partitions: 8
+    rate_limit_bps: 314572800      # 300 MB/s
+    num_producers: 4
+    num_topics: 6
+    partitions: 16
 
 # Scale all rates: --rate-multiplier 2.0 doubles, 0.5 halves
 # rate_multiplier: 1.0

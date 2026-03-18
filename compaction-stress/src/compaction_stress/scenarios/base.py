@@ -39,6 +39,8 @@ def _update_stats(stats: multiprocessing.Array, producers: list) -> None:
 
 def scenario_worker(
     name: str,
+    worker_id: int,
+    num_workers: int,
     cluster: ClusterConfig,
     config: ScenarioConfig,
     topics: list[str],
@@ -46,10 +48,15 @@ def scenario_worker(
     shutdown: multiprocessing.Event,
     stats: multiprocessing.Array,
 ) -> None:
-    """Entry point for each scenario process.
+    """Entry point for each scenario producer process.
 
     Creates its own producers and runs the produce loop until shutdown
     is signalled. Updates shared stats array with cumulative counters.
+
+    When num_workers > 1, the rate limit is split evenly and key prefixes
+    include the worker_id to ensure all workers produce the same key space
+    (important for compaction — same keys from different producers means
+    more data to deduplicate).
     """
     # Reset signal handlers — only the main process should handle signals.
     # Child processes respond to the shared shutdown event instead.
@@ -59,7 +66,9 @@ def scenario_worker(
 
     from compaction_stress.producer import StressProducer, make_producer
 
-    per_topic_rate = max(1024, config.rate_limit_bps // max(len(topics), 1))
+    # Split rate evenly across workers, then across topics within this worker
+    worker_rate = max(1024, config.rate_limit_bps // num_workers)
+    per_topic_rate = max(1024, worker_rate // max(len(topics), 1))
     producers: list[StressProducer] = []
 
     for topic, prefix in zip(topics, key_prefixes):
@@ -67,6 +76,8 @@ def scenario_worker(
         sp = StressProducer(
             producer=p,
             topic=topic,
+            # All workers use the same key prefix so they write to the same
+            # key space — this maximizes dedup work for compaction.
             key_prefix=prefix,
             key_count=config.key_count,
             msg_size=config.msg_size,
@@ -75,46 +86,59 @@ def scenario_worker(
         )
         producers.append(sp)
 
-    print(f"[{name}] Starting produce to {len(topics)} topic(s)", flush=True)
+    label = f"{name}/w{worker_id}" if num_workers > 1 else name
+    print(f"[{label}] Starting produce to {len(topics)} topic(s) "
+          f"at {per_topic_rate // (1024*1024)} MB/s per topic", flush=True)
 
     while not shutdown.is_set():
         for sp in producers:
             sp.produce_batch(batch_size=1000)
         _update_stats(stats, producers)
 
-    print(f"[{name}] Shutting down, flushing producers...", flush=True)
+    print(f"[{label}] Shutting down, flushing producers...", flush=True)
     for sp in producers:
         sp.flush(timeout=5.0)
     _update_stats(stats, producers)
 
 
 class ScenarioHandle:
-    """Main-process handle for reading stats from a running scenario process."""
+    """Main-process handle for reading stats from one or more worker processes."""
 
     def __init__(
         self,
         name: str,
         num_topics: int,
-        stats: multiprocessing.Array,
     ):
         self.name = name
         self.num_topics = num_topics
-        self._stats = stats
+        self._stats_arrays: list[multiprocessing.Array] = []
         self._prev_bytes = 0.0
         self._prev_time = time.monotonic()
 
+    def add_worker_stats(self, stats: multiprocessing.Array) -> None:
+        self._stats_arrays.append(stats)
+
     def get_stats(self) -> dict[str, Any]:
         now = time.monotonic()
-        total_bytes = self._stats[_BYTES]
+        records = 0
+        total_bytes = 0.0
+        errors = 0
+        tombstones = 0
+        for sa in self._stats_arrays:
+            records += int(sa[_RECORDS])
+            total_bytes += sa[_BYTES]
+            errors += int(sa[_ERRORS])
+            tombstones += int(sa[_TOMBSTONES])
+
         elapsed = now - self._prev_time
         bps = (total_bytes - self._prev_bytes) / elapsed if elapsed > 0 else 0.0
         self._prev_bytes = total_bytes
         self._prev_time = now
 
         return {
-            "records": int(self._stats[_RECORDS]),
+            "records": records,
             "bytes_per_sec": bps,
-            "errors": int(self._stats[_ERRORS]),
-            "tombstones": int(self._stats[_TOMBSTONES]),
+            "errors": errors,
+            "tombstones": tombstones,
             "num_topics": self.num_topics,
         }

@@ -68,25 +68,29 @@ class Runner:
             self._cleanup()
             return
 
-        # Launch each scenario in its own process
+        # Launch producer processes — num_producers per scenario
         for name in enabled:
             if self._shutdown_flag:
                 break
             topics = topic_map.get(name, [])
             sc = self.config.get_scenario(name)
             prefixes = key_prefixes_for(name, topics)
-            stats = multiprocessing.Array('d', STATS_SIZE)
+            handle = ScenarioHandle(name, sc.num_topics)
+            self.handles.append(handle)
 
-            p = multiprocessing.Process(
-                target=scenario_worker,
-                args=(name, self.config.cluster, sc, topics, prefixes,
-                      self.shutdown, stats),
-                name=f"scenario-{name}",
-                daemon=True,
-            )
-            self.processes.append(p)
-            self.handles.append(ScenarioHandle(name, sc.num_topics, stats))
-            p.start()
+            for wid in range(sc.num_producers):
+                stats = multiprocessing.Array('d', STATS_SIZE)
+                handle.add_worker_stats(stats)
+
+                p = multiprocessing.Process(
+                    target=scenario_worker,
+                    args=(name, wid, sc.num_producers, self.config.cluster,
+                          sc, topics, prefixes, self.shutdown, stats),
+                    name=f"scenario-{name}-w{wid}",
+                    daemon=True,
+                )
+                self.processes.append(p)
+                p.start()
 
         if self._shutdown_flag:
             self._cleanup()

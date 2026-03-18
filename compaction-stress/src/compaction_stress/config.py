@@ -24,50 +24,81 @@ class ScenarioConfig:
     enabled: bool = True
     key_count: int = 10000
     msg_size: int = 512
-    rate_limit_bps: int = 10 * 1024 * 1024  # 10 MB/s
-    partitions: int = 1
+    rate_limit_bps: int = 100 * 1024 * 1024  # 100 MB/s
+    partitions: int = 4
     replicas: int = 3
     num_topics: int = 1
+    num_producers: int = 1
     tombstone_probability: float = 0.0
     topic_config: dict[str, str] = field(default_factory=dict)
 
 
 # Built-in defaults per scenario (merged on top of global defaults)
+# Scenario defaults designed to overwhelm compaction on a 6-node cluster.
+# Key insight: compaction throughput is bounded by key_map_memory (controls
+# how many keys can be deduplicated per pass) and scheduler concurrency
+# (one job per partition at a time). To stress it, we need:
+# - High key cardinality relative to key_map capacity (forces multi-pass)
+# - Many partitions (saturates scheduler slots)
+# - High write rate (dirty data accumulates faster than compaction drains)
+# - Multiple producer processes (breaks single-process ~60 MB/s ceiling)
 SCENARIO_DEFAULTS: dict[str, dict[str, Any]] = {
     "key_cardinality": {
-        "key_count": 200_000,
+        # 500K unique keys with default 128MB map = fits in one pass.
+        # Set cloud_topics_compaction_key_map_memory to 1-4MB to force
+        # multi-pass (each pass handles ~25K-100K keys).
+        "key_count": 500_000,
         "msg_size": 512,
-        "rate_limit_bps": 100 * 1024 * 1024,
-        "partitions": 1,
+        "rate_limit_bps": 200 * 1024 * 1024,
+        "num_producers": 3,
+        "partitions": 8,
         "topic_config": {"min.cleanable.dirty.ratio": "0.0"},
     },
     "extreme_dedup": {
-        "key_count": 10,
-        "msg_size": 256,
-        "rate_limit_bps": 50 * 1024 * 1024,
-        "partitions": 1,
+        # 100 keys, each updated millions of times. Each compaction pass
+        # must read and discard enormous amounts of data for minimal output.
+        "key_count": 100,
+        "msg_size": 1024,
+        "rate_limit_bps": 200 * 1024 * 1024,
+        "num_producers": 3,
+        "partitions": 4,
     },
     "continuous_write": {
-        "key_count": 50_000,
-        "msg_size": 512,
-        "rate_limit_bps": 100 * 1024 * 1024,
-        "partitions": 4,
-        "topic_config": {"min.compaction.lag.ms": "30000"},
-    },
-    "tombstone": {
-        "key_count": 10_000,
-        "msg_size": 256,
-        "tombstone_probability": 0.15,
-        "rate_limit_bps": 50 * 1024 * 1024,
-        "partitions": 2,
-        "topic_config": {"delete.retention.ms": "60000"},
-    },
-    "multi_partition": {
-        "key_count": 20_000,
+        # High key count + compaction lag = compaction always has a moving
+        # frontier it can't reach. Many partitions spread the load.
+        "key_count": 200_000,
         "msg_size": 512,
         "rate_limit_bps": 200 * 1024 * 1024,
-        "num_topics": 4,
+        "num_producers": 3,
+        "partitions": 12,
+        "topic_config": {
+            "min.compaction.lag.ms": "15000",
+            "min.cleanable.dirty.ratio": "0.0",
+        },
+    },
+    "tombstone": {
+        # 25% tombstones with short retention — forces frequent tombstone
+        # removal passes alongside normal dedup.
+        "key_count": 50_000,
+        "msg_size": 512,
+        "tombstone_probability": 0.25,
+        "rate_limit_bps": 150 * 1024 * 1024,
+        "num_producers": 2,
         "partitions": 8,
+        "topic_config": {
+            "delete.retention.ms": "30000",
+            "min.cleanable.dirty.ratio": "0.0",
+        },
+    },
+    "multi_partition": {
+        # 6 topics x 16 partitions = 96 partitions competing for
+        # compaction scheduler slots across 6 nodes.
+        "key_count": 50_000,
+        "msg_size": 512,
+        "rate_limit_bps": 300 * 1024 * 1024,
+        "num_producers": 4,
+        "num_topics": 6,
+        "partitions": 16,
     },
 }
 

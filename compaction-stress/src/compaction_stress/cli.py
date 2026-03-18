@@ -57,6 +57,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Set cluster configs via admin API (requires admin API access)",
     )
     parser.add_argument(
+        "--no-offset-tracker",
+        action="store_true",
+        help="Disable the compaction progress checker (offset tracker)",
+    )
+    parser.add_argument(
         "--rate-multiplier",
         type=float,
         help="Multiply all scenario rate limits by this factor (e.g., 2.0 = double, 0.5 = half)",
@@ -96,6 +101,7 @@ def main(argv: list[str] | None = None) -> None:
         config,
         scenario_name=scenario,
         set_cluster_config=args.set_cluster_config,
+        no_offset_tracker=args.no_offset_tracker,
     )
     runner.run()
 

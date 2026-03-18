@@ -28,10 +28,12 @@ class Runner:
         config: Config,
         scenario_name: str | None = None,
         set_cluster_config: bool = False,
+        no_offset_tracker: bool = False,
     ):
         self.config = config
         self.scenario_name = scenario_name
         self.set_cluster_config = set_cluster_config
+        self.no_offset_tracker = no_offset_tracker
         self.logger = DualLogger(config.log_dir)
         self._shutdown_flag = False
         self.handles: list[ScenarioHandle] = []
@@ -108,13 +110,14 @@ class Runner:
         self.logger.info(f"Launched {len(self.workers)} kgo-verifier process(es)")
 
         all_topics = [t for topics in topic_map.values() for t in topics]
-        self.tracker = OffsetTracker(
-            self.config.cluster, all_topics,
-            interval=self.config.report_interval,
-        )
-        self.tracker.set_warn_callback(self.logger.warn)
-        self.tracker.start()
-        self.logger.info(f"Offset tracker started for {len(all_topics)} topic(s)")
+        if not self.no_offset_tracker:
+            self.tracker = OffsetTracker(
+                self.config.cluster, all_topics,
+                interval=self.config.report_interval,
+            )
+            self.tracker.set_warn_callback(self.logger.warn)
+            self.tracker.start()
+            self.logger.info(f"Offset tracker started for {len(all_topics)} topic(s)")
 
         # Start iceberg tracker if any iceberg topics and GCS bucket configured
         iceberg_topics = [

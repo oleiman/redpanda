@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import multiprocessing
 import signal
+import subprocess
 import time
 from typing import Any
 
@@ -12,10 +13,12 @@ from compaction_stress.logging import DualLogger
 from compaction_stress.metrics import MetricsScraper
 from compaction_stress.offset_tracker import OffsetTracker
 from compaction_stress.scenarios.base import (
+    GO_BINARY,
     STATS_SIZE,
     ScenarioHandle,
     key_prefixes_for,
     scenario_worker,
+    start_go_worker,
 )
 from compaction_stress.setup import run_setup
 
@@ -34,9 +37,11 @@ class Runner:
         self.shutdown = multiprocessing.Event()
         self._shutdown_flag = False  # plain bool for signal-responsive polling
         self.handles: list[ScenarioHandle] = []
-        self.processes: list[multiprocessing.Process] = []
+        self.processes: list[multiprocessing.Process] = []  # Python fallback
+        self.go_procs: list[subprocess.Popen] = []  # Go subprocesses
         self.scraper: MetricsScraper | None = None
         self.tracker: OffsetTracker | None = None
+        self._use_go = GO_BINARY is not None
 
     def run(self) -> None:
         signal.signal(signal.SIGINT, self._handle_signal)
@@ -68,7 +73,12 @@ class Runner:
             self._cleanup()
             return
 
-        # Launch producer processes — num_producers per scenario
+        # Launch producer processes
+        if self._use_go:
+            self.logger.info(f"Using Go producer: {GO_BINARY}")
+        else:
+            self.logger.info("Go producer not found, using Python fallback")
+
         for name in enabled:
             if self._shutdown_flag:
                 break
@@ -78,19 +88,34 @@ class Runner:
             handle = ScenarioHandle(name, sc.num_topics)
             self.handles.append(handle)
 
-            for wid in range(sc.num_producers):
-                stats = multiprocessing.Array('d', STATS_SIZE)
-                handle.add_worker_stats(stats)
-
-                p = multiprocessing.Process(
-                    target=scenario_worker,
-                    args=(name, wid, sc.num_producers, self.config.cluster,
-                          sc, topics, prefixes, self.shutdown, stats),
-                    name=f"scenario-{name}-w{wid}",
-                    daemon=True,
-                )
-                self.processes.append(p)
-                p.start()
+            if self._use_go:
+                # Go mode: one subprocess per (worker, topic) pair.
+                # Each Go process handles a single topic for maximum throughput.
+                worker_rate = max(1024, sc.rate_limit_bps // sc.num_producers)
+                for wid in range(sc.num_producers):
+                    per_topic_rate = max(1024, worker_rate // max(len(topics), 1))
+                    for topic, prefix in zip(topics, prefixes):
+                        stats = multiprocessing.Array('d', STATS_SIZE)
+                        handle.add_worker_stats(stats)
+                        proc = start_go_worker(
+                            name, wid, self.config.cluster, sc,
+                            topic, prefix, per_topic_rate, stats,
+                        )
+                        self.go_procs.append(proc)
+            else:
+                # Python fallback: one process per worker
+                for wid in range(sc.num_producers):
+                    stats = multiprocessing.Array('d', STATS_SIZE)
+                    handle.add_worker_stats(stats)
+                    p = multiprocessing.Process(
+                        target=scenario_worker,
+                        args=(name, wid, sc.num_producers, self.config.cluster,
+                              sc, topics, prefixes, self.shutdown, stats),
+                        name=f"scenario-{name}-w{wid}",
+                        daemon=True,
+                    )
+                    self.processes.append(p)
+                    p.start()
 
         if self._shutdown_flag:
             self._cleanup()
@@ -136,22 +161,34 @@ class Runner:
         self._cleanup()
 
     def _cleanup(self) -> None:
-        # Signal background threads to stop (don't block waiting —
-        # they're daemon threads and will die on process exit if stuck
-        # in blocking I/O).
         if self.tracker:
             self.tracker.signal_stop()
         if self.scraper:
             self.scraper.stop()
 
-        if self.processes:
+        has_workers = self.processes or self.go_procs
+        if has_workers:
             self.logger.info("Waiting for scenarios to finish...")
-            for p in self.processes:
-                p.join(timeout=10)
-                if p.is_alive():
-                    self.logger.warn(f"Terminating stuck process: {p.name}")
-                    p.terminate()
-                    p.join(timeout=5)
+
+        # Terminate Go subprocesses
+        for proc in self.go_procs:
+            if proc.poll() is None:
+                proc.terminate()
+        for proc in self.go_procs:
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                self.logger.warn(f"Killing stuck Go process pid={proc.pid}")
+                proc.kill()
+                proc.wait(timeout=5)
+
+        # Join Python fallback processes
+        for p in self.processes:
+            p.join(timeout=10)
+            if p.is_alive():
+                self.logger.warn(f"Terminating stuck process: {p.name}")
+                p.terminate()
+                p.join(timeout=5)
 
         self.logger.info("Done.")
         self.logger.close()
@@ -169,6 +206,9 @@ class Runner:
         if self._shutdown_flag:
             # Second signal — force exit immediately
             self.logger.info("Forced exit.")
+            for proc in self.go_procs:
+                if proc.poll() is None:
+                    proc.kill()
             for p in self.processes:
                 if p.is_alive():
                     p.terminate()

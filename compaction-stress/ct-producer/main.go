@@ -34,6 +34,7 @@ type statsLine struct {
 	Errors     int64   `json:"errors"`
 	Tombstones int64   `json:"tombstones"`
 	BytesPerS  float64 `json:"bytes_per_sec"`
+	Buffered   int64   `json:"buffered"`
 }
 
 func main() {
@@ -65,13 +66,17 @@ func main() {
 	value := make([]byte, *msgSize)
 	rand.Read(value)
 
-	// Build franz-go client options
+	// Build franz-go client options.
+	// MaxBufferedRecords is kept moderate (50K) so backpressure is
+	// responsive — when the buffer fills, Produce blocks briefly until
+	// acks drain space, then resumes. This avoids the "produce 500K
+	// records then freeze" pattern.
 	opts := []kgo.Opt{
 		kgo.SeedBrokers(strings.Split(*brokers, ",")...),
 		kgo.DefaultProduceTopic(*topic),
-		kgo.ProducerBatchMaxBytes(16 * 1024 * 1024),
-		kgo.MaxBufferedRecords(500000),
-		kgo.ProducerLinger(100 * time.Millisecond),
+		kgo.ProducerBatchMaxBytes(1 * 1024 * 1024),
+		kgo.MaxBufferedRecords(50000),
+		kgo.ProducerLinger(10 * time.Millisecond),
 		kgo.ProducerBatchCompression(kgo.NoCompression()),
 		kgo.RequiredAcks(kgo.AllISRAcks()),
 		kgo.RecordPartitioner(kgo.UniformBytesPartitioner(64*1024, true, true, nil)),
@@ -141,6 +146,7 @@ func main() {
 					Errors:     s.errors.Load(),
 					Tombstones: s.tombstones.Load(),
 					BytesPerS:  bps,
+					Buffered:   int64(client.BufferedProduceRecords()),
 				}
 				data, _ := json.Marshal(line)
 				fmt.Println(string(data))
@@ -148,32 +154,39 @@ func main() {
 		}
 	}()
 
-	// Produce loop
-	const batchSize = 10000
+	// Produce loop — updates stats per-record so reporting stays live
+	// even when Produce() blocks on backpressure.
 	counter := 0
 	kc := *keyCount
 	tp := *tombstoneProb
 	hasTombstones := tp > 0
 	rateLimit := *rateLimitBps
 
+	const batchSize = 1000 // smaller batches for more responsive rate limiting
 	for ctx.Err() == nil {
 		batchStart := time.Now()
 		var batchBytes int64
 
-		for i := 0; i < batchSize; i++ {
+		for i := 0; i < batchSize && ctx.Err() == nil; i++ {
 			key := keys[counter%kc]
 			counter++
 
 			var val []byte
+			var msgBytes int64
 			isTombstone := hasTombstones && mrand.Float64() < tp
 			if isTombstone {
 				val = nil
+				msgBytes = int64(len(key))
 				s.tombstones.Add(1)
-				batchBytes += int64(len(key))
 			} else {
 				val = value
-				batchBytes += int64(len(key) + len(value))
+				msgBytes = int64(len(key) + len(value))
 			}
+
+			// Update stats before Produce so they stay live during backpressure
+			s.records.Add(1)
+			s.bytes.Add(msgBytes)
+			batchBytes += msgBytes
 
 			client.Produce(ctx, &kgo.Record{
 				Key:   key,
@@ -185,11 +198,8 @@ func main() {
 			})
 		}
 
-		s.records.Add(int64(batchSize))
-		s.bytes.Add(batchBytes)
-
 		// Rate limiting
-		if rateLimit > 0 {
+		if rateLimit > 0 && batchBytes > 0 {
 			elapsed := time.Since(batchStart)
 			expected := time.Duration(float64(batchBytes) / float64(rateLimit) * float64(time.Second))
 			if elapsed < expected {
@@ -222,6 +232,7 @@ func main() {
 		Errors:     s.errors.Load(),
 		Tombstones: s.tombstones.Load(),
 		BytesPerS:  0,
+		Buffered:   int64(client.BufferedProduceRecords()),
 	}
 	data, _ := json.Marshal(line)
 	fmt.Println(string(data))

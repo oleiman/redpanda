@@ -9,19 +9,26 @@ from typing import Any
 
 import requests
 
-METRICS_OF_INTEREST = [
+# /metrics endpoint (vectorized_* prefix, internal metrics)
+INTERNAL_METRICS = [
     "vectorized_cloud_topics_compaction_scheduler_log_compactions",
     "vectorized_cloud_topics_compaction_scheduler_compaction_queue_length",
     "vectorized_cloud_topics_compaction_worker_records_removed",
     "vectorized_cloud_topics_compaction_worker_tombstones_removed",
     "vectorized_cloud_topics_compaction_worker_compaction_duration_seconds",
-    # Iceberg translation metrics
-    "vectorized_iceberg_pending_translation_lag",
-    "vectorized_iceberg_pending_commit_lag",
-    "vectorized_iceberg_parquet_rows_added_total",
-    "vectorized_iceberg_parquet_bytes_added_total",
-    "vectorized_iceberg_translations_finished_total",
 ]
+
+# /public_metrics endpoint (redpanda_* prefix, per-topic iceberg metrics)
+PUBLIC_METRICS = [
+    "redpanda_iceberg_pending_translation_lag",
+    "redpanda_iceberg_pending_commit_lag",
+    "redpanda_iceberg_translation_parquet_rows_added",
+    "redpanda_iceberg_translation_parquet_bytes_added",
+    "redpanda_iceberg_translation_translations_finished",
+    "redpanda_iceberg_translation_decompressed_bytes_processed",
+]
+
+METRICS_OF_INTEREST = set(INTERNAL_METRICS + PUBLIC_METRICS)
 
 METRIC_KEY_MAP = {
     "vectorized_cloud_topics_compaction_scheduler_log_compactions": "compaction_rounds",
@@ -29,11 +36,12 @@ METRIC_KEY_MAP = {
     "vectorized_cloud_topics_compaction_worker_records_removed": "records_removed",
     "vectorized_cloud_topics_compaction_worker_tombstones_removed": "tombstones_removed",
     "vectorized_cloud_topics_compaction_worker_compaction_duration_seconds": "compaction_duration_s",
-    "vectorized_iceberg_pending_translation_lag": "iceberg_pending_translation",
-    "vectorized_iceberg_pending_commit_lag": "iceberg_pending_commit",
-    "vectorized_iceberg_parquet_rows_added_total": "iceberg_rows_added",
-    "vectorized_iceberg_parquet_bytes_added_total": "iceberg_bytes_added",
-    "vectorized_iceberg_translations_finished_total": "iceberg_translations_finished",
+    "redpanda_iceberg_pending_translation_lag": "iceberg_pending_translation",
+    "redpanda_iceberg_pending_commit_lag": "iceberg_pending_commit",
+    "redpanda_iceberg_translation_parquet_rows_added": "iceberg_rows_added",
+    "redpanda_iceberg_translation_parquet_bytes_added": "iceberg_bytes_added",
+    "redpanda_iceberg_translation_translations_finished": "iceberg_translations_finished",
+    "redpanda_iceberg_translation_decompressed_bytes_processed": "iceberg_bytes_processed",
 }
 
 _METRIC_LINE_RE = re.compile(
@@ -103,16 +111,19 @@ class MetricsScraper:
         while not self._stop.is_set():
             aggregated: dict[str, float] = {}
             for host in self._hosts:
-                try:
-                    url = f"http://{host}/metrics"
-                    resp = requests.get(url, timeout=self._timeout)
-                    resp.raise_for_status()
-                    node_metrics = _parse_metrics(resp.text)
-                    for k, v in node_metrics.items():
-                        aggregated[k] = aggregated.get(k, 0.0) + v
-                except Exception as e:
-                    if self._warn_callback:
-                        self._warn_callback(f"Failed to scrape {host}: {e}")
+                # Scrape both endpoints — /metrics has compaction stats,
+                # /public_metrics has per-topic iceberg stats.
+                for path in ("/metrics", "/public_metrics"):
+                    try:
+                        url = f"http://{host}{path}"
+                        resp = requests.get(url, timeout=self._timeout)
+                        resp.raise_for_status()
+                        node_metrics = _parse_metrics(resp.text)
+                        for k, v in node_metrics.items():
+                            aggregated[k] = aggregated.get(k, 0.0) + v
+                    except Exception as e:
+                        if self._warn_callback:
+                            self._warn_callback(f"Failed to scrape {host}{path}: {e}")
             with self._lock:
                 self._latest = aggregated
             self._stop.wait(self._interval)

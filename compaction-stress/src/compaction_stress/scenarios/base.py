@@ -153,7 +153,7 @@ def start_verifier(
     print(f"[{label}] Starting kgo-verifier at "
           f"{rate_limit_bps // (1024*1024)} MB/s (port {port})", flush=True)
 
-    proc = subprocess.Popen(cmd, stdout=None, stderr=None)
+    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     worker = VerifierWorker(label, proc, port, stats)
     worker.start_polling()
     return worker

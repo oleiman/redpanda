@@ -97,10 +97,11 @@ SCENARIO_DEFAULTS: dict[str, dict[str, Any]] = {
     "multi_partition": {
         # 6 topics x 16 partitions = 96 partitions competing for
         # compaction scheduler slots across 6 nodes.
+        # num_producers=1 to keep total process count low (6 topics = 6 processes).
         "key_count": 50_000,
         "msg_size": 16384,
         "rate_limit_bps": 300 * 1024 * 1024,
-        "num_producers": 4,
+        "num_producers": 1,
         "num_topics": 6,
         "partitions": 16,
     },

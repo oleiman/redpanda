@@ -12,11 +12,11 @@ from compaction_stress.logging import DualLogger
 from compaction_stress.metrics import MetricsScraper
 from compaction_stress.offset_tracker import OffsetTracker
 from compaction_stress.scenarios.base import (
-    KGO_REPEATER,
+    KGO_VERIFIER,
     STATS_SIZE,
-    RepeaterWorker,
     ScenarioHandle,
-    start_repeater,
+    VerifierWorker,
+    start_verifier,
 )
 from compaction_stress.setup import run_setup
 
@@ -34,7 +34,7 @@ class Runner:
         self.logger = DualLogger(config.log_dir)
         self._shutdown_flag = False
         self.handles: list[ScenarioHandle] = []
-        self.workers: list[RepeaterWorker] = []
+        self.workers: list[VerifierWorker] = []
         self.scraper: MetricsScraper | None = None
         self.tracker: OffsetTracker | None = None
 
@@ -42,12 +42,12 @@ class Runner:
         signal.signal(signal.SIGINT, self._handle_signal)
         signal.signal(signal.SIGTERM, self._handle_signal)
 
-        if not KGO_REPEATER:
-            self.logger.error("kgo-repeater not found. Build it or add to PATH.")
+        if not KGO_VERIFIER:
+            self.logger.error("kgo-verifier not found. Build it or add to PATH.")
             self.logger.close()
             return
 
-        self.logger.info(f"Using kgo-repeater: {KGO_REPEATER}")
+        self.logger.info(f"Using kgo-verifier: {KGO_VERIFIER}")
 
         enabled = self.config.enabled_scenarios(self.scenario_name)
         self.logger.info(f"Enabled scenarios: {', '.join(enabled)}")
@@ -75,8 +75,9 @@ class Runner:
             self._cleanup()
             return
 
-        # One kgo-repeater process per scenario.
-        # num_producers maps to --workers (in-process parallelism).
+        # Launch kgo-verifier processes.
+        # One process per (producer, topic). num_producers controls how many
+        # parallel kgo-verifier instances hit each topic.
         for name in enabled:
             if self._shutdown_flag:
                 break
@@ -85,18 +86,26 @@ class Runner:
             handle = ScenarioHandle(name, sc.num_topics, sc.msg_size)
             self.handles.append(handle)
 
-            stats = multiprocessing.Array('d', STATS_SIZE)
-            handle.set_stats(stats)
+            total_workers = sc.num_producers * len(topics)
+            per_worker_rate = max(1024, sc.rate_limit_bps // max(total_workers, 1))
 
-            group = f"ct-stress-{name}"
-            worker = start_repeater(name, self.config.cluster, sc, topics, group, stats)
-            self.workers.append(worker)
+            for _ in range(sc.num_producers):
+                for topic in topics:
+                    if self._shutdown_flag:
+                        break
+                    stats = multiprocessing.Array('d', STATS_SIZE)
+                    handle.add_stats(stats)
+                    worker = start_verifier(
+                        name, self.config.cluster, sc,
+                        topic, per_worker_rate, stats,
+                    )
+                    self.workers.append(worker)
 
         if self._shutdown_flag:
             self._cleanup()
             return
 
-        self.logger.info(f"Launched {len(self.workers)} kgo-repeater process(es)")
+        self.logger.info(f"Launched {len(self.workers)} kgo-verifier process(es)")
 
         all_topics = [t for topics in topic_map.values() for t in topics]
         self.tracker = OffsetTracker(
@@ -142,7 +151,7 @@ class Runner:
             self.scraper.stop()
 
         if self.workers:
-            self.logger.info("Shutting down kgo-repeater processes...")
+            self.logger.info("Shutting down kgo-verifier processes...")
             for w in self.workers:
                 w.shutdown()
 

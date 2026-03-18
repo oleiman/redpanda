@@ -1,17 +1,17 @@
-"""Scenario workers using kgo-repeater."""
+"""Scenario workers using kgo-verifier (produce-only)."""
 
 from compaction_stress.scenarios.base import (
-    KGO_REPEATER,
-    RepeaterWorker,
+    KGO_VERIFIER,
     STATS_SIZE,
     ScenarioHandle,
-    start_repeater,
+    VerifierWorker,
+    start_verifier,
 )
 
 __all__ = [
-    "KGO_REPEATER",
-    "RepeaterWorker",
+    "KGO_VERIFIER",
     "STATS_SIZE",
     "ScenarioHandle",
-    "start_repeater",
+    "VerifierWorker",
+    "start_verifier",
 ]

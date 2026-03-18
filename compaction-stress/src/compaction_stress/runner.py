@@ -86,20 +86,18 @@ class Runner:
             handle = ScenarioHandle(name, sc.num_topics, sc.msg_size)
             self.handles.append(handle)
 
-            total_workers = sc.num_producers * len(topics)
-            per_worker_rate = max(1024, sc.rate_limit_bps // max(total_workers, 1))
+            per_topic_rate = max(1024, sc.rate_limit_bps // max(len(topics), 1))
 
-            for _ in range(sc.num_producers):
-                for topic in topics:
-                    if self._shutdown_flag:
-                        break
-                    stats = multiprocessing.Array('d', STATS_SIZE)
-                    handle.add_stats(stats)
-                    worker = start_verifier(
-                        name, self.config.cluster, sc,
-                        topic, per_worker_rate, stats,
-                    )
-                    self.workers.append(worker)
+            for topic in topics:
+                if self._shutdown_flag:
+                    break
+                stats = multiprocessing.Array('d', STATS_SIZE)
+                handle.add_stats(stats)
+                worker = start_verifier(
+                    name, self.config.cluster, sc,
+                    topic, per_topic_rate, stats,
+                )
+                self.workers.append(worker)
 
         if self._shutdown_flag:
             self._cleanup()

@@ -62,11 +62,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Multiply all scenario rate limits by this factor (e.g., 2.0 = double, 0.5 = half)",
     )
     parser.add_argument(
-        "--no-go",
-        action="store_true",
-        help="Force Python producers even if Go binary is available",
-    )
-    parser.add_argument(
         "--log-dir",
         help="Directory for JSON log output (default: ./logs)",
     )
@@ -101,7 +96,6 @@ def main(argv: list[str] | None = None) -> None:
         config,
         scenario_name=scenario,
         set_cluster_config=args.set_cluster_config,
-        force_python=args.no_go,
     )
     runner.run()
 

@@ -17,6 +17,11 @@ class ClusterConfig:
     sasl_password: str | None = None
     tls_enabled: bool = False
     admin_hosts: list[str] = field(default_factory=list)
+    schema_registry_url: str | None = None
+    # For pyiceberg direct catalog access (GCS filesystem catalog)
+    gcs_bucket: str | None = None
+    iceberg_catalog_base_location: str = "redpanda-iceberg-catalog"
+    iceberg_catalog_namespace: str = "redpanda"
 
 
 @dataclass
@@ -106,22 +111,21 @@ SCENARIO_DEFAULTS: dict[str, dict[str, Any]] = {
         "partitions": 16,
     },
     "iceberg": {
-        # Iceberg translation racing compaction. Translation must capture
-        # all offsets before compaction removes duplicates. The
-        # lowest_pinned_data_offset mechanism prevents data deletion until
-        # translation completes, so high write throughput forces both
-        # systems to keep up simultaneously.
-        # Requires cluster config: iceberg_enabled=true (needs restart),
-        # iceberg_catalog_commit_interval_ms=5000, iceberg_target_lag_ms=5000.
+        # Iceberg translation with Avro schema — exercises the full
+        # schema-based translation path (value_schema_id_prefix mode).
+        # Records are Avro-encoded with a moderately complex schema,
+        # produced via Python confluent-kafka AvroSerializer.
+        # Requires: iceberg_enabled=true (restart), schema_registry_url
+        # in cluster config.
         # Disabled by default — enable explicitly or via --scenario iceberg.
         "enabled": False,
         "key_count": 100_000,
-        "msg_size": 16384,
-        "rate_limit_bps": 200 * 1024 * 1024,
-        "num_producers": 1,
+        "msg_size": 0,  # determined by Avro schema, not raw bytes
+        "rate_limit_bps": 100 * 1024 * 1024,
+        "num_producers": 3,
         "partitions": 8,
         "topic_config": {
-            "redpanda.iceberg.mode": "key_value",
+            "redpanda.iceberg.mode": "value_schema_id_prefix",
             "min.cleanable.dirty.ratio": "0.0",
         },
     },

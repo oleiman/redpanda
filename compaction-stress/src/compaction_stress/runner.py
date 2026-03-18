@@ -9,6 +9,7 @@ from typing import Any
 
 from compaction_stress.config import Config, parse_duration
 from compaction_stress.iceberg_tracker import IcebergTracker
+from compaction_stress.avro_producer import AVRO_STATS_SIZE, avro_worker
 from compaction_stress.logging import DualLogger
 from compaction_stress.metrics import MetricsScraper
 from compaction_stress.offset_tracker import OffsetTracker
@@ -36,8 +37,10 @@ class Runner:
         self.no_offset_tracker = no_offset_tracker
         self.logger = DualLogger(config.log_dir)
         self._shutdown_flag = False
+        self.shutdown_event = multiprocessing.Event()
         self.handles: list[ScenarioHandle] = []
         self.workers: list[VerifierWorker] = []
+        self.avro_procs: list[multiprocessing.Process] = []
         self.scraper: MetricsScraper | None = None
         self.tracker: OffsetTracker | None = None
         self.iceberg_tracker: IcebergTracker | None = None
@@ -79,29 +82,51 @@ class Runner:
             self._cleanup()
             return
 
-        # Launch kgo-verifier processes.
-        # One process per (producer, topic). num_producers controls how many
-        # parallel kgo-verifier instances hit each topic.
+        # Launch producer processes per scenario.
+        # Iceberg scenarios with value_schema_id_prefix use the Avro
+        # producer (Python multiprocessing). Everything else uses kgo-verifier.
         for name in enabled:
             if self._shutdown_flag:
                 break
             topics = topic_map.get(name, [])
             sc = self.config.get_scenario(name)
-            handle = ScenarioHandle(name, sc.num_topics, sc.msg_size)
+            is_avro = sc.topic_config.get("redpanda.iceberg.mode") == "value_schema_id_prefix"
+
+            # Avro producer reports bytes, so msg_size=0 is fine for the handle
+            handle = ScenarioHandle(name, sc.num_topics, sc.msg_size if not is_avro else 1)
             self.handles.append(handle)
 
-            per_topic_rate = max(1024, sc.rate_limit_bps // max(len(topics), 1))
-
-            for topic in topics:
-                if self._shutdown_flag:
-                    break
-                stats = multiprocessing.Array('d', STATS_SIZE)
-                handle.add_stats(stats)
-                worker = start_verifier(
-                    name, self.config.cluster, sc,
-                    topic, per_topic_rate, stats,
-                )
-                self.workers.append(worker)
+            if is_avro:
+                # Avro producer: one process per (worker, topic)
+                for topic in topics:
+                    for wid in range(sc.num_producers):
+                        if self._shutdown_flag:
+                            break
+                        stats = multiprocessing.Array('d', AVRO_STATS_SIZE)
+                        handle.add_stats(stats)
+                        p = multiprocessing.Process(
+                            target=avro_worker,
+                            args=(name, wid, sc.num_producers,
+                                  self.config.cluster, sc, topic,
+                                  self.shutdown_event, stats),
+                            name=f"avro-{name}-{topic}-w{wid}",
+                            daemon=True,
+                        )
+                        self.avro_procs.append(p)
+                        p.start()
+            else:
+                # kgo-verifier: one process per topic
+                per_topic_rate = max(1024, sc.rate_limit_bps // max(len(topics), 1))
+                for topic in topics:
+                    if self._shutdown_flag:
+                        break
+                    stats = multiprocessing.Array('d', STATS_SIZE)
+                    handle.add_stats(stats)
+                    worker = start_verifier(
+                        name, self.config.cluster, sc,
+                        topic, per_topic_rate, stats,
+                    )
+                    self.workers.append(worker)
 
         if self._shutdown_flag:
             self._cleanup()
@@ -175,6 +200,15 @@ class Runner:
             for w in self.workers:
                 w.shutdown()
 
+        if self.avro_procs:
+            self.logger.info("Shutting down Avro producers...")
+            self.shutdown_event.set()
+            for p in self.avro_procs:
+                p.join(timeout=15)
+                if p.is_alive():
+                    p.terminate()
+                    p.join(timeout=5)
+
         self.logger.info("Done.")
         self.logger.close()
 
@@ -196,7 +230,13 @@ class Runner:
                     w.proc.kill()
                 except Exception:
                     pass
+            for p in self.avro_procs:
+                try:
+                    p.terminate()
+                except Exception:
+                    pass
             import sys
             sys.exit(1)
         self.logger.info(f"Received signal {signum}, shutting down gracefully... (repeat to force)")
         self._shutdown_flag = True
+        self.shutdown_event.set()

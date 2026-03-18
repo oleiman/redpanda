@@ -15,6 +15,12 @@ METRICS_OF_INTEREST = [
     "vectorized_cloud_topics_compaction_worker_records_removed",
     "vectorized_cloud_topics_compaction_worker_tombstones_removed",
     "vectorized_cloud_topics_compaction_worker_compaction_duration_seconds",
+    # Iceberg translation metrics
+    "vectorized_iceberg_pending_translation_lag",
+    "vectorized_iceberg_pending_commit_lag",
+    "vectorized_iceberg_parquet_rows_added_total",
+    "vectorized_iceberg_parquet_bytes_added_total",
+    "vectorized_iceberg_translations_finished_total",
 ]
 
 METRIC_KEY_MAP = {
@@ -23,6 +29,11 @@ METRIC_KEY_MAP = {
     "vectorized_cloud_topics_compaction_worker_records_removed": "records_removed",
     "vectorized_cloud_topics_compaction_worker_tombstones_removed": "tombstones_removed",
     "vectorized_cloud_topics_compaction_worker_compaction_duration_seconds": "compaction_duration_s",
+    "vectorized_iceberg_pending_translation_lag": "iceberg_pending_translation",
+    "vectorized_iceberg_pending_commit_lag": "iceberg_pending_commit",
+    "vectorized_iceberg_parquet_rows_added_total": "iceberg_rows_added",
+    "vectorized_iceberg_parquet_bytes_added_total": "iceberg_bytes_added",
+    "vectorized_iceberg_translations_finished_total": "iceberg_translations_finished",
 }
 
 _METRIC_LINE_RE = re.compile(

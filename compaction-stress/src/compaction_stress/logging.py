@@ -110,6 +110,21 @@ class DualLogger:
             tombs = format_count(cluster_metrics.get("tombstones_removed", 0))
             print(f"  compaction rounds: {rounds} │ queue depth: {queue} │ records removed: {removed} │ tombstones removed: {tombs}")
 
+            # Iceberg metrics (only shown when non-zero)
+            iceberg_rows = cluster_metrics.get("iceberg_rows_added", 0)
+            if iceberg_rows > 0:
+                pending_t = cluster_metrics.get("iceberg_pending_translation", 0)
+                pending_c = cluster_metrics.get("iceberg_pending_commit", 0)
+                iceberg_bytes = cluster_metrics.get("iceberg_bytes_added", 0)
+                translations = cluster_metrics.get("iceberg_translations_finished", 0)
+                print(
+                    f"  ── iceberg translation ──\n"
+                    f"  rows added: {format_count(iceberg_rows)} │ "
+                    f"bytes added: {format_bytes_per_sec(iceberg_bytes).replace('/s', '')} │ "
+                    f"translations: {format_count(translations)} │ "
+                    f"pending: {format_count(pending_t)} translation, {format_count(pending_c)} commit"
+                )
+
         print(flush=True)
 
         self.json_event({

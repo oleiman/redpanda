@@ -117,21 +117,49 @@ class OffsetTracker:
         md = consumer.list_topics(topic, timeout=5)
         topic_md = md.topics.get(topic)
         if not topic_md or topic_md.error is not None:
-            return {"error": "topic metadata unavailable"}
+            return {"error": f"topic metadata unavailable"}
 
         partitions = sorted(topic_md.partitions.keys())
         total_offset_range = 0
+        total_records = 0
 
         for pid in partitions:
-            try:
-                low, high = consumer.get_watermark_offsets(
-                    TopicPartition(topic, pid), timeout=5,
-                )
-                total_offset_range += max(0, high - low)
-            except Exception:
-                pass
+            low, high = consumer.get_watermark_offsets(
+                TopicPartition(topic, pid), timeout=10,
+            )
+            offset_range = high - low
+            total_offset_range += offset_range
+
+            if offset_range == 0:
+                continue
+
+            # Consume and count actual records in this partition
+            tp = TopicPartition(topic, pid, low)
+            consumer.assign([tp])
+
+            count = 0
+            while True:
+                msg = consumer.poll(timeout=2.0)
+                if msg is None:
+                    break
+                if msg.error():
+                    break
+                count += 1
+                if msg.offset() >= high - 1:
+                    break
+
+            total_records += count
+
+        consumer.assign([])
+
+        if total_offset_range == 0:
+            ratio = 0.0
+        else:
+            ratio = total_records / total_offset_range
 
         return {
             "offset_range": total_offset_range,
+            "records_remaining": total_records,
+            "compaction_ratio": ratio,
             "partitions": len(partitions),
         }

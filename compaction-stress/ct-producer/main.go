@@ -67,10 +67,6 @@ func main() {
 	rand.Read(value)
 
 	// Build franz-go client options.
-	// MaxBufferedRecords is kept moderate (50K) so backpressure is
-	// responsive — when the buffer fills, Produce blocks briefly until
-	// acks drain space, then resumes. This avoids the "produce 500K
-	// records then freeze" pattern.
 	opts := []kgo.Opt{
 		kgo.SeedBrokers(strings.Split(*brokers, ",")...),
 		kgo.DefaultProduceTopic(*topic),
@@ -78,8 +74,11 @@ func main() {
 		kgo.MaxBufferedRecords(50000),
 		kgo.ProducerLinger(10 * time.Millisecond),
 		kgo.ProducerBatchCompression(kgo.NoCompression()),
-		kgo.RequiredAcks(kgo.AllISRAcks()),
+		kgo.RequiredAcks(kgo.LeaderAck()),
+		kgo.DisableIdempotentWrite(),
 		kgo.RecordPartitioner(kgo.UniformBytesPartitioner(64*1024, true, true, nil)),
+		kgo.RetryBackoffFn(func(int) time.Duration { return 250 * time.Millisecond }),
+		kgo.RecordRetries(3),
 	}
 
 	if *saslMechanism != "" && *saslUser != "" {
@@ -121,6 +120,7 @@ func main() {
 	}()
 
 	var s stats
+	var firstError atomic.Bool
 
 	// Stats reporter — prints JSON to stdout every second
 	go func() {
@@ -140,16 +140,23 @@ func main() {
 				prevBytes = curBytes
 				prevTime = now
 
+				errCount := s.errors.Load()
+				buffered := int64(client.BufferedProduceRecords())
 				line := statsLine{
 					Records:    s.records.Load(),
 					Bytes:      curBytes,
-					Errors:     s.errors.Load(),
+					Errors:     errCount,
 					Tombstones: s.tombstones.Load(),
 					BytesPerS:  bps,
-					Buffered:   int64(client.BufferedProduceRecords()),
+					Buffered:   buffered,
 				}
 				data, _ := json.Marshal(line)
 				fmt.Println(string(data))
+
+				// Log to stderr if stuck (high buffer, low throughput)
+				if bps == 0 && buffered > 0 {
+					fmt.Fprintf(os.Stderr, "STALL: buffered=%d errors=%d bps=0\n", buffered, errCount)
+				}
 			}
 		}
 	}()
@@ -194,6 +201,10 @@ func main() {
 			}, func(_ *kgo.Record, err error) {
 				if err != nil {
 					s.errors.Add(1)
+					// Log first few errors to stderr for diagnosis
+					if firstError.CompareAndSwap(false, true) {
+						fmt.Fprintf(os.Stderr, "produce error: %v\n", err)
+					}
 				}
 			})
 		}

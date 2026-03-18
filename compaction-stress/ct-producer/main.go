@@ -77,8 +77,17 @@ func main() {
 		kgo.RequiredAcks(kgo.LeaderAck()),
 		kgo.DisableIdempotentWrite(),
 		kgo.RecordPartitioner(kgo.UniformBytesPartitioner(64*1024, true, true, nil)),
-		kgo.RetryBackoffFn(func(int) time.Duration { return 250 * time.Millisecond }),
-		kgo.RecordRetries(3),
+		// Aggressive retries — BYOC load balancers can reset connections
+		// during metadata refresh, causing transient "no partitions available"
+		// errors. Unlimited retries with backoff let the producer recover.
+		kgo.RetryBackoffFn(func(n int) time.Duration {
+			d := time.Duration(n+1) * 500 * time.Millisecond
+			if d > 5*time.Second {
+				d = 5 * time.Second
+			}
+			return d
+		}),
+		kgo.RecordRetries(0), // 0 = unlimited retries
 	}
 
 	if *saslMechanism != "" && *saslUser != "" {
@@ -120,7 +129,7 @@ func main() {
 	}()
 
 	var s stats
-	var firstError atomic.Bool
+	var lastErrLog atomic.Int64 // unix timestamp of last error log
 
 	// Stats reporter — prints JSON to stdout every second
 	go func() {
@@ -201,9 +210,12 @@ func main() {
 			}, func(_ *kgo.Record, err error) {
 				if err != nil {
 					s.errors.Add(1)
-					// Log first few errors to stderr for diagnosis
-					if firstError.CompareAndSwap(false, true) {
-						fmt.Fprintf(os.Stderr, "produce error: %v\n", err)
+					// Log errors at most once per 5 seconds
+					now := time.Now().Unix()
+					prev := lastErrLog.Load()
+					if now-prev >= 5 && lastErrLog.CompareAndSwap(prev, now) {
+						fmt.Fprintf(os.Stderr, "produce error (total=%d): %v\n",
+							s.errors.Load(), err)
 					}
 				}
 			})

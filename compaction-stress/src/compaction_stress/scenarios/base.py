@@ -100,11 +100,17 @@ def start_go_worker(
         cmd,
         stdout=subprocess.PIPE,
         stderr=None,  # inherit stderr for error visibility
+        bufsize=0,  # unbuffered — we read line by line below
     )
 
-    # Reader thread: parse JSON stats lines from stdout, update shared array
+    # Reader thread: parse JSON stats lines from stdout, update shared array.
+    # Use readline() instead of iterating (which buffers in 8KB chunks and
+    # blocks until a full chunk is available).
     def reader():
-        for line in proc.stdout:
+        while True:
+            line = proc.stdout.readline()
+            if not line:
+                break  # EOF — process exited
             line = line.strip()
             if not line:
                 continue

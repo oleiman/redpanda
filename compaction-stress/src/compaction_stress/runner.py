@@ -32,6 +32,7 @@ class Runner:
         self.set_cluster_config = set_cluster_config
         self.logger = DualLogger(config.log_dir)
         self.shutdown = multiprocessing.Event()
+        self._shutdown_flag = False  # plain bool for signal-responsive polling
         self.handles: list[ScenarioHandle] = []
         self.processes: list[multiprocessing.Process] = []
         self.scraper: MetricsScraper | None = None
@@ -51,7 +52,7 @@ class Runner:
             warn_fn=self.logger.warn,
         )
 
-        if self.shutdown.is_set():
+        if self._shutdown_flag:
             self.logger.info("Interrupted during setup, exiting.")
             self.logger.close()
             return
@@ -63,13 +64,13 @@ class Runner:
             self.scraper.start()
             self.logger.info(f"Metrics scraper started ({len(admin_hosts)} nodes)")
 
-        if self.shutdown.is_set():
+        if self._shutdown_flag:
             self._cleanup()
             return
 
         # Launch each scenario in its own process
         for name in enabled:
-            if self.shutdown.is_set():
+            if self._shutdown_flag:
                 break
             topics = topic_map.get(name, [])
             sc = self.config.get_scenario(name)
@@ -87,7 +88,7 @@ class Runner:
             self.handles.append(ScenarioHandle(name, sc.num_topics, stats))
             p.start()
 
-        if self.shutdown.is_set():
+        if self._shutdown_flag:
             self._cleanup()
             return
 
@@ -107,22 +108,24 @@ class Runner:
             f"Running {'indefinitely' if duration is None else f'for {self.config.duration}'}"
         )
 
-        while not self.shutdown.is_set():
+        while not self._shutdown_flag:
             elapsed = time.monotonic() - start_time
             if duration and elapsed >= duration:
                 self.logger.info("Duration reached, shutting down...")
                 self.shutdown.set()
                 break
 
-            # Wait for either the report interval or remaining duration,
-            # whichever is shorter.
+            # Poll with short sleeps so signals are handled promptly.
             wait_time = self.config.report_interval
             if duration:
                 remaining = duration - elapsed
                 wait_time = min(wait_time, max(remaining, 0.5))
 
-            self.shutdown.wait(wait_time)
-            if not self.shutdown.is_set():
+            deadline = time.monotonic() + wait_time
+            while time.monotonic() < deadline and not self._shutdown_flag:
+                time.sleep(0.5)
+
+            if not self._shutdown_flag:
                 self._report(time.monotonic() - start_time)
 
         self._report(time.monotonic() - start_time)
@@ -159,7 +162,7 @@ class Runner:
         self.logger.report(elapsed, scenario_stats, cluster_metrics, offset_stats)
 
     def _handle_signal(self, signum: int, frame: Any) -> None:
-        if self.shutdown.is_set():
+        if self._shutdown_flag:
             # Second signal — force exit immediately
             self.logger.info("Forced exit.")
             for p in self.processes:
@@ -168,4 +171,5 @@ class Runner:
             import sys
             sys.exit(1)
         self.logger.info(f"Received signal {signum}, shutting down gracefully... (repeat to force)")
+        self._shutdown_flag = True
         self.shutdown.set()

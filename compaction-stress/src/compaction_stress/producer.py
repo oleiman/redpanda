@@ -15,10 +15,10 @@ from compaction_stress.config import ClusterConfig
 def make_producer(cluster: ClusterConfig, extra_conf: dict[str, Any] | None = None) -> Producer:
     conf: dict[str, Any] = {
         "bootstrap.servers": cluster.brokers,
-        "linger.ms": 50,
-        "batch.num.messages": 10000,
-        "queue.buffering.max.messages": 500000,
-        "queue.buffering.max.kbytes": 256 * 1024,
+        "linger.ms": 100,
+        "batch.num.messages": 50000,
+        "queue.buffering.max.messages": 1000000,
+        "queue.buffering.max.kbytes": 512 * 1024,
         "acks": "all",
     }
     if cluster.sasl_mechanism and cluster.sasl_user:
@@ -34,11 +34,14 @@ def make_producer(cluster: ClusterConfig, extra_conf: dict[str, Any] | None = No
 
 
 class StressProducer:
-    """Rate-limited producer with key cycling and tombstone injection.
+    """High-throughput producer with key cycling and tombstone injection.
 
-    Designed to run in its own process (no locks). Rate limiting is done
-    at the batch level: produce a full batch, then sleep to match the
-    target throughput.
+    Optimized for maximum produce rate per process:
+    - All keys pre-encoded at init (no per-message string formatting)
+    - Tombstone positions pre-generated per batch (no per-message random())
+    - Large batches (10K default) with single rate-limit sleep at end
+    - Delivery callback only counts errors (common path is no-op)
+    - Stats updated once per batch, not per message
     """
 
     def __init__(
@@ -53,17 +56,20 @@ class StressProducer:
     ):
         self._producer = producer
         self._topic = topic
-        self._key_prefix = key_prefix
         self._key_count = key_count
         self._msg_size = msg_size
         self._rate_limit_bps = rate_limit_bps
         self._tombstone_prob = tombstone_probability
 
+        # Pre-encode all keys once at startup
+        self._keys = [f"{key_prefix}-{i}".encode() for i in range(key_count)]
         self._value = os.urandom(msg_size)
         self._counter = 0
 
-        # Stats — no lock needed, single process writes, main process
-        # reads via shared memory (slightly stale is fine for monitoring).
+        # Pre-compute average key length for byte accounting
+        self._avg_key_len = sum(len(k) for k in self._keys) / max(len(self._keys), 1)
+
+        # Stats — no lock needed, single process owns this object.
         self.records = 0
         self.total_bytes = 0
         self.errors = 0
@@ -73,49 +79,73 @@ class StressProducer:
         if err:
             self.errors += 1
 
-    def _next_key(self) -> bytes:
-        key = f"{self._key_prefix}-{self._counter % self._key_count}"
-        self._counter += 1
-        return key.encode()
-
-    def _should_tombstone(self) -> bool:
-        return self._tombstone_prob > 0 and random.random() < self._tombstone_prob
-
-    def produce_batch(self, batch_size: int = 1000) -> None:
+    def produce_batch(self, batch_size: int = 10000) -> None:
         """Produce a batch of messages with batch-level rate limiting."""
         batch_start = time.monotonic()
-        batch_bytes = 0
+        produce = self._producer.produce
+        topic = self._topic
+        value = self._value
+        keys = self._keys
+        key_count = self._key_count
+        callback = self._delivery_callback
+        counter = self._counter
+        tombstone_count = 0
 
-        for _ in range(batch_size):
-            key = self._next_key()
-            is_tombstone = self._should_tombstone()
-            value = None if is_tombstone else self._value
-            msg_bytes = len(key) + (0 if is_tombstone else self._msg_size)
-            batch_bytes += msg_bytes
+        # Pre-generate tombstone indices for this batch
+        tombstone_set: set[int] | None = None
+        if self._tombstone_prob > 0:
+            n_tombstones = int(batch_size * self._tombstone_prob)
+            if n_tombstones > 0:
+                tombstone_set = set(random.sample(range(batch_size), n_tombstones))
+                tombstone_count = n_tombstones
 
-            while True:
-                try:
-                    self._producer.produce(
-                        self._topic,
-                        key=key,
-                        value=value,
-                        callback=self._delivery_callback,
-                    )
-                    break
-                except BufferError:
-                    self._producer.poll(0.5)
-                except Exception:
-                    self.errors += 1
-                    break
+        if tombstone_set:
+            for i in range(batch_size):
+                key = keys[counter % key_count]
+                counter += 1
+                if i in tombstone_set:
+                    val = None
+                else:
+                    val = value
+                while True:
+                    try:
+                        produce(topic, key=key, value=val, callback=callback)
+                        break
+                    except BufferError:
+                        self._producer.poll(0.5)
+                    except Exception:
+                        self.errors += 1
+                        break
+        else:
+            # Fast path — no tombstones, tightest possible loop
+            for _ in range(batch_size):
+                key = keys[counter % key_count]
+                counter += 1
+                while True:
+                    try:
+                        produce(topic, key=key, value=value, callback=callback)
+                        break
+                    except BufferError:
+                        self._producer.poll(0.5)
+                    except Exception:
+                        self.errors += 1
+                        break
 
-            self.records += 1
-            self.total_bytes += msg_bytes
-            if is_tombstone:
-                self.tombstones += 1
+        self._counter = counter
+
+        # Batch stats update (once, not per-message)
+        non_tombstone = batch_size - tombstone_count
+        batch_bytes = int(
+            non_tombstone * (self._avg_key_len + self._msg_size)
+            + tombstone_count * self._avg_key_len
+        )
+        self.records += batch_size
+        self.total_bytes += batch_bytes
+        self.tombstones += tombstone_count
 
         self._producer.poll(0)
 
-        # Batch-level rate limiting: sleep to match target throughput
+        # Batch-level rate limiting
         elapsed = time.monotonic() - batch_start
         expected = batch_bytes / self._rate_limit_bps
         if elapsed < expected:

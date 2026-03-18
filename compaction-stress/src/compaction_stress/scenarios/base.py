@@ -124,8 +124,8 @@ def start_repeater(
         "--keys", str(config.key_count),
         "--payload-size", str(config.msg_size),
         "--workers", str(config.num_producers),
-        "--initial-data-mb", "256",
-        "--max-buffered-records", "32768",
+        "--initial-data-mb", "64",
+        "--max-buffered-records", "8192",
         "--remote",
         "--remote-port", str(port),
     ]

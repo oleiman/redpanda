@@ -111,21 +111,22 @@ SCENARIO_DEFAULTS: dict[str, dict[str, Any]] = {
         "partitions": 16,
     },
     "iceberg": {
-        # Iceberg translation with Avro schema — exercises the full
-        # schema-based translation path (value_schema_id_prefix mode).
-        # Records are Avro-encoded with a moderately complex schema,
-        # produced via Python confluent-kafka AvroSerializer.
+        # Mixed iceberg translation: topic 0 uses Avro schema
+        # (value_schema_id_prefix), remaining topics use key_value mode
+        # driven by kgo-verifier for higher throughput.
         # Requires: iceberg_enabled=true (restart), schema_registry_url
-        # in cluster config.
+        # in cluster config (for the Avro topic).
         # Disabled by default — enable explicitly or via --scenario iceberg.
         "enabled": False,
         "key_count": 100_000,
-        "msg_size": 0,  # determined by Avro schema, not raw bytes
-        "rate_limit_bps": 100 * 1024 * 1024,
+        "msg_size": 16384,
+        "rate_limit_bps": 200 * 1024 * 1024,
         "num_producers": 3,
+        "num_topics": 4,
         "partitions": 8,
         "topic_config": {
-            "redpanda.iceberg.mode": "value_schema_id_prefix",
+            # Default for kgo-verifier topics — overridden per-topic below
+            "redpanda.iceberg.mode": "key_value",
             "min.cleanable.dirty.ratio": "0.0",
         },
     },

@@ -160,6 +160,11 @@ def create_topics(
             "redpanda.storage.mode": "cloud",
             **scenario_config.topic_config,
         }
+        # For iceberg scenario: topic 0 gets Avro mode, rest get key_value
+        if scenario_name == "iceberg" and i == 0:
+            all_topic_config["redpanda.iceberg.mode"] = "value_schema_id_prefix"
+        elif scenario_name == "iceberg":
+            all_topic_config["redpanda.iceberg.mode"] = "key_value"
         for k, v in all_topic_config.items():
             args += ["-c", f"{k}={v}"]
 

@@ -83,25 +83,26 @@ class Runner:
             return
 
         # Launch producer processes per scenario.
-        # Iceberg scenarios with value_schema_id_prefix use the Avro
-        # producer (Python multiprocessing). Everything else uses kgo-verifier.
+        # For iceberg: topic 0 gets Avro producers, remaining topics get
+        # kgo-verifier for throughput. All other scenarios use kgo-verifier.
         for name in enabled:
             if self._shutdown_flag:
                 break
             topics = topic_map.get(name, [])
             sc = self.config.get_scenario(name)
-            is_avro = sc.topic_config.get("redpanda.iceberg.mode") == "value_schema_id_prefix"
+            is_iceberg = name == "iceberg"
 
-            # Avro producer reports bytes, so msg_size=0 is fine for the handle
-            handle = ScenarioHandle(name, sc.num_topics, sc.msg_size if not is_avro else 1)
+            # Use msg_size=1 for Avro handle (bytes reported directly)
+            handle = ScenarioHandle(name, sc.num_topics, sc.msg_size)
             self.handles.append(handle)
 
-            if is_avro:
-                # Avro producer: one process per (worker, topic)
-                for topic in topics:
+            for i, topic in enumerate(topics):
+                if self._shutdown_flag:
+                    break
+
+                if is_iceberg and i == 0 and self.config.cluster.schema_registry_url:
+                    # Topic 0: Avro producers for schema-based translation
                     for wid in range(sc.num_producers):
-                        if self._shutdown_flag:
-                            break
                         stats = multiprocessing.Array('d', AVRO_STATS_SIZE)
                         handle.add_stats(stats)
                         p = multiprocessing.Process(
@@ -114,12 +115,9 @@ class Runner:
                         )
                         self.avro_procs.append(p)
                         p.start()
-            else:
-                # kgo-verifier: one process per topic
-                per_topic_rate = max(1024, sc.rate_limit_bps // max(len(topics), 1))
-                for topic in topics:
-                    if self._shutdown_flag:
-                        break
+                else:
+                    # kgo-verifier for everything else
+                    per_topic_rate = max(1024, sc.rate_limit_bps // max(len(topics), 1))
                     stats = multiprocessing.Array('d', STATS_SIZE)
                     handle.add_stats(stats)
                     worker = start_verifier(
@@ -132,7 +130,9 @@ class Runner:
             self._cleanup()
             return
 
-        self.logger.info(f"Launched {len(self.workers)} kgo-verifier process(es)")
+        total = len(self.workers) + len(self.avro_procs)
+        self.logger.info(f"Launched {total} producer process(es) "
+                         f"({len(self.workers)} kgo-verifier, {len(self.avro_procs)} avro)")
 
         all_topics = [t for topics in topic_map.values() for t in topics]
         if not self.no_offset_tracker:

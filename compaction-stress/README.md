@@ -1,23 +1,35 @@
 # compaction-stress
 
 Generates sustained Kafka workloads that pressure cloud topics compaction on a
-live Redpanda cluster. Each scenario runs in its own process (no GIL contention),
-with tunable parameters for key cardinality, produce rate, tombstone frequency,
-and partition fan-out.
+live Redpanda cluster. Multiple producer processes per scenario, with tunable
+parameters for key cardinality, produce rate, tombstone frequency, and partition
+fan-out.
+
+Uses a Go producer binary (`ct-producer`) for high throughput (~200+ MB/s per
+process). Falls back to Python producers (~50-60 MB/s per process) if the Go
+binary isn't found.
 
 ## Prerequisites
 
 - Python 3.11+
+- Go 1.22+ (to build `ct-producer`)
 - `rpk` on PATH (for topic creation; skip with `--no-setup`)
 - Network access to Kafka (9092) and optionally admin API (9644) ports
 
 ## Install
 
 ```bash
+# Build the Go producer
+cd ct-producer && go build -o ct-producer . && cd ..
+
+# Install the Python orchestrator
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .
 ```
+
+The Python runner auto-detects `ct-producer/ct-producer` at startup. If not
+found, it falls back to Python multiprocessing producers (slower).
 
 ## Configure
 
@@ -26,7 +38,7 @@ cp config.example.yaml config.yaml
 vi config.yaml  # set brokers, credentials, scenario params
 ```
 
-At minimum, set `cluster.brokers` to a single seed broker (librdkafka
+At minimum, set `cluster.brokers` to a single seed broker (franz-go / librdkafka
 discovers the rest). Everything else has sensible defaults.
 
 ## Run
@@ -50,23 +62,26 @@ compaction-stress -c config.yaml --delete-existing-topics --duration 2h
 # Set cluster configs via admin API at startup
 compaction-stress -c config.yaml --set-cluster-config --duration 4h
 
+# Scale all rates (2x = double throughput)
+compaction-stress -c config.yaml --rate-multiplier 2.0 --duration 4h
+
 # Minimal (CLI only, no config file)
 compaction-stress -b seed1:9092 -s extreme_dedup -d 30m --no-setup
 ```
 
 ## Scenarios
 
-| Scenario | What it stresses | Default rate |
-|---|---|---|
-| `key_cardinality` | More unique keys than the key-offset map can hold, forcing multi-pass compaction | 10 MB/s |
-| `extreme_dedup` | Very few keys (10) with massive updates (100K:1 dedup ratio) | 5 MB/s |
-| `continuous_write` | Sustained produce with `min.compaction.lag.ms=30s` so compaction can never fully catch up | 10 MB/s |
-| `tombstone` | 15% tombstone rate interacting with `delete.retention.ms=60s` | 5 MB/s |
-| `multi_partition` | 4 topics x 8 partitions competing for compaction scheduler slots | 20 MB/s |
-| `kitchen_sink` | All enabled scenarios concurrently (default) | ~50 MB/s |
+| Scenario | What it stresses | Default rate | Producers | Partitions |
+|---|---|---|---|---|
+| `key_cardinality` | 500K keys forcing multi-pass compaction | 200 MB/s | 3 | 8 |
+| `extreme_dedup` | 100 keys, 1KB values, massive dedup ratio | 200 MB/s | 3 | 4 |
+| `continuous_write` | 200K keys + 15s compaction lag, moving frontier | 200 MB/s | 3 | 12 |
+| `tombstone` | 25% tombstones, 30s retention | 150 MB/s | 2 | 8 |
+| `multi_partition` | 6 topics x 16 partitions = 96 partitions | 300 MB/s | 4 | 96 |
+| `kitchen_sink` | All above concurrently (default) | ~1 GB/s | 15 | 128 |
 
-Each scenario runs in its own process. In kitchen sink mode all 5 run in
-parallel, each with independent librdkafka instances.
+Each scenario spawns `num_producers` worker processes. All workers for a
+scenario write to the same key space, maximizing dedup work for compaction.
 
 ## Output
 
@@ -74,9 +89,9 @@ Periodic human-readable summaries to stdout:
 
 ```
 [03:42:15] ── 2h12m elapsed ──────────────────────────────────────────
-  continuous_write    :   4.2M records │   9.8 MB/s │ 0 errors
-  key_cardinality     :   1.8M records │   4.9 MB/s │ 0 errors
-  tombstone           :  890.0K records │   2.4 MB/s │ 0 errors │ 133.5K tombstones
+  continuous_write    :   4.2M records │ 198.0 MB/s │ 0 errors
+  key_cardinality     :   1.8M records │ 195.0 MB/s │ 0 errors
+  tombstone           :  890.0K records │ 142.0 MB/s │ 0 errors │ 220.0K tombstones
   ── compaction progress ──
   ct-stress-continuous_write-0: 770.0K remaining / 4.1M offsets │ 3.4M removed │ ratio 0.19
 ```
@@ -97,7 +112,7 @@ See `config.example.yaml` for all options with comments.
 **Cluster configs** (set via rpk with `--set-cluster-config`):
 - `cloud_topics_compaction_interval_ms` — scheduler trigger frequency
 - `cloud_topics_compaction_max_object_size` — L1 object size ceiling
-- `cloud_topics_compaction_key_map_memory` — map capacity (requires restart)
+- `cloud_topics_compaction_key_map_memory` — map capacity (requires restart; shrink to 16MB to force multi-pass)
 
 **Topic configs** (per-scenario in `topic_config:`):
 - `min.cleanable.dirty.ratio` — dirty ratio trigger
@@ -105,7 +120,7 @@ See `config.example.yaml` for all options with comments.
 - `delete.retention.ms` — tombstone retention
 
 **Scenario params**: `key_count`, `msg_size`, `rate_limit_bps`, `partitions`,
-`tombstone_probability`, `num_topics`
+`num_producers`, `tombstone_probability`, `num_topics`
 
 ## Environment variables
 
@@ -117,6 +132,9 @@ Config precedence: CLI flags > environment variables > config file > built-in de
 ## Deploy to remote
 
 ```bash
+# Build Go binary
+cd compaction-stress/ct-producer && go build -o ct-producer . && cd ../..
+
 # Package (exclude venv and logs)
 tar czf compaction-stress.tar.gz \
   --exclude='.venv' --exclude='logs' --exclude='__pycache__' \
@@ -133,13 +151,23 @@ cp config.example.yaml config.yaml && vi config.yaml
 compaction-stress -c config.yaml --duration 12h
 ```
 
+If Go isn't available on the remote, build on your local machine with
+cross-compilation:
+
+```bash
+GOOS=linux GOARCH=amd64 go build -o ct-producer/ct-producer ./ct-producer/
+```
+
 ## Architecture
 
-- **One process per scenario** — each gets its own Python interpreter and
-  librdkafka instance, no GIL contention
-- **Batch-level rate limiting** — one sleep per 1000 messages, not per-message
-- **Graceful shutdown** — Ctrl-C/SIGTERM sets a shared event, child processes
-  flush and exit, stuck processes are terminated after 10s
+- **Go producer** (`ct-producer/`) — high-throughput franz-go binary, one per
+  (worker, topic) pair. Prints JSON stats to stdout every second.
+- **Python orchestrator** — config, topic setup (via rpk), metrics scraping,
+  offset tracking, reporting, graceful shutdown
+- **Multiple producers per scenario** — `num_producers` Go processes share the
+  same key space, multiplying throughput and dedup pressure
+- **Graceful shutdown** — Ctrl-C sends SIGTERM to Go processes; second Ctrl-C
+  force-kills everything
 - **Optional metrics scraping** — background thread polls `/metrics` from each
   admin host, degrades gracefully if unreachable
 - **Offset tracking** — background thread counts actual records per topic

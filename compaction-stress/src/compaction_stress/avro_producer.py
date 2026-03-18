@@ -140,10 +140,15 @@ def avro_worker(
     print(f"[{label}] Starting Avro producer to {topic} at "
           f"{worker_rate // (1024*1024)} MB/s", flush=True)
 
+    first_error_logged = False
+
     def delivery_cb(err, msg):
-        nonlocal errors
+        nonlocal errors, first_error_logged
         if err:
             errors += 1
+            if not first_error_logged:
+                print(f"[{label}] delivery error: {err}", flush=True)
+                first_error_logged = True
 
     batch_size = 500  # smaller batches — Avro serialization is heavier
     while not shutdown.is_set():
@@ -158,8 +163,11 @@ def avro_worker(
             ctx = SerializationContext(topic, MessageField.VALUE)
             try:
                 value = avro_serializer(record, ctx)
-            except Exception:
+            except Exception as e:
                 errors += 1
+                if not first_error_logged:
+                    print(f"[{label}] serialization error: {e}", flush=True)
+                    first_error_logged = True
                 continue
 
             msg_bytes = len(key) + len(value)

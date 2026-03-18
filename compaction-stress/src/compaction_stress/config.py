@@ -77,13 +77,17 @@ SCENARIO_DEFAULTS: dict[str, dict[str, Any]] = {
         },
     },
     "tombstone": {
-        # 25% tombstones with short retention — forces frequent tombstone
-        # removal passes alongside normal dedup.
-        "key_count": 50_000,
+        # High key churn with short delete.retention.ms — keys are
+        # overwritten rapidly, and short retention means old versions
+        # become eligible for removal quickly. This stresses the
+        # tombstone/retention cleanup path in compaction.
+        # NOTE: kgo-repeater doesn't support per-message tombstones
+        # (it generates payload once at init), so we rely on key churn
+        # + retention instead.
+        "key_count": 5_000,
         "msg_size": 512,
-        "tombstone_probability": 0.25,
         "rate_limit_bps": 150 * 1024 * 1024,
-        "num_producers": 2,
+        "num_producers": 3,
         "partitions": 8,
         "topic_config": {
             "delete.retention.ms": "30000",

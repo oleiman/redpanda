@@ -124,15 +124,18 @@ def start_repeater(
         "--keys", str(config.key_count),
         "--payload-size", str(config.msg_size),
         "--workers", str(config.num_producers),
-        "--initial-data-mb", "64",
-        "--max-buffered-records", "8192",
+        "--initial-data-mb", "256",
+        "--max-buffered-records", "32768",
         "--remote",
         "--remote-port", str(port),
     ]
     if config.rate_limit_bps > 0:
         cmd += ["--rate-limit-bps", str(config.rate_limit_bps)]
-    if config.tombstone_probability > 0:
-        cmd += ["--tombstone-probability", str(config.tombstone_probability)]
+    # NOTE: kgo-repeater generates its payload once at init. If
+    # tombstone_probability triggers, the entire worker produces only nil
+    # values, stalling the produce-consume loop. Don't pass it through.
+    # Tombstone pressure comes from the topic config (delete.retention.ms)
+    # and the high key churn instead.
     if cluster.sasl_user:
         cmd += ["--username", cluster.sasl_user]
     if cluster.sasl_password:

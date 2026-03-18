@@ -85,22 +85,14 @@ class DualLogger:
             print(f"  {name:<20s}: {records:>8s} records │ {bps:>10s} │ {errors} errors{extra}")
 
         if offset_stats:
-            print("  ── compaction progress ──")
+            print("  ── topic offsets ──")
             for topic, ts in sorted(offset_stats.items()):
                 if "error" in ts:
                     print(f"  {topic}: {ts['error']}")
                     continue
                 offset_range = ts.get("offset_range", 0)
-                remaining = ts.get("records_remaining", 0)
-                ratio = ts.get("compaction_ratio", 0.0)
-                removed = offset_range - remaining
-                print(
-                    f"  {topic}: "
-                    f"{format_count(remaining)} remaining / "
-                    f"{format_count(offset_range)} offsets │ "
-                    f"{format_count(removed)} removed │ "
-                    f"ratio {ratio:.2f}"
-                )
+                partitions = ts.get("partitions", 0)
+                print(f"  {topic}: {format_count(offset_range)} offsets ({partitions} partitions)")
 
         if cluster_metrics:
             print("  ── cluster compaction ──")

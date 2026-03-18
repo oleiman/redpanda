@@ -105,6 +105,7 @@ def avro_worker(
     # Schema registry client
     sr_conf: dict[str, Any] = {"url": cluster.schema_registry_url}
     if cluster.sasl_user and cluster.sasl_password:
+        sr_conf["basic.auth.credentials.source"] = "USER_INFO"
         sr_conf["basic.auth.user.info"] = f"{cluster.sasl_user}:{cluster.sasl_password}"
     sr_client = SchemaRegistryClient(sr_conf)
 

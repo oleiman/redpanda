@@ -52,7 +52,7 @@ GO_BINARY = _find_go_binary()
 
 def _go_worker_cmd(
     cluster: ClusterConfig,
-    topic: str,
+    topics: list[str],
     key_prefix: str,
     config: ScenarioConfig,
     rate_limit_bps: int,
@@ -61,7 +61,7 @@ def _go_worker_cmd(
     cmd = [
         GO_BINARY,
         "--brokers", cluster.brokers,
-        "--topic", topic,
+        "--topics", ",".join(topics),
         "--key-prefix", key_prefix,
         "--key-count", str(config.key_count),
         "--msg-size", str(config.msg_size),
@@ -85,18 +85,18 @@ def start_go_worker(
     worker_id: int,
     cluster: ClusterConfig,
     config: ScenarioConfig,
-    topic: str,
+    topics: list[str],
     key_prefix: str,
     rate_limit_bps: int,
     stats: multiprocessing.Array,
 ) -> subprocess.Popen:
     """Start a ct-producer Go subprocess and a reader thread for its stats."""
-    cmd = _go_worker_cmd(cluster, topic, key_prefix, config, rate_limit_bps)
+    cmd = _go_worker_cmd(cluster, topics, key_prefix, config, rate_limit_bps)
     label = f"{name}/w{worker_id}"
     # Log the command (redact password)
     safe_cmd = []
     skip_next = False
-    for i, arg in enumerate(cmd):
+    for _, arg in enumerate(cmd):
         if skip_next:
             safe_cmd.append("***")
             skip_next = False
@@ -106,7 +106,7 @@ def start_go_worker(
         else:
             safe_cmd.append(arg)
     print(f"[{label}] cmd: {' '.join(safe_cmd)}", flush=True)
-    print(f"[{label}] Starting Go producer: {topic} at "
+    print(f"[{label}] Starting Go producer: {','.join(topics)} at "
           f"{rate_limit_bps // (1024*1024)} MB/s", flush=True)
 
     proc = subprocess.Popen(

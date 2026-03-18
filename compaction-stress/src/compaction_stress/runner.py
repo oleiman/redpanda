@@ -89,19 +89,18 @@ class Runner:
             self.handles.append(handle)
 
             if self._use_go:
-                # Go mode: one subprocess per (worker, topic) pair.
-                # Each Go process handles a single topic for maximum throughput.
+                # Go mode: one subprocess per worker, each handling all topics.
+                # Single franz-go client per process = fewer broker connections.
                 worker_rate = max(1024, sc.rate_limit_bps // sc.num_producers)
+                prefix = prefixes[0]  # all topics use the same prefix (except multi_partition)
                 for wid in range(sc.num_producers):
-                    per_topic_rate = max(1024, worker_rate // max(len(topics), 1))
-                    for topic, prefix in zip(topics, prefixes):
-                        stats = multiprocessing.Array('d', STATS_SIZE)
-                        handle.add_worker_stats(stats)
-                        proc = start_go_worker(
-                            name, wid, self.config.cluster, sc,
-                            topic, prefix, per_topic_rate, stats,
-                        )
-                        self.go_procs.append(proc)
+                    stats = multiprocessing.Array('d', STATS_SIZE)
+                    handle.add_worker_stats(stats)
+                    proc = start_go_worker(
+                        name, wid, self.config.cluster, sc,
+                        topics, prefix, worker_rate, stats,
+                    )
+                    self.go_procs.append(proc)
             else:
                 # Python fallback: one process per worker
                 for wid in range(sc.num_producers):

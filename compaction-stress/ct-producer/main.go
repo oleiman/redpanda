@@ -39,7 +39,7 @@ type statsLine struct {
 
 func main() {
 	brokers := flag.String("brokers", "localhost:9092", "Kafka broker addresses (comma-separated)")
-	topic := flag.String("topic", "", "Topic to produce to")
+	topicsFlag := flag.String("topics", "", "Topics to produce to (comma-separated)")
 	keyPrefix := flag.String("key-prefix", "k", "Key prefix")
 	keyCount := flag.Int("key-count", 10000, "Number of unique keys to cycle through")
 	msgSize := flag.Int("msg-size", 512, "Message value size in bytes")
@@ -51,10 +51,11 @@ func main() {
 	tlsEnabled := flag.Bool("tls", false, "Enable TLS")
 	flag.Parse()
 
-	if *topic == "" {
-		fmt.Fprintf(os.Stderr, "error: --topic is required\n")
+	if *topicsFlag == "" {
+		fmt.Fprintf(os.Stderr, "error: --topics is required\n")
 		os.Exit(1)
 	}
+	topics := strings.Split(*topicsFlag, ",")
 
 	// Pre-generate keys
 	keys := make([][]byte, *keyCount)
@@ -69,7 +70,6 @@ func main() {
 	// Build franz-go client options.
 	opts := []kgo.Opt{
 		kgo.SeedBrokers(strings.Split(*brokers, ",")...),
-		kgo.DefaultProduceTopic(*topic),
 		kgo.ProducerBatchMaxBytes(1 * 1024 * 1024),
 		kgo.MaxBufferedRecords(50000),
 		kgo.ProducerLinger(10 * time.Millisecond),
@@ -87,7 +87,7 @@ func main() {
 			}
 			return d
 		}),
-		kgo.RecordRetries(0), // 0 = unlimited retries
+		kgo.RecordRetries(1000000), // effectively unlimited
 	}
 
 	if *saslMechanism != "" && *saslUser != "" {
@@ -170,18 +170,22 @@ func main() {
 		}
 	}()
 
-	// Produce loop — updates stats per-record so reporting stays live
-	// even when Produce() blocks on backpressure.
+	// Produce loop — cycles through topics, updates stats per-record so
+	// reporting stays live even when Produce() blocks on backpressure.
 	counter := 0
 	kc := *keyCount
 	tp := *tombstoneProb
 	hasTombstones := tp > 0
 	rateLimit := *rateLimitBps
+	numTopics := len(topics)
+	topicIdx := 0
 
-	const batchSize = 1000 // smaller batches for more responsive rate limiting
+	const batchSize = 1000
 	for ctx.Err() == nil {
 		batchStart := time.Now()
 		var batchBytes int64
+		curTopic := topics[topicIdx%numTopics]
+		topicIdx++
 
 		for i := 0; i < batchSize && ctx.Err() == nil; i++ {
 			key := keys[counter%kc]
@@ -199,18 +203,17 @@ func main() {
 				msgBytes = int64(len(key) + len(value))
 			}
 
-			// Update stats before Produce so they stay live during backpressure
 			s.records.Add(1)
 			s.bytes.Add(msgBytes)
 			batchBytes += msgBytes
 
 			client.Produce(ctx, &kgo.Record{
+				Topic: curTopic,
 				Key:   key,
 				Value: val,
 			}, func(_ *kgo.Record, err error) {
 				if err != nil {
 					s.errors.Add(1)
-					// Log errors at most once per 5 seconds
 					now := time.Now().Unix()
 					prev := lastErrLog.Load()
 					if now-prev >= 5 && lastErrLog.CompareAndSwap(prev, now) {

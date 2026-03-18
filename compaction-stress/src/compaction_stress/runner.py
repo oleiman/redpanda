@@ -8,6 +8,7 @@ import time
 from typing import Any
 
 from compaction_stress.config import Config, parse_duration
+from compaction_stress.iceberg_tracker import IcebergTracker
 from compaction_stress.logging import DualLogger
 from compaction_stress.metrics import MetricsScraper
 from compaction_stress.offset_tracker import OffsetTracker
@@ -37,6 +38,7 @@ class Runner:
         self.workers: list[VerifierWorker] = []
         self.scraper: MetricsScraper | None = None
         self.tracker: OffsetTracker | None = None
+        self.iceberg_tracker: IcebergTracker | None = None
 
     def run(self) -> None:
         signal.signal(signal.SIGINT, self._handle_signal)
@@ -114,6 +116,21 @@ class Runner:
         self.tracker.start()
         self.logger.info(f"Offset tracker started for {len(all_topics)} topic(s)")
 
+        # Start iceberg tracker if any iceberg topics and GCS bucket configured
+        iceberg_topics = [
+            t for name in enabled
+            for t in topic_map.get(name, [])
+            if self.config.get_scenario(name).topic_config.get("redpanda.iceberg.mode")
+        ]
+        if iceberg_topics and self.config.cluster.gcs_bucket:
+            self.iceberg_tracker = IcebergTracker(
+                self.config.cluster, iceberg_topics,
+                interval=self.config.report_interval,
+            )
+            self.iceberg_tracker.set_warn_callback(self.logger.warn)
+            self.iceberg_tracker.start()
+            self.logger.info(f"Iceberg tracker started for {len(iceberg_topics)} topic(s)")
+
         duration = parse_duration(self.config.duration) if self.config.duration else None
         start_time = time.monotonic()
 
@@ -145,6 +162,8 @@ class Runner:
     def _cleanup(self) -> None:
         if self.tracker:
             self.tracker.signal_stop()
+        if self.iceberg_tracker:
+            self.iceberg_tracker.signal_stop()
         if self.scraper:
             self.scraper.stop()
 
@@ -163,7 +182,8 @@ class Runner:
 
         cluster_metrics = self.scraper.get_metrics() if self.scraper else None
         offset_stats = self.tracker.get_stats() if self.tracker else None
-        self.logger.report(elapsed, scenario_stats, cluster_metrics, offset_stats)
+        iceberg_stats = self.iceberg_tracker.get_stats() if self.iceberg_tracker else None
+        self.logger.report(elapsed, scenario_stats, cluster_metrics, offset_stats, iceberg_stats)
 
     def _handle_signal(self, signum: int, frame: Any) -> None:
         if self._shutdown_flag:

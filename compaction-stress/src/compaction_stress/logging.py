@@ -68,6 +68,7 @@ class DualLogger:
         scenario_stats: dict[str, dict[str, Any]],
         cluster_metrics: dict[str, Any] | None,
         offset_stats: dict[str, dict[str, Any]] | None = None,
+        iceberg_stats: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         header = f"── {format_elapsed(elapsed)} elapsed "
         print(f"\n[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] {header:─<66}")
@@ -125,6 +126,20 @@ class DualLogger:
                     f"pending: {format_count(pending_t)} translation, {format_count(pending_c)} commit"
                 )
 
+        if iceberg_stats:
+            print("  ── iceberg tables ──")
+            for topic, ts in sorted(iceberg_stats.items()):
+                if "error" in ts:
+                    print(f"  {topic}: {ts['error']}")
+                elif "status" in ts:
+                    print(f"  {topic}: {ts['status']}")
+                else:
+                    rows = format_count(ts.get("rows", 0))
+                    files = ts.get("files", 0)
+                    snaps = ts.get("snapshots", 0)
+                    version = ts.get("version", 0)
+                    print(f"  {topic}: {rows} rows │ {files} files │ {snaps} snapshots │ v{version}")
+
         print(flush=True)
 
         self.json_event({
@@ -133,6 +148,7 @@ class DualLogger:
             "scenarios": scenario_stats,
             "cluster_metrics": cluster_metrics,
             "offset_stats": offset_stats,
+            "iceberg_stats": iceberg_stats,
         })
 
     def close(self) -> None:

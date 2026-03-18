@@ -13,6 +13,10 @@ cluster:
   # admin_hosts:
   #   - "node1:9644"
   #   - "node2:9644"
+  # For iceberg table tracking (reads metadata directly from GCS):
+  # gcs_bucket: "my-redpanda-bucket"
+  # iceberg_catalog_base_location: "redpanda-iceberg-catalog"  # default
+  # iceberg_catalog_namespace: "redpanda"  # default
 
 # Cluster-level configs set via rpk with --set-cluster-config.
 # To stress compaction harder, shrink key_map_memory (requires restart):

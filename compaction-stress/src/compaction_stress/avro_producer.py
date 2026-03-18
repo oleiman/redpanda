@@ -56,7 +56,8 @@ STRESS_SCHEMA = """{
 _RECORDS = 0
 _BYTES = 1
 _ERRORS = 2
-AVRO_STATS_SIZE = 3
+_TOMBSTONES = 3  # unused, but matches STATS_SIZE for ScenarioHandle compatibility
+AVRO_STATS_SIZE = 4
 
 
 def _random_string(length: int) -> str:

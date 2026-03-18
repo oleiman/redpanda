@@ -104,7 +104,7 @@ class Runner:
                     # Topic 0: Avro producers for schema-based translation
                     for wid in range(sc.num_producers):
                         stats = multiprocessing.Array('d', AVRO_STATS_SIZE)
-                        handle.add_stats(stats)
+                        handle.add_stats(stats, avro=True)
                         p = multiprocessing.Process(
                             target=avro_worker,
                             args=(name, wid, sc.num_producers,

@@ -166,32 +166,46 @@ class ScenarioHandle:
         self.name = name
         self.num_topics = num_topics
         self.msg_size = msg_size
-        self._stats_arrays: list = []
+        # kgo-verifier stats: index 0=produced, 1=acked (records), 2=errors, 3=tombstones
+        self._kgo_stats: list = []
+        # Avro stats: index 0=records, 1=bytes, 2=errors, 3=unused
+        self._avro_stats: list = []
         self._prev_acked = 0
+        self._prev_avro_bytes = 0.0
         self._prev_time = time.monotonic()
 
-    def add_stats(self, stats: multiprocessing.Array) -> None:
-        self._stats_arrays.append(stats)
+    def add_stats(self, stats: multiprocessing.Array, avro: bool = False) -> None:
+        if avro:
+            self._avro_stats.append(stats)
+        else:
+            self._kgo_stats.append(stats)
 
     def get_stats(self) -> dict[str, Any]:
         now = time.monotonic()
-        produced = acked = errors = tombstones = 0
-        for sa in self._stats_arrays:
-            produced += int(sa[_PRODUCED])
-            acked += int(sa[_ACKED])
-            errors += int(sa[_ERRORS])
-            tombstones += int(sa[_TOMBSTONES])
-
         elapsed = now - self._prev_time
-        delta = acked - self._prev_acked
-        bps = (delta * self.msg_size) / elapsed if elapsed > 0 else 0
-        self._prev_acked = acked
+
+        # kgo-verifier: records * msg_size for bytes
+        kgo_acked = sum(int(sa[_ACKED]) for sa in self._kgo_stats)
+        kgo_errors = sum(int(sa[_ERRORS]) for sa in self._kgo_stats)
+        kgo_tombstones = sum(int(sa[_TOMBSTONES]) for sa in self._kgo_stats)
+        kgo_byte_delta = (kgo_acked - self._prev_acked) * self.msg_size
+
+        # Avro: bytes reported directly
+        avro_records = sum(int(sa[0]) for sa in self._avro_stats)
+        avro_bytes = sum(sa[1] for sa in self._avro_stats)
+        avro_errors = sum(int(sa[2]) for sa in self._avro_stats)
+        avro_byte_delta = avro_bytes - self._prev_avro_bytes
+
+        total_bps = (kgo_byte_delta + avro_byte_delta) / elapsed if elapsed > 0 else 0
+
+        self._prev_acked = kgo_acked
+        self._prev_avro_bytes = avro_bytes
         self._prev_time = now
 
         return {
-            "records": acked,
-            "bytes_per_sec": bps,
-            "errors": errors,
-            "tombstones": tombstones,
+            "records": kgo_acked + avro_records,
+            "bytes_per_sec": total_bps,
+            "errors": kgo_errors + avro_errors,
+            "tombstones": kgo_tombstones,
             "num_topics": self.num_topics,
         }

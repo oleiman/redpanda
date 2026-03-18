@@ -138,7 +138,11 @@ class DualLogger:
                     files = ts.get("files", 0)
                     snaps = ts.get("snapshots", 0)
                     version = ts.get("version", 0)
-                    print(f"  {topic}: {rows} rows │ {files} files │ {snaps} snapshots │ v{version}")
+                    total_size = ts.get("total_size", 0)
+                    size_str = format_bytes_per_sec(total_size).replace("/s", "") if total_size else "0 B"
+                    last_added = ts.get("last_added_rows", 0)
+                    last_added_str = f" (+{format_count(last_added)})" if last_added else ""
+                    print(f"  {topic}: {rows} rows{last_added_str} │ {size_str} │ {files} files │ {snaps} snapshots │ v{version}")
 
         print(flush=True)
 

@@ -105,11 +105,17 @@ class IcebergTracker:
 
             rows = 0
             files = 0
+            total_size = 0
+            added_rows = 0
+            added_files = 0
             for snap in snapshots:
                 if snap.get("snapshot-id") == current_snapshot_id:
                     summary = snap.get("summary", {})
                     rows = int(summary.get("total-records", 0))
                     files = int(summary.get("total-data-files", 0))
+                    total_size = int(summary.get("total-files-size", 0))
+                    added_rows = int(summary.get("added-records", 0))
+                    added_files = int(summary.get("added-data-files", 0))
                     break
 
             return {
@@ -117,6 +123,9 @@ class IcebergTracker:
                 "snapshots": len(snapshots),
                 "rows": rows,
                 "files": files,
+                "total_size": total_size,
+                "last_added_rows": added_rows,
+                "last_added_files": added_files,
             }
         except Exception as e:
             return {"error": str(e)}

@@ -29,6 +29,7 @@ class Runner:
         config: Config,
         scenario_name: str | None = None,
         set_cluster_config: bool = False,
+        force_python: bool = False,
     ):
         self.config = config
         self.scenario_name = scenario_name
@@ -41,7 +42,7 @@ class Runner:
         self.go_procs: list[subprocess.Popen] = []  # Go subprocesses
         self.scraper: MetricsScraper | None = None
         self.tracker: OffsetTracker | None = None
-        self._use_go = GO_BINARY is not None
+        self._use_go = GO_BINARY is not None and not force_python
 
     def run(self) -> None:
         signal.signal(signal.SIGINT, self._handle_signal)

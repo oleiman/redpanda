@@ -51,6 +51,11 @@ class Runner:
             warn_fn=self.logger.warn,
         )
 
+        if self.shutdown.is_set():
+            self.logger.info("Interrupted during setup, exiting.")
+            self.logger.close()
+            return
+
         if self.config.cluster.admin_hosts:
             admin_hosts = self.config.cluster.admin_hosts
             self.scraper = MetricsScraper(admin_hosts)
@@ -58,8 +63,14 @@ class Runner:
             self.scraper.start()
             self.logger.info(f"Metrics scraper started ({len(admin_hosts)} nodes)")
 
+        if self.shutdown.is_set():
+            self._cleanup()
+            return
+
         # Launch each scenario in its own process
         for name in enabled:
+            if self.shutdown.is_set():
+                break
             topics = topic_map.get(name, [])
             sc = self.config.get_scenario(name)
             prefixes = key_prefixes_for(name, topics)
@@ -75,6 +86,10 @@ class Runner:
             self.processes.append(p)
             self.handles.append(ScenarioHandle(name, sc.num_topics, stats))
             p.start()
+
+        if self.shutdown.is_set():
+            self._cleanup()
+            return
 
         all_topics = [t for topics in topic_map.values() for t in topics]
         self.tracker = OffsetTracker(
@@ -111,22 +126,25 @@ class Runner:
                 self._report(time.monotonic() - start_time)
 
         self._report(time.monotonic() - start_time)
+        self._cleanup()
 
-        # Signal background threads to stop (don't block waiting for them —
-        # they're daemon threads and will be killed on exit if they're stuck
-        # in blocking I/O like consumer.list_topics with no broker).
+    def _cleanup(self) -> None:
+        # Signal background threads to stop (don't block waiting —
+        # they're daemon threads and will die on process exit if stuck
+        # in blocking I/O).
         if self.tracker:
             self.tracker.signal_stop()
         if self.scraper:
             self.scraper.stop()
 
-        self.logger.info("Waiting for scenarios to finish...")
-        for p in self.processes:
-            p.join(timeout=10)
-            if p.is_alive():
-                self.logger.warn(f"Terminating stuck process: {p.name}")
-                p.terminate()
-                p.join(timeout=5)
+        if self.processes:
+            self.logger.info("Waiting for scenarios to finish...")
+            for p in self.processes:
+                p.join(timeout=10)
+                if p.is_alive():
+                    self.logger.warn(f"Terminating stuck process: {p.name}")
+                    p.terminate()
+                    p.join(timeout=5)
 
         self.logger.info("Done.")
         self.logger.close()
@@ -141,5 +159,13 @@ class Runner:
         self.logger.report(elapsed, scenario_stats, cluster_metrics, offset_stats)
 
     def _handle_signal(self, signum: int, frame: Any) -> None:
-        self.logger.info(f"Received signal {signum}, shutting down gracefully...")
+        if self.shutdown.is_set():
+            # Second signal — force exit immediately
+            self.logger.info("Forced exit.")
+            for p in self.processes:
+                if p.is_alive():
+                    p.terminate()
+            import sys
+            sys.exit(1)
+        self.logger.info(f"Received signal {signum}, shutting down gracefully... (repeat to force)")
         self.shutdown.set()

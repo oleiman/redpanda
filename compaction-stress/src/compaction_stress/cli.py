@@ -57,6 +57,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Set cluster configs via admin API (requires admin API access)",
     )
     parser.add_argument(
+        "--rate-multiplier",
+        type=float,
+        help="Multiply all scenario rate limits by this factor (e.g., 2.0 = double, 0.5 = half)",
+    )
+    parser.add_argument(
         "--log-dir",
         help="Directory for JSON log output (default: ./logs)",
     )
@@ -79,6 +84,8 @@ def main(argv: list[str] | None = None) -> None:
         cli_overrides["no_setup"] = True
     if args.delete_existing_topics:
         cli_overrides["delete_existing_topics"] = True
+    if args.rate_multiplier is not None:
+        cli_overrides["rate_multiplier"] = args.rate_multiplier
     if args.log_dir:
         cli_overrides["log_dir"] = args.log_dir
 

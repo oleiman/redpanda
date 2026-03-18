@@ -37,20 +37,20 @@ SCENARIO_DEFAULTS: dict[str, dict[str, Any]] = {
     "key_cardinality": {
         "key_count": 200_000,
         "msg_size": 512,
-        "rate_limit_bps": 10 * 1024 * 1024,
+        "rate_limit_bps": 100 * 1024 * 1024,
         "partitions": 1,
         "topic_config": {"min.cleanable.dirty.ratio": "0.0"},
     },
     "extreme_dedup": {
         "key_count": 10,
         "msg_size": 256,
-        "rate_limit_bps": 5 * 1024 * 1024,
+        "rate_limit_bps": 50 * 1024 * 1024,
         "partitions": 1,
     },
     "continuous_write": {
         "key_count": 50_000,
         "msg_size": 512,
-        "rate_limit_bps": 10 * 1024 * 1024,
+        "rate_limit_bps": 100 * 1024 * 1024,
         "partitions": 4,
         "topic_config": {"min.compaction.lag.ms": "30000"},
     },
@@ -58,14 +58,14 @@ SCENARIO_DEFAULTS: dict[str, dict[str, Any]] = {
         "key_count": 10_000,
         "msg_size": 256,
         "tombstone_probability": 0.15,
-        "rate_limit_bps": 5 * 1024 * 1024,
+        "rate_limit_bps": 50 * 1024 * 1024,
         "partitions": 2,
         "topic_config": {"delete.retention.ms": "60000"},
     },
     "multi_partition": {
         "key_count": 20_000,
         "msg_size": 512,
-        "rate_limit_bps": 20 * 1024 * 1024,
+        "rate_limit_bps": 200 * 1024 * 1024,
         "num_topics": 4,
         "partitions": 8,
     },
@@ -87,13 +87,18 @@ class Config:
     duration: str | None = "1h"  # None = indefinite
     no_setup: bool = False
     delete_existing_topics: bool = False
+    rate_multiplier: float = 1.0
     log_dir: str = "./logs"
     report_interval: int = 30  # seconds between stdout reports
 
     def get_scenario(self, name: str) -> ScenarioConfig:
         if name in self.scenarios:
-            return self.scenarios[name]
-        return _build_scenario_config(name, {})
+            sc = self.scenarios[name]
+        else:
+            sc = _build_scenario_config(name, {})
+        if self.rate_multiplier != 1.0:
+            sc.rate_limit_bps = int(sc.rate_limit_bps * self.rate_multiplier)
+        return sc
 
     def enabled_scenarios(self, selected: str | None) -> list[str]:
         if selected and selected != "kitchen_sink":
@@ -172,6 +177,7 @@ def load_config(
         duration=cli_overrides.get("duration", raw.get("duration", "1h")),
         no_setup=cli_overrides.get("no_setup", False),
         delete_existing_topics=cli_overrides.get("delete_existing_topics", False),
+        rate_multiplier=float(cli_overrides.get("rate_multiplier", raw.get("rate_multiplier", 1.0))),
         log_dir=cli_overrides.get("log_dir", raw.get("log_dir", "./logs")),
         report_interval=raw.get("report_interval", 30),
     )

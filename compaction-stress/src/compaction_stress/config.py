@@ -105,6 +105,26 @@ SCENARIO_DEFAULTS: dict[str, dict[str, Any]] = {
         "num_topics": 6,
         "partitions": 16,
     },
+    "iceberg": {
+        # Iceberg translation racing compaction. Translation must capture
+        # all offsets before compaction removes duplicates. The
+        # lowest_pinned_data_offset mechanism prevents data deletion until
+        # translation completes, so high write throughput forces both
+        # systems to keep up simultaneously.
+        # Requires cluster config: iceberg_enabled=true (needs restart),
+        # iceberg_catalog_commit_interval_ms=5000, iceberg_target_lag_ms=5000.
+        # Disabled by default — enable explicitly or via --scenario iceberg.
+        "enabled": False,
+        "key_count": 100_000,
+        "msg_size": 16384,
+        "rate_limit_bps": 200 * 1024 * 1024,
+        "num_producers": 1,
+        "partitions": 8,
+        "topic_config": {
+            "redpanda.iceberg.mode": "key_value",
+            "min.cleanable.dirty.ratio": "0.0",
+        },
+    },
 }
 
 ALL_SCENARIOS = list(SCENARIO_DEFAULTS.keys())

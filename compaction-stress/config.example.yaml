@@ -22,6 +22,10 @@ cluster_config:
   cloud_topics_compaction_interval_ms: 5000
   cloud_topics_compaction_max_object_size: 134217728   # 128 MB
   cloud_topics_compaction_key_map_memory: 134217728    # 128 MB
+  # Iceberg settings (iceberg_enabled requires cluster restart):
+  # iceberg_enabled: true
+  # iceberg_catalog_commit_interval_ms: 5000
+  # iceberg_target_lag_ms: 5000
 
 # Scenario overrides — only set what you want to change.
 # Omitted fields use built-in defaults (see below).
@@ -31,15 +35,15 @@ cluster_config:
 #   extreme_dedup:    100 keys, 16KB msgs, 200 MB/s, 3 workers, 4 partitions
 #   continuous_write: 200K keys, 16KB msgs, 200 MB/s, 3 workers, 12 partitions
 #   tombstone:        5K keys, 16KB msgs, 150 MB/s, 3 workers, 8 partitions
-#   multi_partition:  50K keys, 16KB msgs, 300 MB/s, 4 workers, 6x16 partitions
+#   multi_partition:  50K keys, 16KB msgs, 300 MB/s, 1 worker, 6x16 partitions
+#   iceberg:          100K keys, 16KB msgs, 200 MB/s, 1 worker, 8 partitions
+#                     (requires iceberg_enabled=true in cluster config)
 #
 # scenarios:
 #   key_cardinality:
 #     enabled: false    # disable a scenario
-#   extreme_dedup:
-#     num_producers: 6  # more in-process workers
-#   continuous_write:
-#     partitions: 24    # more partitions
+#   iceberg:
+#     enabled: true     # enable iceberg scenario (disabled in kitchen_sink by default)
 
 # Duration: "1h", "30m", "12h", or "indefinite"
 duration: "1h"

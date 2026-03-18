@@ -16,6 +16,7 @@ def _make_consumer(cluster: ClusterConfig) -> Consumer:
         "group.id": "compaction-stress-tracker",
         "enable.auto.commit": False,
         "auto.offset.reset": "earliest",
+        "log_level": "0",  # suppress librdkafka connection noise
     }
     if cluster.sasl_mechanism and cluster.sasl_user:
         conf["security.protocol"] = (

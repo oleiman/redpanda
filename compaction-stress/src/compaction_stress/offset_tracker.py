@@ -62,24 +62,36 @@ class OffsetTracker:
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
+    def signal_stop(self) -> None:
+        """Signal the tracker to stop. Non-blocking — the thread is a daemon
+        and will be killed on process exit if it's stuck in blocking I/O."""
+        self._stop.set()
+
     def stop(self) -> None:
         self._stop.set()
         if self._thread:
-            self._thread.join(timeout=30)
+            self._thread.join(timeout=10)
 
     def get_stats(self) -> dict[str, dict[str, Any]]:
         with self._lock:
             return dict(self._latest)
 
     def _run(self) -> None:
-        # Wait a bit before the first check to let data accumulate
-        self._stop.wait(min(self._interval, 30))
+        # Short delay to let initial data land, then check immediately
+        self._stop.wait(5)
 
         while not self._stop.is_set():
             try:
+                import time as _time
+                t0 = _time.monotonic()
                 stats = self._check_all_topics()
+                elapsed = _time.monotonic() - t0
                 with self._lock:
                     self._latest = stats
+                if self._warn_fn and elapsed > 10:
+                    self._warn_fn(
+                        f"Offset tracker scan took {elapsed:.1f}s"
+                    )
             except Exception as e:
                 if self._warn_fn:
                     self._warn_fn(f"Offset tracker error: {e}")
@@ -101,7 +113,7 @@ class OffsetTracker:
         topic: str,
     ) -> dict[str, Any]:
         # Get partition count via metadata
-        md = consumer.list_topics(topic, timeout=10)
+        md = consumer.list_topics(topic, timeout=5)
         topic_md = md.topics.get(topic)
         if not topic_md or topic_md.error is not None:
             return {"error": f"topic metadata unavailable"}
@@ -126,7 +138,7 @@ class OffsetTracker:
 
             count = 0
             while True:
-                msg = consumer.poll(timeout=5.0)
+                msg = consumer.poll(timeout=2.0)
                 if msg is None:
                     break
                 if msg.error():

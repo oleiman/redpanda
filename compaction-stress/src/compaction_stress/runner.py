@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+import multiprocessing
 import signal
-import threading
 import time
 from typing import Any
 
@@ -11,8 +11,12 @@ from compaction_stress.config import Config, parse_duration
 from compaction_stress.logging import DualLogger
 from compaction_stress.metrics import MetricsScraper
 from compaction_stress.offset_tracker import OffsetTracker
-from compaction_stress.scenarios import create_scenario
-from compaction_stress.scenarios.base import BaseScenario
+from compaction_stress.scenarios.base import (
+    STATS_SIZE,
+    ScenarioHandle,
+    key_prefixes_for,
+    scenario_worker,
+)
 from compaction_stress.setup import run_setup
 
 
@@ -27,9 +31,9 @@ class Runner:
         self.scenario_name = scenario_name
         self.set_cluster_config = set_cluster_config
         self.logger = DualLogger(config.log_dir)
-        self.shutdown = threading.Event()
-        self.scenarios: list[BaseScenario] = []
-        self.threads: list[threading.Thread] = []
+        self.shutdown = multiprocessing.Event()
+        self.handles: list[ScenarioHandle] = []
+        self.processes: list[multiprocessing.Process] = []
         self.scraper: MetricsScraper | None = None
         self.tracker: OffsetTracker | None = None
 
@@ -54,24 +58,23 @@ class Runner:
             self.scraper.start()
             self.logger.info(f"Metrics scraper started ({len(admin_hosts)} nodes)")
 
+        # Launch each scenario in its own process
         for name in enabled:
             topics = topic_map.get(name, [])
-            scenario = create_scenario(
-                name=name,
-                cluster=self.config.cluster,
-                config=self.config,
-                topics=topics,
-                logger=self.logger,
-            )
-            self.scenarios.append(scenario)
-            t = threading.Thread(
-                target=self._run_scenario,
-                args=(scenario,),
+            sc = self.config.get_scenario(name)
+            prefixes = key_prefixes_for(name, topics)
+            stats = multiprocessing.Array('d', STATS_SIZE)
+
+            p = multiprocessing.Process(
+                target=scenario_worker,
+                args=(name, self.config.cluster, sc, topics, prefixes,
+                      self.shutdown, stats),
                 name=f"scenario-{name}",
                 daemon=True,
             )
-            self.threads.append(t)
-            t.start()
+            self.processes.append(p)
+            self.handles.append(ScenarioHandle(name, sc.num_topics, stats))
+            p.start()
 
         all_topics = [t for topics in topic_map.values() for t in topics]
         self.tracker = OffsetTracker(
@@ -95,34 +98,43 @@ class Runner:
                 self.logger.info("Duration reached, shutting down...")
                 self.shutdown.set()
                 break
-            self.shutdown.wait(self.config.report_interval)
+
+            # Wait for either the report interval or remaining duration,
+            # whichever is shorter.
+            wait_time = self.config.report_interval
+            if duration:
+                remaining = duration - elapsed
+                wait_time = min(wait_time, max(remaining, 0.5))
+
+            self.shutdown.wait(wait_time)
             if not self.shutdown.is_set():
                 self._report(time.monotonic() - start_time)
 
         self._report(time.monotonic() - start_time)
 
-        self.logger.info("Waiting for scenarios to finish...")
-        for t in self.threads:
-            t.join(timeout=60)
-
+        # Signal background threads to stop (don't block waiting for them —
+        # they're daemon threads and will be killed on exit if they're stuck
+        # in blocking I/O like consumer.list_topics with no broker).
         if self.tracker:
-            self.tracker.stop()
+            self.tracker.signal_stop()
         if self.scraper:
             self.scraper.stop()
+
+        self.logger.info("Waiting for scenarios to finish...")
+        for p in self.processes:
+            p.join(timeout=10)
+            if p.is_alive():
+                self.logger.warn(f"Terminating stuck process: {p.name}")
+                p.terminate()
+                p.join(timeout=5)
 
         self.logger.info("Done.")
         self.logger.close()
 
-    def _run_scenario(self, scenario: BaseScenario) -> None:
-        try:
-            scenario.run(self.shutdown)
-        except Exception as e:
-            self.logger.error(f"[{scenario.name}] Error: {e}")
-
     def _report(self, elapsed: float) -> None:
         scenario_stats: dict[str, dict[str, Any]] = {}
-        for s in self.scenarios:
-            scenario_stats[s.name] = s.get_stats()
+        for h in self.handles:
+            scenario_stats[h.name] = h.get_stats()
 
         cluster_metrics = self.scraper.get_metrics() if self.scraper else None
         offset_stats = self.tracker.get_stats() if self.tracker else None

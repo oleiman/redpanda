@@ -161,18 +161,6 @@ ss::future<> app::construct(
         [&metadata_cache] { return &metadata_cache->local(); }),
       scheduling_groups::instance().cloud_topics_reconciler_sg());
 
-    if (!skip_level_zero_gc) {
-        co_await construct_service(
-          l0_gc,
-          self,
-          ss::sharded_parameter([&] { return &remote->local(); }),
-          bucket,
-          &controller->get_health_monitor(),
-          &controller->get_controller_stm(),
-          &controller->get_topics_state(),
-          &controller->get_members_table());
-    }
-
     co_await construct_service(
       epoch_barrier,
       std::ref(controller->get_cluster_epoch_generator()),
@@ -189,6 +177,18 @@ ss::future<> app::construct(
       &controller->get_health_monitor(),
       &controller->get_controller_stm(),
       &controller->get_topics_state());
+
+    if (!skip_level_zero_gc) {
+        co_await construct_service(
+          l0_gc,
+          self,
+          ss::sharded_parameter([&] { return &remote->local(); }),
+          bucket,
+          &controller->get_health_monitor(),
+          &controller->get_members_table(),
+          ss::sharded_parameter(
+            [this] { return epoch_barrier.local().get_epoch_source(); }));
+    }
 
     co_await construct_service(housekeeper_manager, ss::sharded_parameter([&] {
                                    return &replicated_metastore.local();

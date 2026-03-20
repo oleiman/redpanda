@@ -432,11 +432,11 @@ private:
 level_zero_gc::level_zero_gc(
   level_zero_gc_config config,
   std::unique_ptr<object_storage> storage,
-  std::unique_ptr<epoch_source> epoch_source,
+  epoch_source* epoch_source,
   std::unique_ptr<node_info> node_info,
   std::unique_ptr<safety_monitor> safety_monitor)
   : config_(std::move(config))
-  , epoch_source_(std::move(epoch_source))
+  , epoch_source_(epoch_source)
   , safety_monitor_(std::move(safety_monitor))
   , should_run_(false) // begin in a stopped state
   , should_shutdown_(false)
@@ -453,9 +453,8 @@ level_zero_gc::level_zero_gc(
   cloud_io::remote* remote,
   cloud_storage_clients::bucket_name bucket,
   seastar::sharded<cluster::health_monitor_frontend>* health_monitor,
-  seastar::sharded<cluster::controller_stm>* controller_stm,
-  seastar::sharded<cluster::topic_table>* topic_table,
-  seastar::sharded<cluster::members_table>* members_table)
+  seastar::sharded<cluster::members_table>* members_table,
+  l0::gc::epoch_source* epoch_src)
   : level_zero_gc(
       level_zero_gc_config{
         .deletion_grace_period
@@ -468,7 +467,7 @@ level_zero_gc::level_zero_gc(
             .cloud_topics_short_term_gc_backoff_interval.bind(),
       },
       std::make_unique<object_storage_remote_impl>(remote, std::move(bucket)),
-      epoch_source::make_default(health_monitor, controller_stm, topic_table),
+      epoch_src,
       std::make_unique<node_info_impl>(self, members_table),
       std::make_unique<cluster_safety_monitor>(
         health_monitor,

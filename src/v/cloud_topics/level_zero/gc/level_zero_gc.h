@@ -301,7 +301,7 @@ public:
     level_zero_gc(
       level_zero_gc_config,
       std::unique_ptr<object_storage>,
-      std::unique_ptr<epoch_source>,
+      epoch_source*,
       std::unique_ptr<node_info>,
       std::unique_ptr<safety_monitor>);
 
@@ -313,9 +313,8 @@ public:
       cloud_io::remote*,
       cloud_storage_clients::bucket_name,
       seastar::sharded<cluster::health_monitor_frontend>*,
-      seastar::sharded<cluster::controller_stm>*,
-      seastar::sharded<cluster::topic_table>*,
-      seastar::sharded<cluster::members_table>*);
+      seastar::sharded<cluster::members_table>*,
+      l0::gc::epoch_source*);
 
     ~level_zero_gc();
 
@@ -368,7 +367,7 @@ public:
 
 private:
     level_zero_gc_config config_;
-    std::unique_ptr<epoch_source> epoch_source_;
+    epoch_source* epoch_source_;
     std::unique_ptr<safety_monitor> safety_monitor_;
 
     bool should_run_;

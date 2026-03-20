@@ -189,6 +189,13 @@ struct level_zero_gc_mt_test : public seastar_test {
         // Create shared state on shard 0
         g_bucket_state = std::make_unique<shared_bucket_state>();
 
+        // Create per-shard epoch sources before GC so they outlive it.
+        epoch_sources_.resize(ss::smp::count);
+        co_await ss::smp::invoke_on_all([this] {
+            epoch_sources_[ss::this_shard_id()]
+              = std::make_unique<mt_epoch_source>(g_bucket_state.get());
+        });
+
         // Start GC on all shards
         co_await gc_.start(
           ss::sharded_parameter([] {
@@ -204,9 +211,8 @@ struct level_zero_gc_mt_test : public seastar_test {
           ss::sharded_parameter([this] {
               return std::make_unique<mt_object_storage>(g_bucket_state.get());
           }),
-          ss::sharded_parameter([this] {
-              return std::make_unique<mt_epoch_source>(g_bucket_state.get());
-          }),
+          ss::sharded_parameter(
+            [this] { return epoch_sources_[ss::this_shard_id()].get(); }),
           ss::sharded_parameter(
             [] { return std::make_unique<mt_node_info>(); }),
           ss::sharded_parameter(
@@ -216,8 +222,11 @@ struct level_zero_gc_mt_test : public seastar_test {
     ss::future<> TearDownAsync() override {
         co_await gc_.invoke_on_all(&level_zero_gc::stop);
         co_await gc_.stop();
+        epoch_sources_.clear();
         std::exchange(g_bucket_state, nullptr);
     }
+
+    std::vector<std::unique_ptr<mt_epoch_source>> epoch_sources_;
 
     // Add objects with various prefixes (call from shard 0 context)
     void populate_objects(size_t count, bool dynamic_epoch = false) {

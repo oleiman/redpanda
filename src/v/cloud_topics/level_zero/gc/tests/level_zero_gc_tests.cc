@@ -215,6 +215,7 @@ public:
         auto storage = std::make_unique<object_storage_test_impl>(
           &listed, &deleted, &cfg);
         storage_ = storage.get();
+        epoch_source_ = std::make_unique<epoch_source_test_impl>(&max_epoch);
         gc = std::make_unique<cloud_topics::level_zero_gc>(
           cloud_topics::level_zero_gc_config{
             .deletion_grace_period
@@ -227,7 +228,7 @@ public:
               throttle_no_progress),
           },
           std::move(storage),
-          std::make_unique<epoch_source_test_impl>(&max_epoch),
+          epoch_source_.get(),
           std::make_unique<node_info_test_impl>(),
           std::make_unique<safety_monitor_test_impl>(&safety_ok));
     }
@@ -255,6 +256,7 @@ public:
     chunked_vector<cloud_storage_clients::client::list_bucket_item> listed;
     std::unordered_set<ss::sstring> deleted;
     std::optional<int64_t> max_epoch;
+    std::unique_ptr<epoch_source_test_impl> epoch_source_;
     std::unique_ptr<cloud_topics::level_zero_gc> gc;
     gc_test_config cfg{};
     object_storage_test_impl* storage_{nullptr};
@@ -844,7 +846,7 @@ public:
           },
           std::make_unique<object_storage_test_impl>(
             &listed_, &deleted_, &cfg_),
-          std::make_unique<epoch_source_test_impl>(&max_epoch_),
+          epoch_source_.get(),
           std::make_unique<node_info_test_impl>(
             std::get<0>(GetParam()), std::get<1>(GetParam())),
           std::make_unique<safety_monitor_test_impl>()) {}
@@ -925,6 +927,8 @@ public:
     chunked_vector<cloud_storage_clients::client::list_bucket_item> listed_;
     std::unordered_set<ss::sstring> deleted_;
     std::optional<int64_t> max_epoch_;
+    std::unique_ptr<epoch_source_test_impl> epoch_source_{
+      std::make_unique<epoch_source_test_impl>(&max_epoch_)};
     cloud_topics::level_zero_gc gc_;
     gc_test_config cfg_{};
 };

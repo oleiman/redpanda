@@ -18,6 +18,7 @@
 #include "cluster/cluster_epoch_service.h"
 #include "cluster/members_table.h"
 #include "cluster/partition_manager.h"
+#include "config/configuration.h"
 #include "model/namespace.h"
 #include "rpc/connection_cache.h"
 #include "ssx/future-util.h"
@@ -87,8 +88,7 @@ public:
           .term = p->term(),
           .is_leader = p->is_leader(),
           .has_epoch = ctp_stm->state().get_max_applied_epoch().has_value(),
-          .last_epoch_log_offset
-          = ctp_stm->state().get_last_epoch_log_offset(),
+          .last_epoch_log_offset = ctp_stm->state().get_last_epoch_log_offset(),
           .last_reconciled_log_offset
           = ctp_stm->state().get_last_reconciled_log_offset(),
         };
@@ -145,8 +145,6 @@ public:
     }
 
 private:
-    static constexpr auto poll_interval = std::chrono::seconds(2);
-    static constexpr auto loop_interval = std::chrono::seconds(5);
     static constexpr size_t max_poll_attempts = 30;
 
     ss::future<> run_loop() {
@@ -161,7 +159,10 @@ private:
             }
 
             (co_await ss::coroutine::as_future(
-               ss::sleep_abortable(loop_interval, _as)))
+               ss::sleep_abortable(
+                 config::shard_local_cfg()
+                   .cloud_topics_gc_barrier_loop_interval(),
+                 _as)))
               .ignore_ready_future();
         }
     }
@@ -214,7 +215,9 @@ private:
                 co_return;
             }
 
-            co_await ss::sleep_abortable(poll_interval, _as);
+            co_await ss::sleep_abortable(
+              config::shard_local_cfg().cloud_topics_gc_barrier_poll_interval(),
+              _as);
         }
 
         vlog(

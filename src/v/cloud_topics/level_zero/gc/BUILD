@@ -145,6 +145,7 @@ redpanda_cc_library(
         "//src/v/cloud_topics/level_zero/stm:ctp_stm_api",
         "//src/v/cluster",
         "//src/v/cluster:members_table",
+        "//src/v/config",
         "//src/v/rpc",
         "//src/v/ssx:future_util",
         "//src/v/ssx:when_all",

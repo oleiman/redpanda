@@ -148,15 +148,15 @@ public:
     }
 
     seastar::future<std::expected<partitions_snapshot, std::string>>
-    get_partitions(seastar::abort_source*) override {
+    get_partition_snapshot(seastar::abort_source*) override {
         /*
          * this impl only cares about the final derived value
          */
         co_return std::unexpected("unimplemented");
     }
 
-    seastar::future<std::expected<partitions_max_gc_epoch, std::string>>
-    get_partitions_max_gc_epoch(seastar::abort_source*) override {
+    seastar::future<std::expected<partition_epoch_estimates, std::string>>
+    get_partition_epoch_estimates(seastar::abort_source*) override {
         /*
          * this impl only cares about the final derived value
          */
@@ -462,12 +462,19 @@ class epoch_source_test_default_impl
 public:
     explicit epoch_source_test_default_impl(
       partitions_snapshot* get_partitions_value,
-      partitions_max_gc_epoch* get_partitions_max_gc_epoch_value)
+      partition_epoch_estimates* get_partition_epoch_estimates_value)
       : get_partitions_value_(get_partitions_value)
-      , get_partitions_max_gc_epoch_value_(get_partitions_max_gc_epoch_value) {}
+      , get_partition_epoch_estimates_value_(
+          get_partition_epoch_estimates_value) {}
+
+    seastar::future<
+      std::expected<std::optional<cloud_topics::cluster_epoch>, std::string>>
+    max_gc_eligible_epoch(seastar::abort_source*) override {
+        co_return std::nullopt;
+    }
 
     seastar::future<std::expected<partitions_snapshot, std::string>>
-    get_partitions(seastar::abort_source*) override {
+    get_partition_snapshot(seastar::abort_source*) override {
         // manually copy out from the fragmented map structure
         const auto& src = *get_partitions_value_;
         partitions_snapshot::partition_map partitions;
@@ -480,11 +487,11 @@ public:
         };
     }
 
-    seastar::future<std::expected<partitions_max_gc_epoch, std::string>>
-    get_partitions_max_gc_epoch(seastar::abort_source*) override {
+    seastar::future<std::expected<partition_epoch_estimates, std::string>>
+    get_partition_epoch_estimates(seastar::abort_source*) override {
         // manually copy the two-level fragmented map structure
-        const auto& src = *get_partitions_max_gc_epoch_value_;
-        partitions_max_gc_epoch ret;
+        const auto& src = *get_partition_epoch_estimates_value_;
+        partition_epoch_estimates ret;
         for (const auto& entry : src) {
             chunked_hash_map<model::partition_id, cloud_topics::cluster_epoch>
               copy;
@@ -498,28 +505,31 @@ public:
 
 private:
     partitions_snapshot* get_partitions_value_;
-    partitions_max_gc_epoch* get_partitions_max_gc_epoch_value_;
+    partition_epoch_estimates* get_partition_epoch_estimates_value_;
 };
 
 class LevelZeroGCMaxEpochTest : public testing::Test {
 public:
     using epoch_source_type = cloud_topics::level_zero_gc::epoch_source;
     using partitions_snapshot = epoch_source_type::partitions_snapshot;
-    using partitions_max_gc_epoch = epoch_source_type::partitions_max_gc_epoch;
+    using partition_epoch_estimates
+      = epoch_source_type::partition_epoch_estimates;
 
     LevelZeroGCMaxEpochTest()
       : epoch_source(
           std::make_unique<epoch_source_test_default_impl>(
-            &get_partitions_value, &get_partitions_max_gc_epoch_value)) {}
+            &get_partitions_value, &get_partition_epoch_estimates_value)) {}
 
     partitions_snapshot get_partitions_value;
-    partitions_max_gc_epoch get_partitions_max_gc_epoch_value;
+    partition_epoch_estimates get_partition_epoch_estimates_value;
     std::unique_ptr<epoch_source_type> epoch_source;
 
     // shortcut accessors
-    auto max_gc() { return epoch_source->max_gc_eligible_epoch(nullptr).get(); }
+    auto max_gc() {
+        return epoch_source->max_barrier_candidate_epoch(nullptr).get();
+    }
     auto& snapshot() { return get_partitions_value; }
-    auto& partition_epochs() { return get_partitions_max_gc_epoch_value; }
+    auto& partition_epochs() { return get_partition_epoch_estimates_value; }
 };
 
 TEST_F(LevelZeroGCMaxEpochTest, EmptySnapshot) {
@@ -539,17 +549,16 @@ TEST_F(LevelZeroGCMaxEpochTest, EmptyGcEpochReport) {
     get_partitions_value.partitions[tpns0].push_back(model::partition_id(0));
     ASSERT_FALSE(max_gc().has_value());
     ASSERT_EQ(
-      max_gc().error(),
-      "Topic '{ns0/t0}' in snapshot has no reported max GC epoch");
+      max_gc().error(), "Topic '{ns0/t0}' in snapshot has no epoch estimate");
 
     // now we add the topic/ns to the report, but report on a different
     // partition so there is still no output in the join
-    get_partitions_max_gc_epoch_value[tpns0][model::partition_id(1)]
+    get_partition_epoch_estimates_value[tpns0][model::partition_id(1)]
       = cloud_topics::cluster_epoch(0);
     ASSERT_FALSE(max_gc().has_value());
     ASSERT_EQ(
       max_gc().error(),
-      "Partition '{ns0/t0}/0' in snapshot has no reported max GC epoch");
+      "Partition '{ns0/t0}/0' in snapshot has no epoch estimate");
 }
 
 TEST_F(LevelZeroGCMaxEpochTest, MinReduce) {
@@ -557,18 +566,18 @@ TEST_F(LevelZeroGCMaxEpochTest, MinReduce) {
     get_partitions_value.partitions[tpns0].push_back(model::partition_id(0));
 
     // the minimum is the last applied
-    get_partitions_max_gc_epoch_value[tpns0][model::partition_id(0)]
+    get_partition_epoch_estimates_value[tpns0][model::partition_id(0)]
       = cloud_topics::cluster_epoch(200);
     ASSERT_EQ(max_gc().value().value(), cloud_topics::cluster_epoch(100));
 
     // now its the epoch from the report
-    get_partitions_max_gc_epoch_value[tpns0][model::partition_id(0)]
+    get_partition_epoch_estimates_value[tpns0][model::partition_id(0)]
       = cloud_topics::cluster_epoch(50);
     ASSERT_EQ(max_gc().value().value(), cloud_topics::cluster_epoch(50));
 }
 
 TEST_F(LevelZeroGCMaxEpochTest, EmptySnapshotNonEmptyReport) {
-    get_partitions_max_gc_epoch_value[tpns0][model::partition_id(0)]
+    get_partition_epoch_estimates_value[tpns0][model::partition_id(0)]
       = cloud_topics::cluster_epoch(200);
     ASSERT_TRUE(max_gc().has_value());
     ASSERT_FALSE(max_gc().value().has_value());

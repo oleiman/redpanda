@@ -151,12 +151,12 @@ public:
     }
 
     ss::future<std::expected<partitions_snapshot, std::string>>
-    get_partitions(ss::abort_source*) override {
+    get_partition_snapshot(ss::abort_source*) override {
         co_return std::unexpected("not implemented");
     }
 
-    ss::future<std::expected<partitions_max_gc_epoch, std::string>>
-    get_partitions_max_gc_epoch(ss::abort_source*) override {
+    ss::future<std::expected<partition_epoch_estimates, std::string>>
+    get_partition_epoch_estimates(ss::abort_source*) override {
         co_return std::unexpected("not implemented");
     }
     shared_bucket_state* g_bucket_state;

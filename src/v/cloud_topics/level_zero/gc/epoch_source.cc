@@ -26,13 +26,10 @@ constexpr ss::lowres_clock::duration health_report_query_timeout = 10s;
 namespace cloud_topics::l0::gc {
 
 seastar::future<std::expected<std::optional<cluster_epoch>, std::string>>
-epoch_source::max_gc_eligible_epoch(seastar::abort_source* as) {
-    /*
-     * First retrieve a consistent snapshot of cloud topic partitions. This
-     * establishes a set of partitions from which we must obtain an epoch
-     * bound on garbage collection.
-     */
-    auto partitions = co_await get_partitions(as);
+epoch_source::max_barrier_candidate_epoch(seastar::abort_source* as) {
+    // Collect the partition snapshot (centralized, from the topic table)
+    // and per-partition epoch estimates (distributed, from health reports).
+    auto partitions = co_await get_partition_snapshot(as);
     if (!partitions.has_value()) {
         co_return std::unexpected(partitions.error());
     }
@@ -40,36 +37,27 @@ epoch_source::max_gc_eligible_epoch(seastar::abort_source* as) {
         co_return std::nullopt;
     }
 
-    /*
-     * Next we retrieve the latest reported epoch bounds from all cloud
-     * topic partitions. The source for this information is distributed,
-     * while the source for the `partitions` set above is centralized, and
-     * this is why we have these two different collection steps.
-     */
-    auto gc_epochs = co_await get_partitions_max_gc_epoch(as);
-    if (!gc_epochs.has_value()) {
-        co_return std::unexpected(gc_epochs.error());
+    auto estimates = co_await get_partition_epoch_estimates(as);
+    if (!estimates.has_value()) {
+        co_return std::unexpected(estimates.error());
     }
 
-    /*
-     * The final result begins as the maximum epoch for the given snapshot.
-     * Below we merge the two result sets and walk the final result back to
-     * account for the partition with the smallest eligible gc epoch.
-     */
+    // The candidate is the minimum across the snapshot revision and all
+    // partition estimates. Any single partition can hold it back.
     auto result = partitions.value().snap_revision;
 
     vlog(
       cd_log.debug,
-      "Calculating max GC eligible epoch with snapshot epoch {}",
+      "Calculating barrier candidate epoch with snapshot epoch {}",
       result);
 
     for (const auto& partition : partitions.value().partitions) {
         const auto& tp_ns = partition.first;
-        auto nit = gc_epochs.value().find(tp_ns);
-        if (nit == gc_epochs.value().end()) {
+        auto nit = estimates.value().find(tp_ns);
+        if (nit == estimates.value().end()) {
             co_return std::unexpected(
               fmt::format(
-                "Topic '{}' in snapshot has no reported max GC epoch", tp_ns));
+                "Topic '{}' in snapshot has no epoch estimate", tp_ns));
         }
 
         for (const auto p_id : partition.second) {
@@ -77,13 +65,11 @@ epoch_source::max_gc_eligible_epoch(seastar::abort_source* as) {
             if (pit == nit->second.end()) {
                 co_return std::unexpected(
                   fmt::format(
-                    "Partition '{}/{}' in snapshot has no reported max GC "
-                    "epoch",
+                    "Partition '{}/{}' in snapshot has no epoch estimate",
                     tp_ns,
                     p_id));
             }
 
-            // this partition may hold back the max GC eligible epoch
             const auto prev_result = result;
             result = std::min(result, pit->second);
 
@@ -98,10 +84,6 @@ epoch_source::max_gc_eligible_epoch(seastar::abort_source* as) {
         }
     }
 
-    if (probe_) {
-        probe_->set_min_partition_gc_epoch(result);
-    }
-
     co_return result;
 }
 
@@ -112,13 +94,27 @@ public:
     explicit epoch_source_impl(
       seastar::sharded<cluster::health_monitor_frontend>* health_monitor,
       seastar::sharded<cluster::controller_stm>* controller_stm,
-      seastar::sharded<cluster::topic_table>* topic_table)
+      seastar::sharded<cluster::topic_table>* topic_table,
+      safe_epoch_fn safe_epoch)
       : health_monitor_(health_monitor)
       , controller_stm_(controller_stm)
-      , topic_table_(topic_table) {}
+      , topic_table_(topic_table)
+      , safe_epoch_(std::move(safe_epoch)) {}
+
+    seastar::future<std::expected<std::optional<cluster_epoch>, std::string>>
+    max_gc_eligible_epoch(seastar::abort_source*) override {
+        if (safe_epoch_) {
+            auto epoch = safe_epoch_();
+            if (epoch.has_value() && probe_) {
+                probe_->set_min_partition_gc_epoch(*epoch);
+            }
+            co_return epoch;
+        }
+        co_return std::nullopt;
+    }
 
     seastar::future<std::expected<partitions_snapshot, std::string>>
-    get_partitions(seastar::abort_source* as) override {
+    get_partition_snapshot(seastar::abort_source* as) override {
         const auto& topic_table = topic_table_->local();
 
         // this revision is for detecting concurrent modifications
@@ -173,11 +169,11 @@ public:
         co_return snap;
     }
 
-    seastar::future<std::expected<partitions_max_gc_epoch, std::string>>
-    get_partitions_max_gc_epoch(seastar::abort_source* as) override {
+    seastar::future<std::expected<partition_epoch_estimates, std::string>>
+    get_partition_epoch_estimates(seastar::abort_source* as) override {
         /*
          * Get a recent health report. Partitions use the health reporting
-         * mechanism to self-report their max GC eligible epoch.
+         * mechanism to self-report GC candidate epochs.
          */
 
         auto health_report
@@ -193,7 +189,7 @@ public:
                 health_report.error()));
         }
 
-        partitions_max_gc_epoch result;
+        partition_epoch_estimates result;
         for (const auto& node_health : health_report.value().node_reports) {
             for (const auto& topic_status : node_health->topics) {
                 const auto& tp_ns = topic_status.first;
@@ -237,6 +233,16 @@ public:
                      * unknown. for brand new partitions this should be the
                      * partition's creation revision ID.
                      */
+                    // TODO(oren): fix up comments
+                    // Health reports include all replicas. We take the
+                    // max across replicas: epoch estimates only increase,
+                    // and any replica's report is valid forever after the
+                    // moment it was observed. Replicas with no estimate
+                    // are skipped (treated as epoch 0 in the max). If no
+                    // replica reports an estimate, the partition is omitted
+                    // from the result — the join in
+                    // max_barrier_candidate_epoch will fail or the
+                    // partition is a non-cloud topic (not in the snapshot).
                     const auto maybe_max_gc_epoch
                       = partition_status.second
                           .cloud_topic_max_gc_eligible_epoch;
@@ -279,6 +285,7 @@ private:
     seastar::sharded<cluster::health_monitor_frontend>* health_monitor_;
     seastar::sharded<cluster::controller_stm>* controller_stm_;
     seastar::sharded<cluster::topic_table>* topic_table_;
+    safe_epoch_fn safe_epoch_;
 };
 
 } // namespace
@@ -286,9 +293,10 @@ private:
 std::unique_ptr<epoch_source> epoch_source::make_default(
   seastar::sharded<cluster::health_monitor_frontend>* health_monitor,
   seastar::sharded<cluster::controller_stm>* controller_stm,
-  seastar::sharded<cluster::topic_table>* topic_table) {
+  seastar::sharded<cluster::topic_table>* topic_table,
+  safe_epoch_fn safe_epoch) {
     return std::make_unique<epoch_source_impl>(
-      health_monitor, controller_stm, topic_table);
+      health_monitor, controller_stm, topic_table, std::move(safe_epoch));
 }
 
 } // namespace cloud_topics::l0::gc

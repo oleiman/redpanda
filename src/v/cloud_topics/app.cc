@@ -18,6 +18,7 @@
 #include "cloud_topics/level_one/maintenance/scheduler.h"
 #include "cloud_topics/level_one/metastore/flush_loop.h"
 #include "cloud_topics/level_one/metastore/topic_purger.h"
+#include "cloud_topics/level_zero/gc/epoch_barrier.h"
 #include "cloud_topics/level_zero/gc/level_zero_gc.h"
 #include "cloud_topics/level_zero/notifier/level_zero_notifier.h"
 #include "cloud_topics/logger.h"
@@ -188,6 +189,20 @@ ss::future<> app::construct(
           &controller->get_members_table());
     }
 
+    co_await construct_service(
+      epoch_barrier,
+      std::ref(controller->get_cluster_epoch_generator()),
+      std::ref(*tracker),
+      ss::sharded_parameter([&controller] {
+          return l0::gc::epoch_barrier::make_default_partition_source(
+            controller->get_partition_manager().local());
+      }),
+      ss::sharded_parameter([&, self] {
+          return l0::gc::epoch_barrier::make_default_node_source(
+            self, controller->get_members_table().local());
+      }),
+      connection_cache);
+
     co_await construct_service(housekeeper_manager, ss::sharded_parameter([&] {
                                    return &replicated_metastore.local();
                                }));
@@ -246,6 +261,7 @@ ss::future<> app::start() {
     if (l0_gc.local_is_initialized()) {
         co_await l0_gc.invoke_on_all(&level_zero_gc::start);
     }
+
     if (flush_loop_manager.local_is_initialized()) {
         co_await flush_loop_manager.invoke_on_all(
           &l1::flush_loop_manager::start);
@@ -292,6 +308,17 @@ ss::future<> app::wire_up_notifications() {
               });
         });
     }
+    co_await epoch_barrier.invoke_on_all([this](auto& eb) {
+        manager.local().on_l1_domain_leader([&eb](
+                                              const model::ntp& ntp,
+                                              const auto&,
+                                              const auto& partition) noexcept {
+            if (ntp.tp.partition != model::partition_id{0}) {
+                return;
+            }
+            eb.notify_leadership_change(bool(partition));
+        });
+    });
     co_await housekeeper_manager.invoke_on_all([this](auto& hm) {
         manager.local().on_ctp_partition_leader(
           [&hm](
@@ -447,6 +474,10 @@ cluster_services& app::get_local_cluster_services() {
 
 ss::sharded<level_zero_notifier>* app::get_sharded_l0_notifier() {
     return &l0_notifier;
+}
+
+ss::sharded<l0::gc::epoch_barrier>* app::get_epoch_barrier() {
+    return &epoch_barrier;
 }
 
 } // namespace cloud_topics

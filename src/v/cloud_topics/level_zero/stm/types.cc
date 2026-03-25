@@ -26,6 +26,8 @@ auto fmt::formatter<cloud_topics::ctp_stm_key>::format(
         return fmt::format_to(ctx.out(), "reset_state");
     case cloud_topics::ctp_stm_key::set_min_allowed_local_threshold:
         return fmt::format_to(ctx.out(), "set_min_allowed_local_threshold");
+    case cloud_topics::ctp_stm_key::advance_gc_epoch:
+        return fmt::format_to(ctx.out(), "advance_gc_epoch");
     }
     return fmt::format_to(
       ctx.out(), "unknown ctp_stm_key({})", static_cast<int>(key));

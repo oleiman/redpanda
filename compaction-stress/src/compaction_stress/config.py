@@ -35,6 +35,7 @@ class ScenarioConfig:
     num_topics: int = 1
     num_producers: int = 1
     tombstone_probability: float = 0.0
+    produce_phase_duration: str = ""  # for backfill scenario: how long to produce before enabling iceberg
     topic_config: dict[str, str] = field(default_factory=dict)
 
 
@@ -127,6 +128,34 @@ SCENARIO_DEFAULTS: dict[str, dict[str, Any]] = {
         "topic_config": {
             # Default for kgo-verifier topics — overridden per-topic below
             "redpanda.iceberg.mode": "key_value",
+            "min.cleanable.dirty.ratio": "0.0",
+        },
+    },
+    "iceberg_backfill": {
+        # Backfill scenario: produce a large volume of data to compacted
+        # cloud topics WITHOUT iceberg enabled, let compaction run to
+        # create L1 objects, then enable iceberg mode on the topics.
+        # This forces iceberg translation to read from L1 objects in
+        # object storage (post-reconciliation), missing the batch cache
+        # entirely. Stresses the cold-read translation path.
+        #
+        # Two phases:
+        #   1. Produce phase: topics created without iceberg, kgo-verifier
+        #      fills them with data, compaction runs.
+        #   2. Backfill phase: iceberg mode toggled on via rpk, translation
+        #      must read all existing data from L1.
+        #
+        # Use --scenario iceberg_backfill. The tool handles the phasing.
+        "enabled": False,
+        "key_count": 100_000,
+        "msg_size": 16384,
+        "rate_limit_bps": 200 * 1024 * 1024,
+        "num_producers": 1,
+        "num_topics": 4,
+        "partitions": 8,
+        # produce_phase_duration: how long to produce before enabling iceberg
+        "produce_phase_duration": "10m",
+        "topic_config": {
             "min.cleanable.dirty.ratio": "0.0",
         },
     },

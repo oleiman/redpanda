@@ -162,6 +162,20 @@ class Runner:
         duration = parse_duration(self.config.duration) if self.config.duration else None
         start_time = time.monotonic()
 
+        # Backfill phase tracking
+        backfill_toggled = False
+        backfill_duration = None
+        backfill_topics: list[str] = []
+        if "iceberg_backfill" in enabled:
+            bf_sc = self.config.get_scenario("iceberg_backfill")
+            backfill_duration = parse_duration(bf_sc.produce_phase_duration)
+            backfill_topics = topic_map.get("iceberg_backfill", [])
+            if backfill_duration and backfill_topics:
+                self.logger.info(
+                    f"Backfill: producing for {bf_sc.produce_phase_duration} "
+                    f"before enabling iceberg on {len(backfill_topics)} topic(s)"
+                )
+
         self.logger.info(
             f"Running {'indefinitely' if duration is None else f'for {self.config.duration}'}"
         )
@@ -171,6 +185,12 @@ class Runner:
             if duration and elapsed >= duration:
                 self.logger.info("Duration reached, shutting down...")
                 break
+
+            # Backfill: toggle iceberg on after produce phase
+            if (not backfill_toggled and backfill_duration
+                    and backfill_topics and elapsed >= backfill_duration):
+                backfill_toggled = True
+                self._enable_iceberg_on_topics(backfill_topics)
 
             wait_time = self.config.report_interval
             if duration:
@@ -186,6 +206,33 @@ class Runner:
 
         self._report(time.monotonic() - start_time)
         self._cleanup()
+
+    def _enable_iceberg_on_topics(self, topics: list[str]) -> None:
+        """Toggle iceberg mode on topics via rpk topic alter."""
+        from compaction_stress.setup import _rpk_kafka_args, _run_rpk
+
+        self.logger.info(f"Backfill: enabling iceberg key_value mode on {len(topics)} topic(s)...")
+        base = _rpk_kafka_args(self.config.cluster)
+        for topic in topics:
+            args = base + [
+                "topic", "alter-config", topic,
+                "--set", "redpanda.iceberg.mode=key_value",
+            ]
+            ok = _run_rpk(args, warn_fn=self.logger.warn)
+            if ok:
+                self.logger.info(f"  {topic}: iceberg enabled")
+            else:
+                self.logger.warn(f"  {topic}: failed to enable iceberg")
+
+        # Start iceberg tracker for the backfill topics
+        if self.config.cluster.gcs_bucket and not self.iceberg_tracker:
+            self.iceberg_tracker = IcebergTracker(
+                self.config.cluster, topics,
+                interval=self.config.report_interval,
+            )
+            self.iceberg_tracker.set_warn_callback(self.logger.warn)
+            self.iceberg_tracker.start()
+            self.logger.info(f"Iceberg tracker started for {len(topics)} backfill topic(s)")
 
     def _cleanup(self) -> None:
         if self.tracker:

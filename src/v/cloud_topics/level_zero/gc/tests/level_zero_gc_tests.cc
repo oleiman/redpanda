@@ -9,6 +9,7 @@
  */
 #include "cloud_topics/level_zero/gc/level_zero_gc.h"
 #include "cloud_topics/object_utils.h"
+#include "config/mock_property.h"
 #include "ssx/mutex.h"
 
 #include <seastar/core/sleep.hh>
@@ -52,6 +53,7 @@ public:
             co_return std::unexpected{
               cloud_storage_clients::error_outcome::fail};
         }
+        ++list_call_count_;
         chunked_vector<cloud_storage_clients::client::list_bucket_item> keep;
         co_await seastar::sleep(cfg_->list_cost);
         auto lu = co_await list_mtx_.get_units(*as);
@@ -120,6 +122,7 @@ public:
     chunked_vector<cloud_storage_clients::client::list_bucket_item>* listed_;
     std::unordered_set<ss::sstring>* deleted_;
     gc_test_config* cfg_;
+    uint64_t list_call_count_{0};
 
     ssx::mutex list_mtx_{"object-store-impl-list"};
     ssx::mutex delete_mtx_{"object-store-impl-delete"};
@@ -217,8 +220,7 @@ public:
         storage_ = storage.get();
         gc = std::make_unique<cloud_topics::level_zero_gc>(
           cloud_topics::level_zero_gc_config{
-            .deletion_grace_period
-            = config::mock_binding<std::chrono::milliseconds>(12h),
+            .deletion_grace_period = grace_period_.bind(),
             .throttle_progress
             = config::mock_binding<std::chrono::milliseconds>(
               throttle_progress),
@@ -255,6 +257,8 @@ public:
     chunked_vector<cloud_storage_clients::client::list_bucket_item> listed;
     std::unordered_set<ss::sstring> deleted;
     std::optional<int64_t> max_epoch;
+    config::mock_property<std::chrono::milliseconds> grace_period_{
+      std::chrono::milliseconds{12h}};
     std::unique_ptr<cloud_topics::level_zero_gc> gc;
     gc_test_config cfg{};
     object_storage_test_impl* storage_{nullptr};
@@ -640,6 +644,160 @@ TEST_F(LevelZeroGCScaleOutTest, ConcurrentDeletesPipelineSaturation) {
       [this, expected = (size_t)n] { return deleted.size() == expected; },
       50,
       100ms));
+}
+
+// =============================================================================
+// Idle backoff tests
+// =============================================================================
+
+// When all objects are too young, GC should not poll every
+// throttle_no_progress (10ms).
+TEST_F(LevelZeroGCTest, TooYoungObjectsSleepUntilEligible) {
+    for (int i = 0; i < 10; ++i) {
+        add_listed(i, 1h); // within 12h grace period
+    }
+    max_epoch = 100;
+    gc->start().get();
+
+    // Wait for the list count to stabilize after the first round
+    uint64_t prev = 0;
+    EXPECT_TRUE(Eventually([this, &prev] {
+        auto cur = storage_->list_call_count_;
+        bool stable = cur == prev && cur > 0;
+        prev = cur;
+        return stable;
+    }));
+    auto count_after_first = storage_->list_call_count_;
+
+    // GC should now be sleeping for ~11h (grace_period - object age).
+    EXPECT_FALSE(Eventually(
+      [this, count_after_first] {
+          return storage_->list_call_count_ > count_after_first;
+      },
+      25,
+      20ms));
+}
+
+// When no objects exist, GC should sleep beyond throttle_no_progress
+TEST_F(LevelZeroGCTest, EmptyStorageSleepsForGracePeriod) {
+    max_epoch = 100;
+    gc->start().get();
+
+    // Wait for the list count to stabilize after the first round
+    uint64_t prev = 0;
+    EXPECT_TRUE(Eventually([this, &prev] {
+        auto cur = storage_->list_call_count_;
+        bool stable = cur == prev && cur > 0;
+        prev = cur;
+        return stable;
+    }));
+    auto count_after_first = storage_->list_call_count_;
+
+    // GC should now be sleeping for the full grace period (12h).
+    EXPECT_FALSE(Eventually(
+      [this, count_after_first] {
+          return storage_->list_call_count_ > count_after_first;
+      },
+      25,
+      20ms));
+}
+
+// After all objects are deleted the worker should go idle: no LIST
+// operations over a sustained period.
+TEST_F(LevelZeroGCTest, IdleAfterAllDeleted) {
+    for (int i = 0; i < 20; ++i) {
+        add_listed(i, 24h);
+    }
+    max_epoch = 20;
+    gc->start().get();
+
+    EXPECT_TRUE(Eventually([this] { return deleted.size() == 20; }));
+
+    // Wait for the list count to stabilize — the worker may still be
+    // mid-round when the last delete completes.
+    uint64_t prev_list_count = 0;
+    EXPECT_TRUE(Eventually([this, &prev_list_count] {
+        auto cur = storage_->list_call_count_;
+        bool stable = cur == prev_list_count && cur > 0;
+        prev_list_count = cur;
+        return stable;
+    }));
+    auto list_count_baseline = storage_->list_call_count_;
+
+    // Wait another 500ms. GC should be asleep.
+    EXPECT_FALSE(Eventually(
+      [this, list_count_baseline] {
+          return storage_->list_call_count_ > list_count_baseline;
+      },
+      25,
+      20ms));
+}
+
+// After pause/start, the long backoff should be skipped so the first
+// round after restart runs immediately.
+TEST_F(LevelZeroGCTest, StartAfterPauseSkipsBackoff) {
+    for (int i = 0; i < 10; ++i) {
+        add_listed(i, 1h);
+    }
+    max_epoch = 100;
+    gc->start().get();
+
+    // Wait for the list count to stabilize after the first round
+    uint64_t prev = 0;
+    EXPECT_TRUE(Eventually([this, &prev] {
+        auto cur = storage_->list_call_count_;
+        bool stable = cur == prev && cur > 0;
+        prev = cur;
+        return stable;
+    }));
+    auto count_before = storage_->list_call_count_;
+
+    // GC should be asleep at this point
+    EXPECT_FALSE(Eventually(
+      [this, count_before] {
+          return storage_->list_call_count_ > count_before;
+      },
+      25,
+      20ms));
+
+    gc->pause().get();
+    gc->start().get();
+
+    // A fresh round should happen promptly (not after the old backoff)
+    EXPECT_TRUE(Eventually(
+      [this, count_before] {
+          return storage_->list_call_count_ > count_before;
+      },
+      20,
+      10ms));
+}
+
+// Reducing the grace period while the worker is sleeping should wake it
+// and trigger a fresh collection round.
+TEST_F(LevelZeroGCTest, GracePeriodReductionWakesWorker) {
+    for (int i = 0; i < 10; ++i) {
+        add_listed(i, 1h); // within 12h grace period → too young
+    }
+    max_epoch = 100;
+    gc->start().get();
+
+    // Wait for the list count to stabilize — worker should be sleeping
+    // for ~11h (grace_period - object age).
+    uint64_t prev = 0;
+    EXPECT_TRUE(Eventually([this, &prev] {
+        auto cur = storage_->list_call_count_;
+        bool stable = cur == prev && cur > 0;
+        prev = cur;
+        return stable;
+    }));
+    auto count_before = storage_->list_call_count_;
+
+    // Reduce grace period below the object age: objects are now eligible.
+    grace_period_.update(std::chrono::milliseconds{30min});
+
+    // Worker should wake up and delete the objects.
+    EXPECT_TRUE(Eventually([this] { return deleted.size() == 10; }));
+    EXPECT_GT(storage_->list_call_count_, count_before);
 }
 
 // =============================================================================

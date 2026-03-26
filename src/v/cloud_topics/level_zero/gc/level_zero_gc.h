@@ -422,6 +422,9 @@ public:
     state get_state() const;
 
 private:
+    seastar::condition_variable worker_cv_;
+    seastar::condition_variable reset_cv_;
+
     level_zero_gc_config config_;
     std::unique_ptr<epoch_source> epoch_source_;
     std::unique_ptr<safety_monitor> safety_monitor_;
@@ -430,17 +433,88 @@ private:
     bool should_shutdown_;
     bool resetting_{false};
     seastar::abort_source asrc_;
-    seastar::condition_variable worker_cv_;
     seastar::future<> worker_;
-    seastar::condition_variable reset_cv_;
 
     seastar::future<> worker();
+
+    /// Outcome of a collection round, used by the worker to decide
+    /// how long to sleep before the next round.
+    struct collection_outcome {
+        enum class status : int8_t {
+            /// Deleted objects — poll at throttle_progress.
+            progress,
+            /// Objects skipped because their epoch exceeds the
+            /// collectible epoch — poll at throttle_no_progress.
+            epoch_ineligible,
+            /// Objects skipped because they are too young —
+            /// sleep until the oldest one ages past the grace period.
+            age_ineligible,
+            /// No objects listed (empty storage or all deleted) —
+            /// sleep for the full grace period.
+            empty,
+            /// Delete worker at capacity — poll at throttle_progress.
+            at_capacity,
+        };
+
+        status st;
+        size_t eligible{0};
+
+        explicit collection_outcome(status s)
+          : st(s) {}
+
+        void mark_epoch_ineligible() { st = status::epoch_ineligible; }
+
+        /// Record that an object was skipped because it is younger
+        /// than the grace period. Tracks the oldest such object so
+        /// we can compute exactly when it becomes eligible.
+        /// Does not downgrade from epoch_ineligible.
+        void mark_age_ineligible(
+          std::chrono::system_clock::time_point last_modified) {
+            if (
+              !oldest_ineligible_modified_.has_value()
+              || last_modified < oldest_ineligible_modified_.value()) {
+                oldest_ineligible_modified_ = last_modified;
+            }
+            if (st != status::epoch_ineligible) {
+                st = status::age_ineligible;
+            }
+        }
+
+        /// Compute the backoff for the age_ineligible case: how long
+        /// until the oldest too-young object ages past the grace
+        /// period. Returns fallback if the object is already old
+        /// enough (race or clock skew).
+        std::chrono::milliseconds age_backoff(
+          std::chrono::milliseconds grace_period,
+          std::chrono::milliseconds fallback) const {
+            auto wake_at = oldest_ineligible_modified_.value() + grace_period;
+            auto now = std::chrono::system_clock::now();
+            return wake_at > now
+                     ? std::chrono::duration_cast<std::chrono::milliseconds>(
+                         wake_at - now)
+                     : fallback;
+        }
+
+    private:
+        std::optional<std::chrono::system_clock::time_point>
+          oldest_ineligible_modified_;
+    };
+
     enum class collection_error : int8_t;
-    seastar::future<std::expected<size_t, collection_error>> try_to_collect();
-    seastar::future<std::expected<size_t, collection_error>>
-    do_try_to_collect(std::optional<cluster_epoch>&);
+
+    seastar::future<std::expected<collection_outcome, collection_error>>
+    try_to_collect();
+
+    /// Returns eligible count, or nullopt when all prefixes are exhausted.
+    seastar::future<std::expected<std::optional<size_t>, collection_error>>
+    do_try_to_collect(std::optional<cluster_epoch>&, collection_outcome&);
 
     level_zero_gc_probe probe_;
+
+    /// Set by start() and reset() to force the worker to skip its next
+    /// backoff sleep so the first round after a state change runs
+    /// immediately.
+    bool skip_backoff_{false};
 
     class list_delete_worker;
     std::unique_ptr<list_delete_worker> delete_worker_{};

@@ -741,6 +741,9 @@ seastar::future<> level_zero_gc::start() {
     vlog(cd_log.info, "Starting cloud topics L0 GC worker");
     delete_worker_->start();
     safety_monitor_->start();
+    if (!should_run_) {
+        skip_backoff_ = true;
+    }
     should_run_ = true;
     worker_cv_.signal();
 }
@@ -774,6 +777,7 @@ seastar::future<> level_zero_gc::reset() {
     vlog(cd_log.info, "Resetting cloud topics L0 GC worker state");
 
     resetting_ = true;
+    skip_backoff_ = true;
     const bool was_running = should_run_;
 
     auto done = ss::defer([this] {
@@ -848,6 +852,11 @@ enum class level_zero_gc::collection_error : int8_t {
 seastar::future<> level_zero_gc::worker() {
     std::chrono::milliseconds backoff{0};
 
+    // Wake the worker when the grace period changes so we recalculate
+    // how long to sleep. Without this, a reduction in grace period
+    // wouldn't take effect until the current sleep expires.
+    config_.deletion_grace_period.watch([this] { worker_cv_.signal(); });
+
     while (true) {
         try {
             co_await worker_cv_.wait(
@@ -875,10 +884,18 @@ seastar::future<> level_zero_gc::worker() {
                 continue;
             }
 
+            if (std::exchange(skip_backoff_, false)) {
+                backoff = std::chrono::milliseconds{0};
+            }
             if (backoff.count() > 0) {
                 auto t0 = ss::lowres_clock::now();
+                // Use the CV for the backoff sleep so that config
+                // changes (grace period watcher) and state changes
+                // (pause/stop/reset) can wake us without aborting
+                // asrc_, which is reserved for cancelling in-flight
+                // service calls.
                 (co_await seastar::coroutine::as_future(
-                   seastar::sleep_abortable(backoff, asrc_)))
+                   worker_cv_.wait(backoff)))
                   .ignore_ready_future();
                 auto elapsed
                   = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -890,10 +907,23 @@ seastar::future<> level_zero_gc::worker() {
 
             auto res = co_await try_to_collect();
             if (res.has_value()) {
-                if (res.value() > 0) {
+                using enum collection_outcome::status;
+                switch (res->st) {
+                case progress:
+                case at_capacity:
                     backoff = config_.throttle_progress();
-                } else {
+                    break;
+                case epoch_ineligible:
                     backoff = config_.throttle_no_progress();
+                    break;
+                case age_ineligible:
+                    backoff = res->age_backoff(
+                      config_.deletion_grace_period(),
+                      config_.throttle_no_progress());
+                    break;
+                case empty:
+                    backoff = config_.deletion_grace_period();
+                    break;
                 }
             } else {
                 switch (res.error()) {
@@ -916,31 +946,56 @@ seastar::future<> level_zero_gc::worker() {
     vlog(cd_log.info, "Level zero GC worker is exiting");
 }
 
-seastar::future<std::expected<size_t, level_zero_gc::collection_error>>
+seastar::future<std::expected<
+  level_zero_gc::collection_outcome,
+  level_zero_gc::collection_error>>
 level_zero_gc::try_to_collect() {
+    using enum collection_outcome::status;
+
     // Ultra-temporary cache to avoid repeatedly querying for max gc-able epoch.
     // Since the result will always be valid clusterwide, compute exactly once
     // per collection loop.
     std::optional<cluster_epoch> max_gc_epoch;
-    size_t total_eligible{0};
+    collection_outcome outcome{empty};
     probe_.reset_deletion_epoch();
     probe_.collection_round();
-    while (delete_worker_->has_capacity()) {
-        auto res = co_await do_try_to_collect(std::ref(max_gc_epoch));
-        if (!res.has_value()) {
-            co_return res;
-        }
-        if (res.value() == 0) {
-            break;
-        }
-        total_eligible += res.value();
+
+    if (!delete_worker_->has_capacity()) {
+        co_return collection_outcome{at_capacity};
     }
 
-    co_return total_eligible;
+    while (delete_worker_->has_capacity()) {
+        auto res = co_await do_try_to_collect(std::ref(max_gc_epoch), outcome);
+        if (!res.has_value()) {
+            co_return std::unexpected(res.error());
+        }
+        if (!res->has_value()) {
+            // All prefixes exhausted.
+            break;
+        }
+        outcome.eligible += res->value();
+        if (res->value() == 0) {
+            // Page had objects but none were eligible. Pause before
+            // the next page so the full scan doesn't burst LIST calls.
+            (co_await seastar::coroutine::as_future(
+               seastar::sleep_abortable(config_.throttle_progress(), asrc_)))
+              .ignore_ready_future();
+            if (asrc_.abort_requested()) {
+                break;
+            }
+        }
+    }
+
+    if (outcome.eligible > 0) {
+        outcome.st = progress;
+    }
+    co_return outcome;
 }
 
-seastar::future<std::expected<size_t, level_zero_gc::collection_error>>
-level_zero_gc::do_try_to_collect(std::optional<cluster_epoch>& max_gc_epoch) {
+seastar::future<
+  std::expected<std::optional<size_t>, level_zero_gc::collection_error>>
+level_zero_gc::do_try_to_collect(
+  std::optional<cluster_epoch>& max_gc_epoch, collection_outcome& outcome) {
     auto candidate_objects = co_await delete_worker_->next_page();
     if (!candidate_objects.has_value()) {
         vlog(
@@ -948,6 +1003,10 @@ level_zero_gc::do_try_to_collect(std::optional<cluster_epoch>& max_gc_epoch) {
           "Received error listing objects during L0 GC: {}",
           candidate_objects.error());
         co_return std::unexpected(collection_error::service_error);
+    }
+
+    if (candidate_objects.value().empty()) {
+        co_return std::nullopt;
     }
 
     if (!max_gc_epoch.has_value()) {
@@ -1049,6 +1108,7 @@ level_zero_gc::do_try_to_collect(std::optional<cluster_epoch>& max_gc_epoch) {
               "Ignoring object with non-collectible epoch: {} > {}",
               object.key,
               max_gc_epoch.value());
+            outcome.mark_epoch_ineligible();
             probe_.object_skipped_not_eligible();
             continue;
         }
@@ -1061,6 +1121,7 @@ level_zero_gc::do_try_to_collect(std::optional<cluster_epoch>& max_gc_epoch) {
               object.key,
               object.last_modified,
               max_gc_birthday);
+            outcome.mark_age_ineligible(object.last_modified);
             probe_.object_skipped_too_young();
             continue;
         }

@@ -38,6 +38,7 @@ class api;
 
 namespace cloud_topics {
 class data_plane_api;
+class inflight_write_tracker;
 class cloud_topics_manager;
 template<class>
 class level_zero_gc_t;
@@ -106,6 +107,7 @@ private:
     ss::sharded<level_one_reader_probe> _l1_reader_probe;
     ss::sharded<l1::file_io_probe> _l1_file_io_probe;
     ss::sharded<l1_reader_cache> _l1_reader_cache;
+    std::unique_ptr<inflight_write_tracker> tracker;
     std::unique_ptr<data_plane_api> data_plane;
     ss::sharded<state_accessors> state;
     ss::sharded<l1::file_io> l1_io;

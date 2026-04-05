@@ -1,0 +1,107 @@
+direction: down
+
+title: |md
+  ## L0 GC: Anatomy of a Collection Round
+|
+
+safety: "safety monitor" {
+  shape: diamond
+  style.fill: "#fff8e0"
+  style.stroke: "#c0a030"
+}
+
+epoch_source: "epoch source\n(topic table + health reports)" {
+  shape: cloud
+  style.fill: "#f0f0f0"
+  style.stroke: "#999"
+}
+
+max_epoch: "max GC-eligible epoch M\nmin(max per replica, across all partitions)" {
+  shape: parallelogram
+  style.fill: "#d4edda"
+  style.stroke: "#28a745"
+}
+
+listing: "list/delete worker" {
+  style.fill: "#f5f5ff"
+  style.stroke: "#666"
+
+  prefix: "prefix compressor\n(this shard's slice of [0,999])" {
+    style.fill: "#f0f0f0"
+    style.stroke: "#999"
+  }
+
+  list: "LIST page\n(object store)" {
+    shape: cylinder
+    style.fill: "#f0f0f0"
+    style.stroke: "#999"
+  }
+
+  prefix -> list: "next prefix"
+}
+
+filter: "filter objects" {
+  style.fill: "#f5f5ff"
+  style.stroke: "#666"
+
+  epoch_check: "epoch ≤ M?" {
+    shape: diamond
+  }
+  age_check: "age > grace period?" {
+    shape: diamond
+  }
+  epoch_check -> age_check: yes
+}
+
+delete: "batch DELETE\n(object store)" {
+  shape: cylinder
+  style.fill: "#fde8e8"
+  style.stroke: "#e05050"
+}
+
+backoff: "compute backoff\nfrom outcome" {
+  shape: oval
+  style.fill: "#f0f0f0"
+  style.stroke: "#999"
+}
+
+sleep: "sleep" {
+  shape: oval
+  style.fill: "#f0f0f0"
+  style.stroke: "#999"
+}
+
+# Flow
+safety -> max_epoch: "healthy" {
+  style.stroke: "#28a745"
+  style.font-color: "#28a745"
+}
+safety -> sleep: "unhealthy" {
+  style.stroke: "#e05050"
+  style.font-color: "#e05050"
+}
+
+max_epoch <- epoch_source: "query" {
+  style.stroke: "#999"
+  style.stroke-dash: 3
+}
+
+max_epoch -> listing
+
+listing.list -> filter
+listing.list -> listing.prefix: "more prefixes" {
+  style.stroke: "#999"
+  style.stroke-dash: 3
+}
+
+filter.age_check -> delete: "eligible"
+filter.epoch_check -> backoff: "epoch too high" {
+  style.stroke: "#e05050"
+  style.font-color: "#e05050"
+}
+filter.age_check -> backoff: "too young" {
+  style.stroke: "#c0a030"
+  style.font-color: "#c0a030"
+}
+delete -> backoff
+backoff -> sleep

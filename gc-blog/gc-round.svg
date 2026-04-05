@@ -1,0 +1,148 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 605" font-family="Inter, Helvetica, Arial, sans-serif">
+  <style>
+    text { font-size: 12px; fill: #333; }
+    .title { font-size: 15px; font-weight: bold; fill: #111; }
+    .node-text { font-size: 11px; }
+    .small { font-size: 9px; fill: #888; }
+    .edge-label { font-size: 10px; font-weight: bold; }
+  </style>
+
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#999"/>
+    </marker>
+    <marker id="ag" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#28a745"/>
+    </marker>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#e05050"/>
+    </marker>
+    <marker id="ay" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#c0a030"/>
+    </marker>
+    <marker id="ab" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#4a90d9"/>
+    </marker>
+    <marker id="adash" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#aaa"/>
+    </marker>
+  </defs>
+
+  <!--
+    Layout: main spine at x=240, side branches left/right
+    Vertical stations:
+      40   safety diamond
+      130  max epoch
+      210  list/delete worker box (tall, contains prefix + list)
+      370  filter box (contains epoch check + age check)
+      510  delete
+      570  backoff
+      630  sleep
+  -->
+
+  <!-- Title -->
+  <text x="280" y="24" text-anchor="middle" class="title">L0 GC: Anatomy of a Collection Round</text>
+
+  <!-- ====== SAFETY MONITOR ====== -->
+  <polygon points="240,44 310,72 240,100 170,72" fill="#fff8e0" stroke="#c0a030"/>
+  <text x="240" y="69" text-anchor="middle" class="node-text">safety</text>
+  <text x="240" y="80" text-anchor="middle" class="node-text">monitor</text>
+
+  <!-- unhealthy → sleep (left, then down) -->
+  <line x1="170" y1="72" x2="80" y2="72" stroke="#e05050" stroke-width="1.5" marker-end="url(#ar)"/>
+  <text x="125" y="65" text-anchor="middle" class="edge-label" fill="#e05050">unhealthy</text>
+
+  <rect x="30" y="58" width="48" height="28" rx="12" fill="#f0f0f0" stroke="#999"/>
+  <text x="54" y="76" text-anchor="middle" class="node-text" fill="#999">sleep</text>
+
+  <!-- healthy ↓ -->
+  <line x1="240" y1="100" x2="240" y2="118" stroke="#28a745" stroke-width="1.5" marker-end="url(#ag)"/>
+  <text x="250" y="112" class="edge-label" fill="#28a745">healthy</text>
+
+  <!-- ====== MAX EPOCH ====== -->
+  <rect x="125" y="120" width="230" height="36" rx="4" fill="#d4edda" stroke="#28a745"/>
+  <text x="240" y="136" text-anchor="middle" font-size="12" fill="#155724" font-weight="bold">max GC-eligible epoch M</text>
+  <text x="240" y="150" text-anchor="middle" class="small">min(max per replica, across all partitions)</text>
+
+  <!-- epoch source cloud, off to the right -->
+  <ellipse cx="490" cy="138" rx="85" ry="28" fill="#f0f0f0" stroke="#999" stroke-dasharray="4,2"/>
+  <text x="490" y="134" text-anchor="middle" class="node-text" fill="#666">epoch source</text>
+  <text x="490" y="146" text-anchor="middle" class="small">topic table + health reports</text>
+
+  <!-- dashed arrow from epoch source to max epoch -->
+  <line x1="405" y1="138" x2="357" y2="138" stroke="#999" stroke-dasharray="4,2" marker-end="url(#adash)"/>
+
+  <!-- ↓ to listing -->
+  <line x1="240" y1="156" x2="240" y2="178" stroke="#999" marker-end="url(#a)"/>
+
+  <!-- ====== LIST FROM OBJECT STORE ====== -->
+  <!-- cylinder: bottom ellipse, then body covers its top half, then top lid -->
+  <ellipse cx="240" cy="234" rx="95" ry="10" fill="#e8e8e8" stroke="#999"/>
+  <rect x="145" y="190" width="190" height="44" fill="#e8e8e8"/>
+  <!-- side strokes only (not top/bottom which the ellipses handle) -->
+  <line x1="145" y1="190" x2="145" y2="234" stroke="#999"/>
+  <line x1="335" y1="190" x2="335" y2="234" stroke="#999"/>
+  <ellipse cx="240" cy="190" rx="95" ry="10" fill="#ddd" stroke="#999"/>
+  <text x="240" y="212" text-anchor="middle" class="node-text">LIST L0 objects from object store</text>
+  <text x="240" y="224" text-anchor="middle" class="small">paginated across this shard's prefixes</text>
+
+  <!-- self-loop for pagination -->
+  <path d="M 335 216 Q 370 216 370 204 Q 370 192 335 192" fill="none" stroke="#aaa" stroke-dasharray="4,2" marker-end="url(#adash)"/>
+  <text x="390" y="200" class="small" fill="#aaa">next page /</text>
+  <text x="390" y="210" class="small" fill="#aaa">next prefix</text>
+
+  <!-- ↓ out to filter -->
+  <line x1="240" y1="244" x2="240" y2="272" stroke="#999" marker-end="url(#a)"/>
+
+  <!-- ====== FILTER ====== -->
+  <rect x="165" y="274" width="150" height="170" rx="6" fill="#f8f8ff" stroke="#888"/>
+  <text x="177" y="290" font-size="11" font-weight="bold" fill="#555">filter each object</text>
+
+  <!-- epoch check diamond -->
+  <polygon points="240,298 290,318 240,338 190,318" fill="#fff" stroke="#999"/>
+  <text x="240" y="322" text-anchor="middle" font-size="10">epoch ≤ M?</text>
+
+  <!-- epoch yes ↓ -->
+  <line x1="240" y1="338" x2="240" y2="352" stroke="#28a745" stroke-width="1.5" marker-end="url(#ag)"/>
+
+  <!-- age check diamond -->
+  <polygon points="240,354 290,374 240,394 190,374" fill="#fff" stroke="#999"/>
+  <text x="240" y="371" text-anchor="middle" font-size="10">age ></text>
+  <text x="240" y="382" text-anchor="middle" font-size="10">grace?</text>
+
+  <!-- age yes ↓ eligible -->
+  <line x1="240" y1="394" x2="240" y2="408" stroke="#28a745" stroke-width="1.5" marker-end="url(#ag)"/>
+
+  <rect x="210" y="412" width="60" height="22" rx="4" fill="#d4edda" stroke="#28a745"/>
+  <text x="240" y="427" text-anchor="middle" font-size="10" fill="#155724" font-weight="bold">eligible</text>
+
+  <!-- ↓ out of filter, splits to backoff and delete -->
+  <line x1="240" y1="444" x2="240" y2="480" stroke="#999" stroke-width="1.5"/>
+
+  <!-- left: to backoff -->
+  <line x1="240" y1="480" x2="240" y2="510" stroke="#999" stroke-width="1.5" marker-end="url(#a)"/>
+
+  <!-- right: to delete (async) -->
+  <line x1="240" y1="480" x2="380" y2="480" stroke="#999" stroke-width="1.5"/>
+  <line x1="380" y1="480" x2="380" y2="504" stroke="#999" stroke-width="1.5" marker-end="url(#a)"/>
+  <text x="310" y="474" text-anchor="middle" class="small" fill="#666">async</text>
+
+  <!-- ====== DELETE ====== -->
+  <ellipse cx="380" cy="550" rx="50" ry="8" fill="#fde8e8" stroke="#e05050"/>
+  <rect x="330" y="516" width="100" height="34" fill="#fde8e8"/>
+  <line x1="330" y1="516" x2="330" y2="550" stroke="#e05050"/>
+  <line x1="430" y1="516" x2="430" y2="550" stroke="#e05050"/>
+  <ellipse cx="380" cy="516" rx="50" ry="8" fill="#f8d0d0" stroke="#e05050"/>
+  <text x="380" y="537" text-anchor="middle" class="node-text" fill="#c03030">batch DELETE</text>
+
+  <!-- ====== BACKOFF ====== -->
+  <ellipse cx="240" cy="526" rx="70" ry="16" fill="#f0f0f0" stroke="#999"/>
+  <text x="240" y="530" text-anchor="middle" class="node-text">compute backoff</text>
+
+  <!-- ↓ sleep -->
+  <line x1="240" y1="542" x2="240" y2="564" stroke="#999" marker-end="url(#a)"/>
+
+  <!-- ====== SLEEP ====== -->
+  <ellipse cx="240" cy="580" rx="40" ry="16" fill="#f0f0f0" stroke="#999"/>
+  <text x="240" y="584" text-anchor="middle" class="node-text">sleep</text>
+</svg>

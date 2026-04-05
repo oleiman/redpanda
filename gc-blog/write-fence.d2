@@ -1,0 +1,117 @@
+direction: down
+
+title: |md
+  ## Write-Path Epoch Fencing
+  Prevents stale-epoch batches from entering the replication pipeline
+|
+
+rows: {
+  label: ""
+  style.fill: transparent
+  style.stroke: transparent
+  grid-rows: 4
+  grid-columns: 1
+  grid-gap: 40
+  row1: {
+    label: ""
+    style.fill: transparent
+    style.stroke: transparent
+
+    write: "write arrives with epoch E" {
+      shape: oval
+    }
+  }
+
+  row2: {
+    label: ""
+    grid-rows: 1
+    grid-columns: 2
+    grid-gap: 40
+    style.fill: transparent
+    style.stroke: transparent
+
+    term_check: "term changed\nsince last fence?" {
+      shape: diamond
+    }
+
+    reset: "reset seen window\nto applied window\n[prev_applied, max_applied]" {
+      style.fill: "#fff8e0"
+      style.stroke: "#c0a030"
+    }
+
+    term_check -> reset: yes {
+      style.stroke: "#c0a030"
+    }
+  }
+
+  row3: {
+    label: ""
+    grid-rows: 1
+    grid-columns: 2
+    grid-gap: 40
+    style.fill: transparent
+    style.stroke: transparent
+
+    where: "E vs seen window\n[prev_seen, max_seen]" {
+      shape: diamond
+    }
+
+    reject: "REJECT\nstale epoch" {
+      style.fill: "#fde8e8"
+      style.stroke: "#e05050"
+      style.font-color: "#c03030"
+      style.bold: true
+    }
+
+    where -> reject: "E < prev_seen" {
+      style.stroke: "#e05050"
+      style.font-color: "#e05050"
+    }
+  }
+
+  row4: {
+    label: ""
+    grid-rows: 1
+    grid-columns: 3
+    grid-gap: 20
+    style.fill: transparent
+    style.stroke: transparent
+
+    slide: "acquire write lock\nprev_seen = max_seen\nmax_seen = E" {
+      style.fill: "#e8f0ff"
+      style.stroke: "#4a90d9"
+    }
+
+    read_lock: "acquire read lock\n(concurrent writers OK)" {
+      style.fill: "#e8f4e8"
+      style.stroke: "#28a745"
+    }
+
+    accept: "ACCEPT\nenter replication pipeline" {
+      style.fill: "#d4edda"
+      style.stroke: "#28a745"
+      style.font-color: "#155724"
+      style.bold: true
+    }
+  }
+
+  row1.write -> row2.term_check
+  row2.term_check -> row3.where: no
+  row2.reset -> row3.where
+
+  row3.where -> row4.read_lock: "prev_seen ≤ E ≤ max_seen" {
+    style.stroke: "#28a745"
+    style.font-color: "#28a745"
+  }
+
+  row3.where -> row4.slide: "E > max_seen" {
+    style.stroke: "#4a90d9"
+    style.font-color: "#4a90d9"
+  }
+
+  row4.slide -> row4.accept: "downgrade to\nread lock" {
+    style.stroke: "#28a745"
+    style.font-color: "#28a745"
+  }
+  row4.read_lock -> row4.accept
+}

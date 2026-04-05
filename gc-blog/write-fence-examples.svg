@@ -1,0 +1,179 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 560" font-family="Inter, Helvetica, Arial, sans-serif">
+  <style>
+    text { font-size: 13px; fill: #333; }
+    .title { font-size: 16px; font-weight: bold; fill: #111; }
+    .subtitle { font-size: 12px; fill: #666; }
+    .step-label { font-size: 13px; font-weight: bold; fill: #222; }
+    .tick { stroke: #bbb; stroke-width: 1; }
+    .tick-label { font-size: 10px; fill: #999; }
+    .result { font-size: 13px; font-weight: bold; }
+  </style>
+
+  <!--
+    Epoch number line: 0..15 mapped to x=50..500 (450px)
+    Each epoch = 30px
+
+    Vertical layout per example:
+      y=14   step label
+      y=34   bar top (h=26, bottom=60)
+      y=60-66 ticks
+      y=68   arrow tip (just below ticks)
+      y=76   arrow base
+      y=76-82 tail
+      y=94   epoch label
+  -->
+
+  <!-- Title -->
+  <text x="360" y="26" text-anchor="middle" class="title">Write-Path Fencing: Seen Window Examples</text>
+  <text x="360" y="44" text-anchor="middle" class="subtitle">Incoming writes are accepted or rejected based on their epoch vs. the seen window</text>
+
+  <!-- ====== EXAMPLE A: in-window, accepted ====== -->
+  <g transform="translate(0, 60)">
+    <text x="30" y="14" class="step-label">a) Write at E=7, seen window [5, 10]</text>
+
+    <!-- Epoch bar -->
+    <rect x="50" y="34" width="450" height="26" rx="4" fill="#f0f0f0" stroke="#ccc"/>
+
+    <!-- Window region [5, 10] → x=200..350 -->
+    <rect x="200" y="34" width="150" height="26" rx="0" fill="#d4edda" stroke="#28a745" opacity="0.6"/>
+    <text x="275" y="51" text-anchor="middle" font-size="10" fill="#155724" font-weight="bold">[5, 10]</text>
+
+    <!-- Ticks -->
+    <line x1="50"  y1="60" x2="50"  y2="66" class="tick"/>
+    <line x1="200" y1="60" x2="200" y2="66" class="tick"/>
+    <line x1="350" y1="60" x2="350" y2="66" class="tick"/>
+    <line x1="500" y1="60" x2="500" y2="66" class="tick"/>
+    <text x="50"  y="76" text-anchor="middle" class="tick-label">0</text>
+    <text x="200" y="76" text-anchor="middle" class="tick-label">5</text>
+    <text x="350" y="76" text-anchor="middle" class="tick-label">10</text>
+    <text x="500" y="76" text-anchor="middle" class="tick-label">15</text>
+
+    <!-- Write arrow at E=7 (x=260) -->
+    <polygon points="260,68 256,76 264,76" fill="#2eaa2e" opacity="0.7"/>
+    <line x1="260" y1="76" x2="260" y2="82" stroke="#2eaa2e" stroke-width="2" opacity="0.7"/>
+    <text x="260" y="94" text-anchor="middle" font-size="11" fill="#2eaa2e" font-weight="bold">E=7</text>
+
+    <!-- Result -->
+    <text x="560" y="46" class="result" fill="#28a745">ACCEPT</text>
+    <text x="560" y="62" font-size="11" fill="#888">read lock only</text>
+  </g>
+
+  <!-- ====== EXAMPLE B: above window, slide + accept ====== -->
+  <g transform="translate(0, 175)">
+    <text x="30" y="14" class="step-label">b) Write at E=12, seen window [5, 10] → slides to [10, 12]</text>
+
+    <!-- Epoch bar -->
+    <rect x="50" y="34" width="450" height="26" rx="4" fill="#f0f0f0" stroke="#ccc"/>
+
+    <!-- Old window [5, 10] (faded) -->
+    <rect x="200" y="34" width="150" height="26" rx="0" fill="#e8f0ff" stroke="#4a90d9" opacity="0.3" stroke-dasharray="4,2"/>
+
+    <!-- New window [10, 12] → x=350..410 -->
+    <rect x="350" y="34" width="60" height="26" rx="0" fill="#d4edda" stroke="#28a745" opacity="0.6"/>
+    <text x="380" y="51" text-anchor="middle" font-size="10" fill="#155724" font-weight="bold">[10, 12]</text>
+
+    <!-- Slide arrow -->
+    <path d="M 275 66 C 295 78 345 78 375 66" fill="none" stroke="#4a90d9" stroke-width="1.5" stroke-dasharray="3,2"/>
+    <polygon points="375,66 369,72 372,64" fill="#4a90d9"/>
+    <text x="328" y="86" text-anchor="middle" font-size="10" fill="#4a90d9">slide</text>
+
+    <!-- Ticks -->
+    <line x1="50"  y1="60" x2="50"  y2="66" class="tick"/>
+    <line x1="200" y1="60" x2="200" y2="66" class="tick"/>
+    <line x1="350" y1="60" x2="350" y2="66" class="tick"/>
+    <line x1="500" y1="60" x2="500" y2="66" class="tick"/>
+    <text x="50"  y="76" text-anchor="middle" class="tick-label">0</text>
+    <text x="200" y="76" text-anchor="middle" class="tick-label">5</text>
+    <text x="350" y="76" text-anchor="middle" class="tick-label">10</text>
+    <text x="500" y="76" text-anchor="middle" class="tick-label">15</text>
+
+    <!-- Write arrow at E=12 (x=410) -->
+    <polygon points="410,68 406,76 414,76" fill="#2eaa2e" opacity="0.7"/>
+    <line x1="410" y1="76" x2="410" y2="82" stroke="#2eaa2e" stroke-width="2" opacity="0.7"/>
+    <text x="410" y="94" text-anchor="middle" font-size="11" fill="#2eaa2e" font-weight="bold">E=12</text>
+
+    <!-- Result -->
+    <text x="560" y="46" class="result" fill="#28a745">ACCEPT</text>
+    <text x="560" y="62" font-size="11" fill="#888">write lock → slide → read lock</text>
+  </g>
+
+  <!-- ====== EXAMPLE C: below window, rejected ====== -->
+  <g transform="translate(0, 290)">
+    <text x="30" y="14" class="step-label">c) Write at E=3, seen window [5, 10]</text>
+
+    <!-- Epoch bar -->
+    <rect x="50" y="34" width="450" height="26" rx="4" fill="#f0f0f0" stroke="#ccc"/>
+
+    <!-- Window region [5, 10] -->
+    <rect x="200" y="34" width="150" height="26" rx="0" fill="#d4edda" stroke="#28a745" opacity="0.6"/>
+    <text x="275" y="51" text-anchor="middle" font-size="10" fill="#155724" font-weight="bold">[5, 10]</text>
+
+    <!-- Ticks -->
+    <line x1="50"  y1="60" x2="50"  y2="66" class="tick"/>
+    <line x1="200" y1="60" x2="200" y2="66" class="tick"/>
+    <line x1="350" y1="60" x2="350" y2="66" class="tick"/>
+    <line x1="500" y1="60" x2="500" y2="66" class="tick"/>
+    <text x="50"  y="76" text-anchor="middle" class="tick-label">0</text>
+    <text x="200" y="76" text-anchor="middle" class="tick-label">5</text>
+    <text x="350" y="76" text-anchor="middle" class="tick-label">10</text>
+    <text x="500" y="76" text-anchor="middle" class="tick-label">15</text>
+
+    <!-- Write arrow at E=3 (x=140) -->
+    <polygon points="140,68 136,76 144,76" fill="#e05050" opacity="0.7"/>
+    <line x1="140" y1="76" x2="140" y2="82" stroke="#e05050" stroke-width="2" opacity="0.7"/>
+    <text x="140" y="94" text-anchor="middle" font-size="11" fill="#e05050" font-weight="bold">E=3</text>
+
+    <!-- Result -->
+    <text x="560" y="51" class="result" fill="#e05050">REJECT — stale</text>
+  </g>
+
+  <!-- ====== EXAMPLE D: leadership change ====== -->
+  <g transform="translate(0, 405)">
+    <text x="30" y="14" class="step-label">d) Leadership change — seen window resets to applied window [7, 9]</text>
+
+    <!-- Epoch bar -->
+    <rect x="50" y="34" width="450" height="26" rx="4" fill="#f0f0f0" stroke="#ccc"/>
+
+    <!-- Old seen window [5, 10] (struck through) -->
+    <rect x="200" y="34" width="150" height="26" rx="0" fill="#fff" stroke="#ccc" opacity="0.4" stroke-dasharray="4,2"/>
+    <line x1="200" y1="34" x2="350" y2="60" stroke="#ccc" stroke-width="1"/>
+
+    <!-- New: applied window [7, 9] → x=260..320 -->
+    <rect x="260" y="34" width="60" height="26" rx="0" fill="#fff8e0" stroke="#c0a030" opacity="0.7"/>
+    <text x="290" y="51" text-anchor="middle" font-size="10" fill="#8a7020" font-weight="bold">[7, 9]</text>
+
+    <!-- Ticks -->
+    <line x1="50"  y1="60" x2="50"  y2="66" class="tick"/>
+    <line x1="200" y1="60" x2="200" y2="66" class="tick"/>
+    <line x1="260" y1="60" x2="260" y2="66" class="tick"/>
+    <line x1="320" y1="60" x2="320" y2="66" class="tick"/>
+    <line x1="350" y1="60" x2="350" y2="66" class="tick"/>
+    <line x1="500" y1="60" x2="500" y2="66" class="tick"/>
+    <text x="50"  y="76" text-anchor="middle" class="tick-label">0</text>
+    <text x="200" y="76" text-anchor="middle" class="tick-label">5</text>
+    <text x="260" y="76" text-anchor="middle" class="tick-label">7</text>
+    <text x="320" y="76" text-anchor="middle" class="tick-label">9</text>
+    <text x="350" y="76" text-anchor="middle" class="tick-label">10</text>
+    <text x="500" y="76" text-anchor="middle" class="tick-label">15</text>
+
+    <!-- Result -->
+    <text x="560" y="44" class="result" fill="#c0a030">RESET</text>
+    <text x="560" y="60" font-size="11" fill="#888">falls back to persisted</text>
+    <text x="560" y="74" font-size="11" fill="#888">applied window</text>
+  </g>
+
+  <!-- Legend -->
+  <g transform="translate(30, 520)">
+    <rect x="0" y="0" width="660" height="30" rx="4" fill="#fafafa" stroke="#ddd"/>
+    <rect x="15" y="8" width="30" height="14" rx="2" fill="#d4edda" stroke="#28a745" opacity="0.6"/>
+    <text x="52" y="19" font-size="11" fill="#555">seen window</text>
+    <polygon points="185,8 180,18 190,18" fill="#2eaa2e" opacity="0.7"/>
+    <line x1="185" y1="18" x2="185" y2="24" stroke="#2eaa2e" stroke-width="2" opacity="0.7"/>
+    <text x="198" y="19" font-size="11" fill="#555">accepted write</text>
+    <polygon points="330,8 325,18 335,18" fill="#e05050" opacity="0.7"/>
+    <line x1="330" y1="18" x2="330" y2="24" stroke="#e05050" stroke-width="2" opacity="0.7"/>
+    <text x="343" y="19" font-size="11" fill="#555">rejected write</text>
+    <rect x="440" y="8" width="30" height="14" rx="2" fill="#fff8e0" stroke="#c0a030" opacity="0.7"/>
+    <text x="477" y="19" font-size="11" fill="#555">applied window (fallback)</text>
+  </g>
+</svg>

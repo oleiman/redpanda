@@ -714,14 +714,14 @@ class SISettings:
                     ][1]
 
         elif self.cloud_storage_type == CloudStorageType.ABS:
-            self.cloud_storage_azure_shared_key = self.ABS_AZURITE_KEY
             self.cloud_storage_azure_storage_account = self.ABS_AZURITE_ACCOUNT
-
             self._cloud_storage_azure_container = f"panda-container-{uuid.uuid1()}"
             self.cloud_storage_api_endpoint = (
                 f"{self.cloud_storage_azure_storage_account}.blob.localhost"
             )
             self.cloud_storage_api_endpoint_port = AZURITE_PORT
+            self.cloud_storage_credentials_source = cloud_storage_credentials_source
+            self.cloud_storage_azure_shared_key = self.ABS_AZURITE_KEY
         else:
             assert False, (
                 f"Unexpected value provided for 'cloud_storage_type' injected arg: {self.cloud_storage_type}"
@@ -839,6 +839,41 @@ class SISettings:
                 self.addressing_style = S3AddressingStyle.VIRTUAL
 
     def _load_abs_context(self, logger: Logger, test_context: TestContext) -> None:
+        # Check both globals and the value already set by __init__ (a test
+        # may request a specific credential source via SISettings params).
+        cred_source = test_context.globals.get(
+            self.GLOBAL_CLOUD_STORAGE_CRED_SOURCE_KEY,
+            self.cloud_storage_credentials_source,
+        )
+
+        if cred_source in (
+            "azure_aks_oidc_federation",
+            "azure_vm_instance_metadata",
+        ):
+            storage_account = test_context.globals.get(
+                self.GLOBAL_ABS_STORAGE_ACCOUNT, None
+            )
+            if storage_account:
+                logger.info("Running on Azure with OAuth credentials")
+                self.cloud_storage_credentials_source = cred_source
+                self.cloud_storage_azure_storage_account = storage_account
+                # Keep the shared key for the ducktape ABSClient (container
+                # management) but Redpanda itself uses OAuth — the shared
+                # key is omitted from the Redpanda config by update_rp_conf
+                # when cloud_storage_credentials_source != config_file.
+                shared_key = test_context.globals.get(self.GLOBAL_ABS_SHARED_KEY, None)
+                if shared_key:
+                    self.cloud_storage_azure_shared_key = shared_key
+                self.cloud_storage_disable_tls = False
+                self.cloud_storage_api_endpoint_port = 443
+                self.endpoint_url = None
+                self.cloud_storage_trust_file = None
+            else:
+                logger.info("Running locally against Azurite with OAuth")
+                # Local Azurite settings already configured in __init__
+            return
+
+        # Existing shared key path
         storage_account = test_context.globals.get(
             self.GLOBAL_ABS_STORAGE_ACCOUNT, None
         )
@@ -957,7 +992,17 @@ class SISettings:
                 self.cloud_storage_azure_storage_account
             )
             conf["cloud_storage_azure_container"] = self._cloud_storage_azure_container
-            conf["cloud_storage_azure_shared_key"] = self.cloud_storage_azure_shared_key
+            if self.cloud_storage_azure_shared_key:
+                conf["cloud_storage_azure_shared_key"] = (
+                    self.cloud_storage_azure_shared_key
+                )
+            if (
+                hasattr(self, "cloud_storage_credentials_source")
+                and self.cloud_storage_credentials_source != "config_file"
+            ):
+                conf["cloud_storage_credentials_source"] = (
+                    self.cloud_storage_credentials_source
+                )
 
         conf["log_segment_size"] = self.log_segment_size
         if self.log_segment_size_min is not None:

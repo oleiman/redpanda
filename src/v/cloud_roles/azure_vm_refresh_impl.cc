@@ -35,36 +35,19 @@ std::ostream& azure_vm_refresh_impl::print(std::ostream& os) const {
 ss::future<api_response> azure_vm_refresh_impl::fetch_credentials() {
     auto client_id_opt = config::shard_local_cfg()
                            .cloud_storage_azure_managed_identity_id.value();
-    if (unlikely(!client_id_opt.has_value())) {
-        // This implementation requires client_id from config to be set.
-        // Strictly speaking, IMDS service does not require it if there is only
-        // a system-assigned managed identity or only one user-assigned managed
-        // identity but it would be brittle to not specify it, it could break if
-        // the user added a new one. This verification is also performed in
-        // admin/server.cc::patch_cluster_config
-        vlog(
-          clrl_log.error,
-          "missing cloud_storage_azure_managed_identity_id in config");
-        // return value is not a perfect match but it works
-        co_return api_request_error{
-          .status = boost::beast::http::status::bad_request,
-          .reason = "missing cloud_storage_azure_managed_identity_id",
-          .error_kind = api_request_error_kind::failed_abort};
+    // IMDS does not require client_id when the VM has a single managed
+    // identity (system-assigned or one user-assigned). Include it only
+    // when explicitly configured.
+    ss::sstring target = "/metadata/identity/oauth2/token?"
+                         "api-version=2018-02-01"
+                         "&resource=https%3A%2F%2Fstorage.azure.com%2F";
+    if (client_id_opt.has_value()) {
+        target += fmt::format("&client_id={}", client_id_opt.value());
     }
 
-    // performs this GET
-    // 'http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https://storage.azure.com/&client_id={$client_id}'
-    // to the vm-local IMDS
     auto req = http::client::request_header{};
     req.method(boost::beast::http::verb::get);
-    // TODO fix deps and use boost::url
-    req.target(
-      fmt::format(
-        "/metadata/identity/oauth2/token?"
-        "api-version=2018-02-01"
-        "&resource=https%3A%2F%2Fstorage.azure.com%2F"
-        "&client_id={}",
-        client_id_opt.value()));
+    req.target(std::string_view{target});
     req.set("Metadata", "true");
 
     co_return co_await make_request(

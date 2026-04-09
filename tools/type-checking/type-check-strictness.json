@@ -68,6 +68,7 @@
         "rptest/services/serde_client.py",
         "rptest/services/storage_failure_injection.py",
         "rptest/services/tc_netem.py",
+        "rptest/tests/abs_oauth_deletion_test.py",
         "rptest/tests/acl_upgrade_test.py",
         "rptest/tests/admin_operations_test.py",
         "rptest/tests/archival_test.py",

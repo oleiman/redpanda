@@ -27,7 +27,7 @@
       y=28..38   window label + bracket
       y=44..74   log bar (y=44, h=30, bottom=74)
       y=80       offset tick marks
-      y=88       LRLO arrow (tip at y=80, tail to y=90, text at y=102)
+      y=88       Reconciler arrow (tip at y=80, tail to y=90, text at y=102)
       y=44..90   state fields (right side)
   -->
 
@@ -36,13 +36,13 @@
 
   <!-- ====== STEP 1 ====== -->
   <g transform="translate(0, 60)">
-    <text x="30" y="14" class="step-label">1. First placeholder at epoch 5, offset 100</text>
+    <text x="30" y="8" class="step-label">1. First placeholder at epoch 5, offset 100</text>
 
     <!-- Window bracket -->
-    <text x="155" y="34" text-anchor="middle" font-size="10" fill="#e05050" font-weight="bold">window [5, 5]</text>
-    <line x1="130" y1="38" x2="180" y2="38" stroke="#e05050" stroke-width="2"/>
-    <line x1="130" y1="38" x2="130" y2="43" stroke="#e05050" stroke-width="2"/>
-    <line x1="180" y1="38" x2="180" y2="43" stroke="#e05050" stroke-width="2"/>
+    <text x="180" y="31" text-anchor="middle" font-size="10" fill="#e05050" font-weight="normal"><tspan font-weight="normal">window </tspan><tspan font-weight="bold">[5, 5]</tspan></text>
+    <line x1="155" y1="38" x2="205" y2="38" stroke="#e05050" stroke-width="2"/>
+    <line x1="155" y1="38" x2="155" y2="43" stroke="#e05050" stroke-width="2"/>
+    <line x1="205" y1="38" x2="205" y2="43" stroke="#e05050" stroke-width="2"/>
 
     <!-- Log bar -->
     <rect x="30" y="44" width="500" height="30" rx="4" fill="#f0f0f0" stroke="#ccc"/>
@@ -59,14 +59,14 @@
     <text x="405" y="88" text-anchor="middle" class="tick-label">300</text>
     <text x="530" y="88" text-anchor="middle" class="tick-label">400</text>
 
-    <!-- Placeholder E=5 at offset 100 (centered on x=155) -->
-    <rect x="130" y="46" width="50" height="26" rx="3" fill="#4a90d9"/>
-    <text x="155" y="63" text-anchor="middle" class="epoch-label">E=5</text>
+    <!-- Placeholder E=5 at offset 100 (left-aligned at x=155) -->
+    <rect x="155" y="46" width="50" height="26" rx="3" fill="#4a90d9"/>
+    <text x="180" y="63" text-anchor="middle" class="epoch-label">E=5</text>
 
-    <!-- LRLO at offset 0 (x=30) -->
-    <polygon points="30,82 25,96 35,96" fill="#2eaa2e" opacity="0.5"/>
-    <line x1="30" y1="96" x2="30" y2="106" stroke="#2eaa2e" stroke-width="2" opacity="0.5"/>
-    <text x="30" y="118" text-anchor="middle" font-size="10" fill="#2eaa2e" font-weight="bold">LRLO=0</text>
+    <!-- Reconciler at offset 0 (x=30) -->
+    <polygon points="30,87 25,101 35,101" fill="#2eaa2e" opacity="0.5"/>
+    <line x1="30" y1="101" x2="30" y2="111" stroke="#2eaa2e" stroke-width="2" opacity="0.5"/>
+    <text x="30" y="123" text-anchor="middle" font-size="10" fill="#2eaa2e" font-weight="bold">LRO=0</text>
 
     <!-- State table -->
     <g transform="translate(570, 30)">
@@ -85,13 +85,13 @@
 
   <!-- ====== STEP 2 ====== -->
   <g transform="translate(0, 210)">
-    <text x="30" y="14" class="step-label">2. Placeholder at epoch 10, offset 200</text>
+    <text x="30" y="8" class="step-label">2. Placeholder at epoch 10, offset 200</text>
 
     <!-- Window bracket [5, 10] spans E=5 block to E=10 block -->
-    <text x="218" y="34" text-anchor="middle" font-size="10" fill="#e05050" font-weight="bold">window [5, 10]</text>
-    <line x1="128" y1="38" x2="307" y2="38" stroke="#e05050" stroke-width="2"/>
-    <line x1="128" y1="38" x2="128" y2="43" stroke="#e05050" stroke-width="2"/>
-    <line x1="307" y1="38" x2="307" y2="43" stroke="#e05050" stroke-width="2"/>
+    <text x="242" y="31" text-anchor="middle" font-size="10" fill="#e05050" font-weight="normal"><tspan font-weight="normal">window </tspan><tspan font-weight="bold">[5, 10]</tspan></text>
+    <line x1="155" y1="38" x2="330" y2="38" stroke="#e05050" stroke-width="2"/>
+    <line x1="155" y1="38" x2="155" y2="43" stroke="#e05050" stroke-width="2"/>
+    <line x1="330" y1="38" x2="330" y2="43" stroke="#e05050" stroke-width="2"/>
 
     <!-- Log bar -->
     <rect x="30" y="44" width="500" height="30" rx="4" fill="#f0f0f0" stroke="#ccc"/>
@@ -109,17 +109,17 @@
     <text x="530" y="88" text-anchor="middle" class="tick-label">400</text>
 
     <!-- Placeholder E=5 (faded) -->
-    <rect x="130" y="46" width="50" height="26" rx="3" fill="#a0c4e8"/>
-    <text x="155" y="63" text-anchor="middle" class="epoch-label" fill="#666">E=5</text>
+    <rect x="155" y="46" width="50" height="26" rx="3" fill="#a0c4e8"/>
+    <text x="180" y="63" text-anchor="middle" class="epoch-label" fill="#666">E=5</text>
 
-    <!-- Placeholder E=10 at offset 200 (centered on x=280) -->
-    <rect x="255" y="46" width="50" height="26" rx="3" fill="#4a90d9"/>
-    <text x="280" y="63" text-anchor="middle" class="epoch-label">E=10</text>
+    <!-- Placeholder E=10 at offset 200 (left-aligned at x=280) -->
+    <rect x="280" y="46" width="50" height="26" rx="3" fill="#4a90d9"/>
+    <text x="305" y="63" text-anchor="middle" class="epoch-label">E=10</text>
 
-    <!-- LRLO at offset 0 (x=30) -->
-    <polygon points="30,82 25,96 35,96" fill="#2eaa2e" opacity="0.5"/>
-    <line x1="30" y1="96" x2="30" y2="106" stroke="#2eaa2e" stroke-width="2" opacity="0.5"/>
-    <text x="30" y="118" text-anchor="middle" font-size="10" fill="#2eaa2e" font-weight="bold">LRLO=0</text>
+    <!-- Reconciler at offset 0 (x=30) -->
+    <polygon points="30,87 25,101 35,101" fill="#2eaa2e" opacity="0.5"/>
+    <line x1="30" y1="101" x2="30" y2="111" stroke="#2eaa2e" stroke-width="2" opacity="0.5"/>
+    <text x="30" y="123" text-anchor="middle" font-size="10" fill="#2eaa2e" font-weight="bold">LRO=0</text>
 
     <!-- State table -->
     <g transform="translate(570, 30)">
@@ -138,13 +138,13 @@
 
   <!-- ====== STEP 3 ====== -->
   <g transform="translate(0, 360)">
-    <text x="30" y="14" class="step-label">3. Placeholder at epoch 15, offset 300 — reconciler behind</text>
+    <text x="30" y="8" class="step-label">3. Placeholder at epoch 15, offset 300 — reconciler behind</text>
 
     <!-- Window bracket [10, 15] spans E=10 block to E=15 block -->
-    <text x="342" y="34" text-anchor="middle" font-size="10" fill="#e05050" font-weight="bold">window [10, 15]</text>
-    <line x1="253" y1="38" x2="432" y2="38" stroke="#e05050" stroke-width="2"/>
-    <line x1="253" y1="38" x2="253" y2="43" stroke="#e05050" stroke-width="2"/>
-    <line x1="432" y1="38" x2="432" y2="43" stroke="#e05050" stroke-width="2"/>
+    <text x="368" y="31" text-anchor="middle" font-size="10" fill="#e05050" font-weight="normal"><tspan font-weight="normal">window </tspan><tspan font-weight="bold">[10, 15]</tspan></text>
+    <line x1="280" y1="38" x2="455" y2="38" stroke="#e05050" stroke-width="2"/>
+    <line x1="280" y1="38" x2="280" y2="43" stroke="#e05050" stroke-width="2"/>
+    <line x1="455" y1="38" x2="455" y2="43" stroke="#e05050" stroke-width="2"/>
 
     <!-- Log bar -->
     <rect x="30" y="44" width="500" height="30" rx="4" fill="#f0f0f0" stroke="#ccc"/>
@@ -162,21 +162,21 @@
     <text x="530" y="88" text-anchor="middle" class="tick-label">400</text>
 
     <!-- Placeholder E=5 (very faded) -->
-    <rect x="130" y="46" width="50" height="26" rx="3" fill="#d0d8e0"/>
-    <text x="155" y="63" text-anchor="middle" font-size="11" fill="#999">E=5</text>
+    <rect x="155" y="46" width="50" height="26" rx="3" fill="#d0d8e0"/>
+    <text x="180" y="63" text-anchor="middle" font-size="11" fill="#999">E=5</text>
 
     <!-- Placeholder E=10 (faded) -->
-    <rect x="255" y="46" width="50" height="26" rx="3" fill="#a0c4e8"/>
-    <text x="280" y="63" text-anchor="middle" class="epoch-label" fill="#666">E=10</text>
+    <rect x="280" y="46" width="50" height="26" rx="3" fill="#a0c4e8"/>
+    <text x="305" y="63" text-anchor="middle" class="epoch-label" fill="#666">E=10</text>
 
-    <!-- Placeholder E=15 at offset 300 (centered on x=405) -->
-    <rect x="380" y="46" width="50" height="26" rx="3" fill="#4a90d9"/>
-    <text x="405" y="63" text-anchor="middle" class="epoch-label">E=15</text>
+    <!-- Placeholder E=15 at offset 300 (left-aligned at x=405) -->
+    <rect x="405" y="46" width="50" height="26" rx="3" fill="#4a90d9"/>
+    <text x="430" y="63" text-anchor="middle" class="epoch-label">E=15</text>
 
-    <!-- LRLO at offset 250 (x=342) -->
+    <!-- Reconciler at offset 250 (x=342) -->
     <polygon points="342,82 337,96 347,96" fill="#2eaa2e" opacity="0.5"/>
     <line x1="342" y1="96" x2="342" y2="106" stroke="#2eaa2e" stroke-width="2" opacity="0.5"/>
-    <text x="342" y="118" text-anchor="middle" font-size="10" fill="#2eaa2e" font-weight="bold">LRLO=250</text>
+    <text x="342" y="118" text-anchor="middle" font-size="10" fill="#2eaa2e" font-weight="bold">LRO=250</text>
 
     <!-- State table -->
     <g transform="translate(570, 30)">
@@ -190,20 +190,20 @@
       <text x="200" y="37" class="field-value">prev(5) = 4</text>
       <text x="8" y="59" class="field-label">window_offset</text>
       <text x="200" y="59" class="field-value">300</text>
-      <text x="0" y="82" class="dim" font-size="10">LRLO 250 &lt; window_offset 300</text>
+      <text x="0" y="82" class="dim" font-size="10">LRO 250 &lt; window_offset 300</text>
       <text x="0" y="94" class="dim" font-size="10">→ floor cannot advance yet</text>
     </g>
   </g>
 
   <!-- ====== STEP 4 ====== -->
   <g transform="translate(0, 510)">
-    <text x="30" y="14" class="step-label">4. Reconciler catches up past offset 300</text>
+    <text x="30" y="8" class="step-label">4. Reconciler catches up past offset 300</text>
 
     <!-- Window bracket [10, 15] -->
-    <text x="342" y="34" text-anchor="middle" font-size="10" fill="#e05050" font-weight="bold">window [10, 15]</text>
-    <line x1="253" y1="38" x2="432" y2="38" stroke="#e05050" stroke-width="2"/>
-    <line x1="253" y1="38" x2="253" y2="43" stroke="#e05050" stroke-width="2"/>
-    <line x1="432" y1="38" x2="432" y2="43" stroke="#e05050" stroke-width="2"/>
+    <text x="368" y="31" text-anchor="middle" font-size="10" fill="#e05050" font-weight="normal"><tspan font-weight="normal">window </tspan><tspan font-weight="bold">[10, 15]</tspan></text>
+    <line x1="280" y1="38" x2="455" y2="38" stroke="#e05050" stroke-width="2"/>
+    <line x1="280" y1="38" x2="280" y2="43" stroke="#e05050" stroke-width="2"/>
+    <line x1="455" y1="38" x2="455" y2="43" stroke="#e05050" stroke-width="2"/>
 
     <!-- Log bar -->
     <rect x="30" y="44" width="500" height="30" rx="4" fill="#f0f0f0" stroke="#ccc"/>
@@ -221,21 +221,21 @@
     <text x="530" y="88" text-anchor="middle" class="tick-label">400</text>
 
     <!-- Placeholder E=5 (safe to GC) -->
-    <rect x="130" y="46" width="50" height="26" rx="3" fill="#d4edda" stroke="#28a745"/>
-    <text x="155" y="63" text-anchor="middle" font-size="11" fill="#155724">E=5</text>
+    <rect x="155" y="46" width="50" height="26" rx="3" fill="#d4edda" stroke="#28a745"/>
+    <text x="180" y="63" text-anchor="middle" font-size="11" fill="#155724">E=5</text>
 
     <!-- Placeholder E=10 (reconciled) -->
-    <rect x="255" y="46" width="50" height="26" rx="3" fill="#e8e8e8" stroke="#ccc" stroke-dasharray="3,2"/>
-    <text x="280" y="63" text-anchor="middle" font-size="11" fill="#bbb">E=10</text>
+    <rect x="280" y="46" width="50" height="26" rx="3" fill="#e8e8e8" stroke="#ccc" stroke-dasharray="3,2"/>
+    <text x="305" y="63" text-anchor="middle" font-size="11" fill="#bbb">E=10</text>
 
     <!-- Placeholder E=15 -->
-    <rect x="380" y="46" width="50" height="26" rx="3" fill="#a0c4e8"/>
-    <text x="405" y="63" text-anchor="middle" class="epoch-label" fill="#666">E=15</text>
+    <rect x="405" y="46" width="50" height="26" rx="3" fill="#a0c4e8"/>
+    <text x="430" y="63" text-anchor="middle" class="epoch-label" fill="#666">E=15</text>
 
-    <!-- LRLO at offset 310 (x=418) -->
+    <!-- Reconciler at offset 310 (x=418) -->
     <polygon points="418,82 413,96 423,96" fill="#2eaa2e" opacity="0.5"/>
     <line x1="418" y1="96" x2="418" y2="106" stroke="#2eaa2e" stroke-width="2" opacity="0.5"/>
-    <text x="418" y="118" text-anchor="middle" font-size="10" fill="#2eaa2e" font-weight="bold">LRLO=310</text>
+    <text x="418" y="118" text-anchor="middle" font-size="10" fill="#2eaa2e" font-weight="bold">LRO=310</text>
 
     <!-- State table -->
     <g transform="translate(570, 30)">
@@ -244,12 +244,12 @@
       <rect x="0" y="44" width="330" height="22" rx="2" fill="#f8f8f8" stroke="#ddd"/>
       <line x1="190" y1="0" x2="190" y2="66" stroke="#ddd"/>
       <text x="8" y="15" class="field-label">min_epoch_lower_bound</text>
-      <text x="200" y="15" class="field-value" fill="#2eaa2e">10 ▲</text>
+      <text x="200" y="15" class="field-value">10 <tspan style="fill: #2eaa2e">▲</tspan></text>
       <text x="8" y="37" class="field-label">estimate_inactive_epoch</text>
-      <text x="200" y="37" class="field-value" fill="#2eaa2e">prev(10) = 9 ▲</text>
+      <text x="200" y="37" class="field-value">prev(10) = 9 <tspan style="fill: #2eaa2e">▲</tspan></text>
       <text x="8" y="59" class="field-label">window_offset</text>
       <text x="200" y="59" class="field-value">300</text>
-      <text x="0" y="82" class="dim" font-size="10">LRLO 310 ≥ window_offset 300</text>
+      <text x="0" y="82" class="dim" font-size="10">LRO 310 ≥ window_offset 300</text>
       <text x="0" y="94" class="dim" font-size="10">→ floor advances to prev_applied = 10</text>
     </g>
   </g>
@@ -263,10 +263,12 @@
     <text x="185" y="19" font-size="11" fill="#555">reconciled</text>
     <line x1="268" y1="15" x2="318" y2="15" stroke="#e05050" stroke-width="2"/>
     <text x="324" y="19" font-size="11" fill="#555">applied window</text>
-    <polygon points="438,6 433,18 443,18" fill="#2eaa2e" opacity="0.5"/>
-    <line x1="438" y1="18" x2="438" y2="24" stroke="#2eaa2e" stroke-width="2" opacity="0.5"/>
-    <text x="448" y="19" font-size="11" fill="#555">LRLO (reconciler)</text>
-    <rect x="580" y="8" width="24" height="14" rx="2" fill="#d4edda" stroke="#28a745"/>
-    <text x="610" y="19" font-size="11" fill="#555">safe to GC</text>
+    <rect x="438" y="8" width="24" height="14" rx="2" fill="#d4edda" stroke="#28a745"/>
+    <text x="468" y="19" font-size="11" fill="#555">safe to GC</text>
+    <polygon points="558,6 553,18 563,18" fill="#2eaa2e" opacity="0.5"/>
+    <line x1="558" y1="18" x2="558" y2="24" stroke="#2eaa2e" stroke-width="2" opacity="0.5"/>
+    <text x="568" y="19" font-size="11" fill="#555">Reconciler</text>
+    <line x1="640" y1="4" x2="640" y2="26" stroke="#ddd"/>
+    <text x="650" y="19" font-size="11" fill="#555"><tspan font-weight="bold">LRO</tspan>: last reconciled offset</text>
   </g>
 </svg>

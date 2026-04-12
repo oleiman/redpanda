@@ -97,9 +97,11 @@ public:
     model::offset start_offset() const final {
         throw std::runtime_error("unimplemented");
     }
-    model::offset high_watermark() const final { return model::offset(102); }
+    model::offset high_watermark() const final {
+        return model::next_offset(latest_offset());
+    }
     checked<model::offset, kafka::error_code> last_stable_offset() const final {
-        return model::offset(101);
+        return latest_offset();
     }
     kafka::leader_epoch leader_epoch() const final {
         throw std::runtime_error("unimplemented");
@@ -201,7 +203,7 @@ public:
     }
 
 private:
-    model::offset latest_offset() {
+    model::offset latest_offset() const {
         auto o = model::offset(-1);
         for (const auto& b : *_produced_batches) {
             if (b.ntp == _ntp) {

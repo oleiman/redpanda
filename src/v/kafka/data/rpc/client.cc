@@ -252,6 +252,15 @@ client::produce(model::topic_partition tp, model::record_batch batch) {
       .ec;
 }
 
+ss::future<produce_result> client::produce_with_leader_mitigation(
+  model::topic_partition tp, model::record_batch b) {
+    produce_request req;
+    req.topic_data.emplace_back(tp, std::move(b));
+    req.timeout = timeout;
+    co_return co_await retry_with_leader_mitigation(
+      [this, &req]() { return do_produce_once(req.share()); });
+}
+
 ss::future<produce_result> client::do_produce_once(produce_request req) {
     vassert(
       req.topic_data.size() == 1,

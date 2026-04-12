@@ -119,6 +119,14 @@ public:
           .get();
     }
 
+    produce_result produce_with_leader_mitigation(
+      const model::ntp& ntp, model::record_batch batch) {
+        return _kd->client()
+          .local()
+          .produce_with_leader_mitigation(ntp.tp, std::move(batch))
+          .get();
+    }
+
     std::optional<cluster::topic_configuration>
     local_find_topic_cfg(model::topic_namespace_view tp_ns) {
         return _kd->local_metadata_cache()->find_topic_cfg(tp_ns);
@@ -156,6 +164,14 @@ public:
           .local()
           .get_partition_offsets(std::move(requested_topics))
           .get();
+    }
+
+    kafka::offset get_hwm(const model::ntp& ntp) {
+        auto res = get_partition_offsets(
+          model::ktp(ntp.tp.topic, ntp.tp.partition));
+        vassert(res.has_value(), "get_partition_offsets failed");
+        return res.value()[ntp.tp.topic][ntp.tp.partition]
+          .offsets.high_watermark;
     }
 
     result<consume_reply, cluster::errc> consume(
@@ -251,9 +267,9 @@ TEST_P(KafkaDataRpcTest, ClientCanRequestPartitionOffsets) {
     auto p_offsets = offsets[ntp.tp.topic][ntp.tp.partition];
 
     EXPECT_EQ(p_offsets.err, cluster::errc::success);
-    // expect the hardcoded values from the in-memory proxy
-    EXPECT_EQ(p_offsets.offsets.high_watermark, kafka::offset(102));
-    EXPECT_EQ(p_offsets.offsets.last_stable_offset, kafka::offset(101));
+    // No records produced — HWM is 0 (next of -1), LSO is -1
+    EXPECT_EQ(p_offsets.offsets.high_watermark, kafka::offset(0));
+    EXPECT_EQ(p_offsets.offsets.last_stable_offset, kafka::offset(-1));
 
     auto not_existing = make_ntp("bar");
 
@@ -338,6 +354,57 @@ TEST_P(KafkaDataRpcTest, ProduceRejectsUnderMemoryPressure) {
     EXPECT_EQ(result, cluster::errc::timeout);
 }
 
+TEST_P(KafkaDataRpcTest, ProduceWithLeaderMitigationSingleRecord) {
+    auto ntp = make_ntp("single_rec");
+    create_topic(model::topic_namespace(ntp.ns, ntp.tp.topic));
+    EXPECT_EQ(get_hwm(ntp), kafka::offset(0));
+
+    auto batch = model::test::make_random_batch({.count = 1, .records = 1});
+    auto r = produce_with_leader_mitigation(ntp, std::move(batch));
+    ASSERT_EQ(r.ec, cluster::errc::success);
+    ASSERT_TRUE(r.base_offset.has_value());
+    ASSERT_TRUE(r.last_offset.has_value());
+    EXPECT_EQ(r.base_offset, r.last_offset);
+    EXPECT_EQ(get_hwm(ntp), kafka::offset(model::next_offset(*r.last_offset)));
+
+    // Second produce must land at the next offset.
+    auto batch2 = model::test::make_random_batch({.count = 1, .records = 1});
+    auto r2 = produce_with_leader_mitigation(ntp, std::move(batch2));
+    ASSERT_EQ(r2.ec, cluster::errc::success);
+    EXPECT_EQ(*r2.base_offset, *r.last_offset + model::offset{1});
+    EXPECT_EQ(get_hwm(ntp), kafka::offset(model::next_offset(*r2.last_offset)));
+}
+
+TEST_P(KafkaDataRpcTest, ProduceWithLeaderMitigationMultiRecord) {
+    auto ntp = make_ntp("multi_rec");
+    create_topic(model::topic_namespace(ntp.ns, ntp.tp.topic));
+    EXPECT_EQ(get_hwm(ntp), kafka::offset(0));
+
+    constexpr int num_records = 3;
+    auto batch = model::test::make_random_batch({.count = num_records});
+    ASSERT_EQ(batch.record_count(), num_records);
+    auto r = produce_with_leader_mitigation(ntp, std::move(batch));
+    ASSERT_EQ(r.ec, cluster::errc::success);
+    ASSERT_TRUE(r.base_offset.has_value());
+    ASSERT_TRUE(r.last_offset.has_value());
+    EXPECT_EQ(*r.last_offset, *r.base_offset + model::offset{num_records - 1});
+    EXPECT_EQ(get_hwm(ntp), kafka::offset(model::next_offset(*r.last_offset)));
+}
+
+TEST_P(KafkaDataRpcTest, ProduceWithLeaderMitigationRetries) {
+    auto ntp = make_ntp("retry_produce");
+    create_topic(model::topic_namespace(ntp.ns, ntp.tp.topic));
+
+    // Inject timeouts on the first 2 attempts; the basic retry policy
+    // should back off and succeed on the 3rd attempt.
+    set_errors_to_inject(2);
+    auto batch = model::test::make_random_batch({.count = 1, .records = 1});
+    auto r = produce_with_leader_mitigation(ntp, std::move(batch));
+    ASSERT_EQ(r.ec, cluster::errc::success);
+    ASSERT_TRUE(r.base_offset.has_value());
+    ASSERT_TRUE(r.last_offset.has_value());
+    EXPECT_EQ(get_hwm(ntp), kafka::offset(model::next_offset(*r.last_offset)));
+}
 INSTANTIATE_TEST_SUITE_P(
   WorksLocallyAndRemotely,
   KafkaDataRpcTest,

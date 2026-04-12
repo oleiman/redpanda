@@ -66,6 +66,10 @@ public:
     ss::future<cluster::errc>
       produce(model::topic_partition, model::record_batch);
 
+    /// Produce a single batch and return the base offset on success.
+    ss::future<produce_result> produce_with_leader_mitigation(
+      model::topic_partition, model::record_batch);
+
     ss::future<cluster::errc> create_topic(
       model::topic_namespace_view,
       cluster::topic_properties,

@@ -292,3 +292,46 @@ class DataTransformsProducePathTest(BaseDataTransformsProducePathTest):
         for i, line in enumerate(lines):
             expected = f"key-{i}|value-{i}"
             assert line == expected, f"record {i}: expected '{expected}', got '{line}'"
+
+    @cluster(num_nodes=3)
+    def test_deploy_with_output_topics(self):
+        """
+        Verify that produce-path transforms can be deployed with
+        declared output topics (fan-out targets). The identity
+        transform only writes to the default (input) topic, so
+        records should still land there and the output topic should
+        be empty.
+        """
+        input_topic = self.topics[0]
+        output_topic = TopicSpec(partition_count=1)
+        self._rpk.create_topic(
+            output_topic.name,
+            partitions=output_topic.partition_count,
+            replicas=3,
+        )
+        self._deploy_wasm(
+            name="produce-path-fanout",
+            input_topic=input_topic,
+            output_topic=output_topic,
+            file="tinygo/identity.wasm",
+            wait_running=False,
+        )
+
+        num_records = 10
+        for i in range(num_records):
+            self._rpk.produce(input_topic.name, f"key-{i}", f"val-{i}")
+
+        # Records land on input topic (identity writes to default)
+        output = self._rpk.consume(
+            input_topic.name, n=num_records, format="%v\\n", timeout=30
+        )
+        lines = [l for l in output.strip().split("\n") if l]
+        assert len(lines) == num_records, (
+            f"expected {num_records} on input topic, got {len(lines)}"
+        )
+
+        # Output topic should be empty (identity doesn't route)
+        out_hwm = sum(
+            p.high_watermark for p in self._rpk.describe_topic(output_topic.name)
+        )
+        assert out_hwm == 0, f"expected empty output topic, got hwm={out_hwm}"

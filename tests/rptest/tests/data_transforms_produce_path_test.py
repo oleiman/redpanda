@@ -393,3 +393,38 @@ class DataTransformsProducePathTest(BaseDataTransformsProducePathTest):
             f"expected {num_records} on output topic, got {len(output_lines)}"
         )
         self.logger.info(f"fan-out routing: {num_records} records on both topics")
+
+    @cluster(num_nodes=3)
+    def test_metadata_principal_injection(self):
+        """
+        Deploy metadata_stamper.wasm which reads the principal name
+        from batch metadata and stamps it as a record header. Produce
+        records, consume them, verify the principal header is present.
+        """
+        topic = self.topics[0]
+        self._deploy_produce_path_wasm(
+            name="produce-path-metadata",
+            input_topic=topic,
+            file="tinygo/metadata_stamper.wasm",
+        )
+
+        num_records = 10
+        for i in range(num_records):
+            self._rpk.produce(topic.name, f"key-{i}", f"value-{i}")
+
+        output = self._rpk.consume(
+            topic.name,
+            n=num_records,
+            format="%h{%k=%v }\\n",
+            timeout=30,
+        )
+        lines = [l for l in output.strip().split("\n") if l]
+        assert len(lines) == num_records, (
+            f"expected {num_records} records, got {len(lines)}"
+        )
+
+        for i, line in enumerate(lines):
+            assert "principal=" in line, f"record {i} missing principal header: {line}"
+        self.logger.info(
+            f"metadata injection: principal header present on all {num_records} records"
+        )

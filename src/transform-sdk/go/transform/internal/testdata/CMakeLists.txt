@@ -30,4 +30,5 @@ add_wasm_transform(wasi)
 add_wasm_transform(schema-registry) 
 add_wasm_transform(dynamic)
 add_wasm_transform(fanout)
+add_wasm_transform(metadata_stamper)
 

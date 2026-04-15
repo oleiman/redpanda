@@ -18,6 +18,7 @@
 //! [redpanda-transform-sdk](https://crates.io/crates/redpanda-transform-sdk).
 
 use std::{
+    collections::HashMap,
     fmt::Debug,
     time::{Duration, SystemTime},
 };
@@ -115,6 +116,30 @@ impl RecordSink for AbiRecordWriter {
     }
 }
 
+const METADATA_KEYS: &[(&str, i32)] = &[
+    ("principal_name", 1),
+    ("principal_type", 2),
+    ("client_id", 3),
+    ("client_host", 4),
+    ("client_port", 5),
+    ("tls_enabled", 6),
+];
+
+fn read_batch_metadata_map() -> HashMap<String, String> {
+    let mut buf = vec![0u8; 256];
+    let mut metadata = HashMap::new();
+    for &(name, key) in METADATA_KEYS {
+        let n = unsafe { abi::read_batch_metadata(key, buf.as_mut_ptr(), buf.len() as i32) };
+        if n > 0 {
+            metadata.insert(
+                name.to_string(),
+                String::from_utf8_lossy(&buf[..n as usize]).to_string(),
+            );
+        }
+    }
+    metadata
+}
+
 fn process_batch<E, F>(input_buffer: &mut Vec<u8>, writer: &mut RecordWriter, cb: &F)
 where
     E: Debug,
@@ -152,6 +177,8 @@ where
     );
     let buf_size = errno_or_buf_size as usize;
     input_buffer.resize(buf_size, 0);
+    // Read batch metadata (ABI v3).
+    let metadata = read_batch_metadata_map();
     for _ in 0..header.record_count {
         let mut attr: u8 = 0;
         let mut timestamp: i64 = 0;
@@ -174,9 +201,7 @@ where
         let record = serde::read_record_from_payload(&input_buffer[0..amt])
             .expect("deserializing record failed");
         cb(
-            WriteEvent {
-                record: WrittenRecord::from_record(record, ts),
-            },
+            WriteEvent::new(WrittenRecord::from_record(record, ts), metadata.clone()),
             writer,
         )
         .expect("transforming record failed");

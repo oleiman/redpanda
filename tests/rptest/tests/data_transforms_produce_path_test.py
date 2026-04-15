@@ -335,3 +335,61 @@ class DataTransformsProducePathTest(BaseDataTransformsProducePathTest):
             p.high_watermark for p in self._rpk.describe_topic(output_topic.name)
         )
         assert out_hwm == 0, f"expected empty output topic, got hwm={out_hwm}"
+
+    @cluster(num_nodes=3)
+    def test_fanout_routing(self):
+        """
+        Deploy the fanout transform which writes each record to both
+        the default (input topic) AND to declared output topics.
+        Verify records appear on both topics.
+        """
+        input_topic = self.topics[0]
+        output_topic = TopicSpec(partition_count=1)
+        self._rpk.create_topic(
+            output_topic.name,
+            partitions=output_topic.partition_count,
+            replicas=3,
+        )
+        self._deploy_wasm(
+            name="produce-path-fanout",
+            input_topic=input_topic,
+            output_topic=output_topic,
+            file="tinygo/fanout.wasm",
+            wait_running=False,
+        )
+
+        num_records = 10
+        for i in range(num_records):
+            self._rpk.produce(input_topic.name, f"key-{i}", f"val-{i}")
+
+        # Verify records landed on the input topic
+        input_out = self._rpk.consume(
+            input_topic.name, n=num_records, format="%v\\n", timeout=30
+        )
+        input_lines = [l for l in input_out.strip().split("\n") if l]
+        assert len(input_lines) == num_records, (
+            f"expected {num_records} on input topic, got {len(input_lines)}"
+        )
+
+        # Verify records also landed on the output topic
+        def output_has_records():
+            hwm = sum(
+                p.high_watermark for p in self._rpk.describe_topic(output_topic.name)
+            )
+            return hwm >= num_records
+
+        wait_until(
+            output_has_records,
+            timeout_sec=30,
+            backoff_sec=2,
+            err_msg=f"expected {num_records} records on output topic",
+        )
+
+        output_out = self._rpk.consume(
+            output_topic.name, n=num_records, format="%k|%v\\n", timeout=30
+        )
+        output_lines = [l for l in output_out.strip().split("\n") if l]
+        assert len(output_lines) == num_records, (
+            f"expected {num_records} on output topic, got {len(output_lines)}"
+        )
+        self.logger.info(f"fan-out routing: {num_records} records on both topics")

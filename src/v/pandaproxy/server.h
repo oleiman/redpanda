@@ -16,9 +16,11 @@
 #include "hashing/jump_consistent_hash.h"
 #include "hashing/xx.h"
 #include "kafka/client/client.h"
+#include "kafka/data/rpc/fwd.h"
 #include "pandaproxy/json/types.h"
 #include "pandaproxy/kafka_client_cache.h"
 #include "pandaproxy/types.h"
+#include "security/authorizer.h"
 #include "security/request_auth.h"
 #include "utils/adjustable_semaphore.h"
 #include "utils/truncating_logger.h"
@@ -185,6 +187,8 @@ public:
     struct context_t : base::context_t {
         request_authenticator authenticator;
         std::vector<config::rest_authn_endpoint> listeners;
+        kafka::data::rpc::client* rpc_client;
+        security::authorizer* authorizer;
     };
 
     using base::ctx_server;

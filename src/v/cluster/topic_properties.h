@@ -87,7 +87,8 @@ struct topic_properties
       std::optional<bool> remote_topic_allow_gaps,
       std::optional<std::chrono::milliseconds> message_timestamp_before_max_ms,
       std::optional<std::chrono::milliseconds> message_timestamp_after_max_ms,
-      model::redpanda_storage_mode storage_mode)
+      model::redpanda_storage_mode storage_mode,
+      model::kvstore_type kvstore_enabled)
       : compression(compression)
       , cleanup_policy_bitflags(cleanup_policy_bitflags)
       , compaction_strategy(compaction_strategy)
@@ -138,7 +139,8 @@ struct topic_properties
       , max_compaction_lag_ms(max_compaction_lag_ms)
       , message_timestamp_before_max_ms(message_timestamp_before_max_ms)
       , message_timestamp_after_max_ms(message_timestamp_after_max_ms)
-      , storage_mode(storage_mode) {}
+      , storage_mode(storage_mode)
+      , kvstore(kvstore_enabled) {}
 
     std::optional<model::compression> compression;
     std::optional<model::cleanup_policy_bitflags> cleanup_policy_bitflags;
@@ -241,6 +243,9 @@ struct topic_properties
                || storage_mode == model::redpanda_storage_mode::tiered_cloud;
     }
 
+    // If a key value store is enabled for this topic.
+    model::kvstore_type kvstore = model::kvstore_type::none;
+
     bool is_compacted() const;
     bool has_overrides() const;
     // Returns true if this topic is a tiered topic that requires
@@ -315,7 +320,8 @@ struct topic_properties
           max_compaction_lag_ms,
           message_timestamp_before_max_ms,
           message_timestamp_after_max_ms,
-          storage_mode);
+          storage_mode,
+          kvstore);
     }
 
     friend bool

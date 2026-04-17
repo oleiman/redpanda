@@ -53,7 +53,8 @@ void application::wire_up_runtime_services(
           *_proxy_client_config,
           *_proxy_config,
           controller.get(),
-          _datalake_coordinator_fe);
+          _datalake_coordinator_fe,
+          &_kafka_data_rpc_client);
     }
     if (_schema_reg_config) {
         construct_single_service(

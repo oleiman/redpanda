@@ -17,6 +17,7 @@
 #include "pandaproxy/rest/proxy.h"
 
 #include <seastar/core/coroutine.hh>
+#include <seastar/core/sharded.hh>
 
 #include <functional>
 
@@ -27,13 +28,15 @@ api::api(
   kafka::client::configuration& client_cfg,
   configuration& cfg,
   cluster::controller* c,
-  ss::sharded<datalake::coordinator::frontend>& dl_frontend) noexcept
+  ss::sharded<datalake::coordinator::frontend>& dl_frontend,
+  ss::sharded<kafka::data::rpc::client>* rpc_client) noexcept
   : _sg{sg}
   , _max_memory{max_memory}
   , _client_cfg{client_cfg}
   , _cfg{cfg}
   , _controller(c)
-  , _dl_frontend(dl_frontend) {}
+  , _dl_frontend(dl_frontend)
+  , _rpc_client(rpc_client) {}
 
 api::~api() noexcept = default;
 
@@ -58,7 +61,8 @@ ss::future<> api::start() {
       std::ref(_client),
       std::ref(_client_cache),
       _controller,
-      std::ref(_dl_frontend));
+      std::ref(_dl_frontend),
+      ss::sharded_parameter{[this] { return &_rpc_client->local(); }});
 
     co_await _proxy.invoke_on_all(&proxy::start);
 }

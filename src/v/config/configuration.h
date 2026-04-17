@@ -778,6 +778,9 @@ struct configuration final : public config_store {
     bounded_property<uint32_t> shadow_link_failover_batch_size;
     property<std::chrono::milliseconds> internal_rpc_request_timeout_ms;
 
+    // KV Store
+    enterprise<property<bool>> enable_kvstore;
+
     configuration();
 
     error_map_t load(const YAML::Node& root_node);

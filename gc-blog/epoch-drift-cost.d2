@@ -1,0 +1,107 @@
+direction: down
+
+title: |md
+  ## Tight Fence vs. Sliding Window
+  ```
+  A new leader's epoch cache commonly
+  trails the applied floor by one step.
+  produce traffic gets fence-rejected
+  after S3 has already been paid.
+  ```
+|
+
+setup: "Leadership: Node A → Node B\nP.max_applied_epoch = 10 (STM)\nB.cluster_epoch_cache = 9 (stale)" {
+  style.fill: "#f5f5ff"
+  style.stroke: "#666"
+}
+
+panels: {
+  label: ""
+  style.fill: transparent
+  style.stroke: transparent
+  grid-rows: 1
+  grid-columns: 2
+  grid-gap: 60
+
+  tight: {
+    label: "Single-max fence"
+    style.fill: "#fdf4f4"
+    style.stroke: "#e05050"
+
+    direction: down
+
+    a1: "produce on P" {
+      shape: oval
+    }
+    a2: "batcher stamps epoch 9\n(from B's stale cache)"
+    a3: "S3 upload complete\n(full cost paid)" {
+      shape: cylinder
+      style.fill: "#fff8e0"
+      style.stroke: "#c0a030"
+    }
+    a4: "fence: 9 < 10?" {
+      shape: diamond
+    }
+    a5: "REJECT\nL0 slice orphaned in S3\nclient sees error → retry\nrepeats for every produce\nuntil B's cache refreshes" {
+      style.fill: "#fde8e8"
+      style.stroke: "#e05050"
+      style.font-color: "#c03030"
+      style.bold: true
+    }
+
+    a1 -> a2 -> a3 -> a4
+    a4 -> a5: yes {
+      style.stroke: "#e05050"
+      style.font-color: "#e05050"
+    }
+  }
+
+  window: {
+    label: "Windowed fence [prev, max]"
+    style.fill: "#f4fdf4"
+    style.stroke: "#28a745"
+
+    direction: down
+
+    b1: "produce on P" {
+      shape: oval
+    }
+    b2: "batcher stamps epoch 9\n(from B's stale cache)"
+    b3: "S3 upload complete\n(full cost paid)" {
+      shape: cylinder
+      style.fill: "#fff8e0"
+      style.stroke: "#c0a030"
+    }
+    b4: "fence: 9 ∈ [9, 10]?" {
+      shape: diamond
+    }
+    b5: "ACCEPT\nplaceholder replicated\nno waste, no client error" {
+      style.fill: "#d4edda"
+      style.stroke: "#28a745"
+      style.font-color: "#155724"
+      style.bold: true
+    }
+
+    b1 -> b2 -> b3 -> b4
+    b4 -> b5: yes {
+      style.stroke: "#28a745"
+      style.font-color: "#28a745"
+    }
+  }
+}
+
+takeaway: |md
+  ```
+  Batchers aggregate many partitions into
+  one L0 object. In the stale-cache window,
+  every uploaded object accumulates orphaned
+  slices.
+
+  The window covers the one-epoch lag typical
+  of leadership transfer, without relaxing
+  safety elsewhere.
+  ```
+|
+
+setup -> panels
+panels -> takeaway

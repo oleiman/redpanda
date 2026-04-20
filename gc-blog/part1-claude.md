@@ -18,6 +18,38 @@
 - allows ingesting current epoch while draining previous epoch stragglers concurrently
 - safety argument unchanged elsewhere
 
+### Tyler draft
+
+"for every partition we need to ensure we have a monotonically increasing epoch
+in the log. Our first take at this was to maintain a single epoch that was the
+maximum produced epoch, and we fenced off any epochs (from slow uploads,
+leadership transfers, etc) that were below the last applied. However, in stress
+testing we found that this was too limiting so we loosened our requirement to
+support a window of epochs incoming, and we only require the bottom of the
+window increasing monotonically. To bound memory usage we move the window in a
+tumbling fashion: when we see a new epoch the previous max becomes the lower
+bound of the window, and the new epoch is the upper bound. The allows us in
+common cases to ingest both the current epoch while draining previous epoch
+batches concurrently and without changing the algorithm elsewhere.
+
+### Oren draft
+
+Short of coordinating in-progress writes at the cluster level, we should be able to track each partition's safe-to-GC epoch in the Raft log itself. To support the lazy aggregation scheme described above, the result should be both monotonic and _always_ valid.
+
+Our initial design tracked a single epoch, the max across all produced placeholder batches, and fenced off anything older on the replication path. This trivially supports both invariants, but it's too strict in practice. If partition leadership moves to a node with an out of date epoch cache, every new write will be fenced and discarded until the cache refreshes, which could be on the order of tens of minutes. Not ideal.
+
+Instead, we accept a sliding window of incoming epochs, requiring monotonicity only for the _bottom_ of that window. When we see a new epoch for the first time, the current top of the window becomes the new lower bound, and the new epoch becomes the upper bound. Monotonicity is still enforced by fencing off everything below the window, but we are resilient to the natural asynchrony between minting a new epoch and committing all the writes stamped with the old one. All without explicit coordination between partitions.
+
+### De-AI
+
+#### BAD
+
+Instead, we maintain a sliding range of active epochs, requiring monotonicity only for the bottom of that window. When we see a new epoch for the first time, the current upper bound becomes the lower bound, and the new epoch becomes the upper bound. We still get monotonicity by fencing off everything below the window, but now the algorithm is resilient to the natural asynchrony between advancing the epoch and committing all the writes stamped with the old one. All without explicit coordination between partitions.
+
+#### GOOD
+
+Instead we can bake this epoch lag right into the algorithm. On each partition we maintain a sliding window of active epochs. When we see a new epoch for the first time, slide the window forward. We still get monotonicity by construction, but we gain some flexibility to accept writes that were in flight when the window moved.
+
 
 ## Reference Counting?
 

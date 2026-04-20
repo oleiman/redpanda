@@ -6,6 +6,16 @@ In a [previous post](https://www.redpanda.com/blog/cloud-topics-architecture) we
 
 These L1 objects become the source of truth for historical reads. They are larger and offer per-partition spatial locality that's not available in the smaller, temporally batched L0 objects. The L0 objects themselves are temporary by design and should be removed as soon as the reconciler finishes with them but **no sooner**. After all, the simplest form of garbage collection routes everything to `/dev/null`. 
 
+## Reference Counting?
+
+Consider an L0 object `O` comprising data from partitions `{p0, p1, p3}`. To a first approximation, it resembles any other shared, read-only resource. We can think of each chunk of unreconciled data as a "reference" to the object, and the object is safe to delete only once the number of references goes to zero (i.e. the reconciler has lifted all the enclosed data to L1). Simple enough, but this framing belies an ocean of complexity.
+
+First of all, we have to store these reference counts somewhere. Counts must be durable, so imagine an index service built on a Redpanda topic `Tindex`. When the reconciler, working on `p0`'s leader, needs to decrement the count on `O`, that decrement operation must make its way to `Tindex`’s leader, which might be a different shard or (more likely) a different node altogether.
+
+Now consider how the reconciler itself makes progress, relying on state stored in each partition's Raft log to know where to start working. In this reference counting scheme, the reconciler must make two updates after processing a chunk of `O`: advance the per-partition Raft state AND decrement the ref count for `O`. But what if the Raft update is accepted and the decrement operation fails? More state, more coordination, more edge cases.
+
+This is a good opportunity to mention that Redpanda does not track L0 objects this way. Instead, we assign an "epoch" to every object in L0 (think of it as a coarse-grained logical timestamp; only increasing, non-unique) and leverage carefully structured per-partition state to construct a global view of which L0 objects are safe to remove. No central index, no shared state, and no coordinated updates.
+
 ## Cluster Epochs
 
 Derived from an offset in a central Raft log and accessible globally, the *cluster epoch* is a monotonically increasing counter that we embed in every L0 object ID at creation time. Since the epoch is updated periodically and only ever increases, for any given epoch `E` must eventually age out of the cluster. Once all objects with epoch `E` have been reconciled, it stands to reason that any L0 object with that epoch can be safely deleted. This is the observation upon which the rest of the GC system is built.
@@ -27,18 +37,26 @@ This is an intuitive result: once an epoch is inactive everywhere, it is safe fo
 
 ## The Sliding Window
 
-![][image1]  
-Each cloud topic partition maintains a persistent sliding epoch window from which we can derive `M(p)`. The most important bits of state are as follows:
+Short of coordinating in-progress writes at the cluster level, we should be able to track each partition's safe-to-GC epoch in the Raft log itself. To support the lazy aggregation scheme described above, the result should be both monotonic and *always* valid.
+
+Our initial design tracked a single epoch, the max across all produced placeholder batches, and fenced off anything older on the replication path. This trivially supports both invariants, but it's too strict in practice. If partition leadership moves to a node with a stale epoch cache, we will fence off every new write until cache expiry, which could be minutes away. Not ideal.
+
+![][image1]
+
+Instead we can bake this epoch lag right into the algorithm. On each partition we maintain a sliding window of active epochs. When we see a new epoch for the first time, slide the window forward. We still get monotonicity by construction, but we gain some flexibility to accept writes that were in flight when the window moved.
+
+![][image2]  
+Each cloud topic partition maintains this sliding epoch window through a dedicated replicated state machine embedded in the partition’s Raft log. The most important bits of state are as follows:
 
 | Field | Advance |
 | :---- | :---- |
 | `max_applied_epoch` | when a strictly greater epoch is committed |
 | `previous_applied_epoch` | when we apply a new `max_applied_epoch` |
-| `min_epoch_lower_bound` | reconciler catches up to `max_applied_epoch` |
+| `min_epoch_lower_bound` | when reconciler catches up to `max_applied_epoch` |
 
-Essentially `[prev, max]` represents the range of active epochs we expect to see. Anything below `lower_bound` is rejected *before* entering the replication pipeline. This should occur rarely if we keep epoch caches up to date, but it is a necessary safeguard in a distributed system where communication disruptions are the norm.
+As discussed, `[previous_applied, max_applied]` describes the range of active epochs we expect to see, and anything below this range is rejected before entering the replication pipeline. `M(p)` is simply `prev(min_epoch_lower_bound)`. 
 
-`M(p)` is simply `prev(min_epoch_lower_bound)`. Every replicated L0 batch up to this point has been fully reconciled with respect to `p`, and any such batches still in flight will be fenced off on the write path.
+Note that the computation of `M(p)` is actually a bit stricter than what we described before; that’s because reconciler progress gives the final word on which epochs are safe to delete. So while the window itself slides forward as soon as a new epoch appears, we only advance the safe epoch once we’re sure all the L0 data up to that point has been reconciled into L1.
 
 ## Clusterwide Aggregate `M`
 
@@ -64,4 +82,7 @@ As with any modelling task, we shouldn’t blindly accept any soundness claim. T
 
 ## Wrapping Up
 
-With per-partition epoch tracking we've laid down the backbone of L0 Garbage Collection, but that's only part of the story. Once we know which epochs are safe to delete, we have to go and delete them. Stay tuned for Part 2 where we discuss how the design of the garbage collector itself allows us to continually delete thousands of L0 objects without any locally persistent state, explicit coordination, or wasted work.
+With per-partition epoch tracking we've laid down the backbone of L0 Garbage Collection, but that's only part of the story. Once we know which epochs are safe to delete, we have to go and delete them. Stay tuned for Part 2 where we discuss how the design of the garbage collector itself allows us to continually delete thousands of L0 objects without any locally persistent state, explicit coordination, or wasted work.  
+
+
+

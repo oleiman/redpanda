@@ -182,6 +182,10 @@ public:
           .get();
     }
 
+    fake_partition_leader_cache* leaders() {
+        return _kd->partition_leader_cache();
+    }
+
     result<consume_reply, cluster::errc> consume(
       model::topic_partition tp,
       kafka::offset start_offset,
@@ -471,6 +475,104 @@ TEST_P(KafkaDataRpcTest, ConsumeRetries) {
     ASSERT_TRUE(r.has_value());
     EXPECT_EQ(r.value().err, cluster::errc::success);
     EXPECT_EQ(r.value().batches.size(), batches.size());
+}
+
+namespace {
+// Install a scenario where get_leader_node() returns nullopt (producing
+// not_leader errors) until the retry policy has called wait_for_term_change
+// `recover_after` times; on the Nth call, the callback restores the leader.
+// The returned counter records wait_for_term_change invocations so tests
+// can verify the leader-mitigation branch — not the timeout branch — was
+// taken.
+struct leader_mitigation_scenario {
+    int wait_calls{0};
+};
+
+std::unique_ptr<leader_mitigation_scenario> arm_leader_mitigation(
+  fake_partition_leader_cache* leaders,
+  const model::ntp& ntp,
+  model::node_id leader,
+  int recover_after) {
+    leaders->clear_leader(ntp);
+    auto scenario = std::make_unique<leader_mitigation_scenario>();
+    auto* s = scenario.get();
+    leaders->set_recovery_callback(
+      ntp, [leaders, ntp, leader, s, recover_after]() {
+          ++s->wait_calls;
+          leaders->bump_term(ntp);
+          if (s->wait_calls >= recover_after) {
+              leaders->set_leader_node(ntp, leader);
+          }
+      });
+    return scenario;
+}
+} // namespace
+
+TEST_P(KafkaDataRpcTest, ProduceWithLeaderMitigationRecoversOnNotLeader) {
+    auto ntp = make_ntp("produce_mitigation");
+    create_topic(model::topic_namespace(ntp.ns, ntp.tp.topic));
+
+    constexpr int recover_after = 2;
+    auto scenario = arm_leader_mitigation(
+      leaders(), ntp, leader_node(), recover_after);
+
+    auto batch = model::test::make_random_batch({.count = 1, .records = 1});
+    auto r = produce_with_leader_mitigation(ntp, std::move(batch));
+    ASSERT_EQ(r.ec, cluster::errc::success);
+    EXPECT_EQ(scenario->wait_calls, recover_after);
+
+    // Each prepare() snapshots the current term; bumps happen between
+    // attempts, so recorded stale_terms must be strictly increasing and
+    // start at the pre-clear term (1).
+    const auto& stale_terms = leaders()->recorded_stale_terms(ntp);
+    ASSERT_EQ(stale_terms.size(), size_t{recover_after});
+    EXPECT_EQ(stale_terms[0], model::term_id{1});
+    EXPECT_EQ(stale_terms[1], model::term_id{2});
+}
+
+TEST_P(KafkaDataRpcTest, GetSinglePartitionOffsetsRecoversOnNotLeader) {
+    auto ntp = make_ntp("offsets_mitigation");
+    create_topic(model::topic_namespace(ntp.ns, ntp.tp.topic));
+
+    constexpr int recover_after = 2;
+    auto scenario = arm_leader_mitigation(
+      leaders(), ntp, leader_node(), recover_after);
+
+    auto res = get_single_partition_offsets(ntp.tp);
+    ASSERT_TRUE(res.has_value())
+      << "err: " << cluster::error_category().message(int(res.error()));
+    EXPECT_EQ(res.value().high_watermark, kafka::offset(0));
+    EXPECT_EQ(scenario->wait_calls, recover_after);
+
+    const auto& stale_terms = leaders()->recorded_stale_terms(ntp);
+    ASSERT_EQ(stale_terms.size(), size_t{recover_after});
+    EXPECT_EQ(stale_terms[0], model::term_id{1});
+    EXPECT_EQ(stale_terms[1], model::term_id{2});
+}
+
+TEST_P(KafkaDataRpcTest, ConsumeRecoversOnNotLeader) {
+    auto ntp = make_ntp("consume_mitigation");
+    create_topic(model::topic_namespace(ntp.ns, ntp.tp.topic));
+
+    // Produce a batch while the leader is still set so there's something
+    // to consume once leadership is restored.
+    auto batches = record_batches::make();
+    ASSERT_EQ(produce(ntp, batches), cluster::errc::success);
+
+    constexpr int recover_after = 2;
+    auto scenario = arm_leader_mitigation(
+      leaders(), ntp, leader_node(), recover_after);
+
+    auto r = consume(ntp.tp, kafka::offset(0), kafka::offset::max());
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(r.value().err, cluster::errc::success);
+    EXPECT_EQ(r.value().batches.size(), batches.size());
+    EXPECT_EQ(scenario->wait_calls, recover_after);
+
+    const auto& stale_terms = leaders()->recorded_stale_terms(ntp);
+    ASSERT_EQ(stale_terms.size(), size_t{recover_after});
+    EXPECT_EQ(stale_terms[0], model::term_id{1});
+    EXPECT_EQ(stale_terms[1], model::term_id{2});
 }
 
 INSTANTIATE_TEST_SUITE_P(

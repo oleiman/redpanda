@@ -219,44 +219,106 @@ private:
 
 class fake_partition_leader_cache : public partition_leader_cache {
 public:
+    using recovery_callback = ss::noncopyable_function<void()>;
+
     std::optional<model::node_id> get_leader_node(
       model::topic_namespace_view tp_ns, model::partition_id p) const final {
         auto ntp = model::ntp(tp_ns.ns, tp_ns.tp, p);
-        auto it = _leader_map.find(ntp);
-        if (it == _leader_map.end()) {
+        auto it = _state.find(ntp);
+        if (it == _state.end() || !it->second->leader.has_value()) {
             return std::nullopt;
         }
-        return it->second;
+        return it->second->leader;
     }
 
     std::optional<cluster::leader_term> get_leader_term(
       model::topic_namespace_view tp_ns, model::partition_id p) const final {
         auto ntp = model::ntp(tp_ns.ns, tp_ns.tp, p);
-        auto it = _leader_map.find(ntp);
-        if (it == _leader_map.end()) {
+        auto it = _state.find(ntp);
+        if (it == _state.end()) {
             return std::nullopt;
         }
-        return cluster::leader_term(it->second, model::term_id{1});
+        return cluster::leader_term(it->second->leader, it->second->term);
     }
 
     void set_leader_node(const model::ntp& ntp, model::node_id nid) {
-        _leader_map.insert_or_assign(ntp, nid);
-        vassert(_leader_map.find(ntp) != _leader_map.end(), "what??");
+        auto [it, inserted] = _state.try_emplace(ntp);
+        if (inserted) {
+            it->second = std::make_unique<partition_state>();
+        }
+        it->second->leader = nid;
+    }
+
+    /// Simulate a leader going away: get_leader_node() returns nullopt and
+    /// the client surfaces cluster::errc::not_leader. The term is preserved
+    /// so subsequent prepare() snapshots capture the pre-loss term.
+    void clear_leader(const model::ntp& ntp) {
+        auto it = _state.find(ntp);
+        if (it != _state.end()) {
+            it->second->leader = std::nullopt;
+        }
+    }
+
+    /// Advance the term and wake any CV waiters. Simulates an election.
+    void bump_term(const model::ntp& ntp) {
+        auto it = _state.find(ntp);
+        if (it == _state.end()) {
+            return;
+        }
+        ++it->second->term;
+        it->second->term_changed.broadcast();
+    }
+
+    /// Install a callback that runs synchronously at the start of every
+    /// wait_for_term_change() invocation for \p ntp. Used to simulate an
+    /// election mid-mitigation without timing races: the callback can call
+    /// bump_term() and set_leader_node() to drive the scenario, so the
+    /// wait resolves immediately via the post-callback term check.
+    void set_recovery_callback(const model::ntp& ntp, recovery_callback cb) {
+        _recovery_callbacks.insert_or_assign(ntp, std::move(cb));
+    }
+
+    /// Stale-term values passed to each wait_for_term_change() call for
+    /// \p ntp, in call order. Lets tests assert the snapshot-per-attempt
+    /// invariant of leader_mitigating_retry_policy::prepare().
+    const std::vector<model::term_id>&
+    recorded_stale_terms(const model::ntp& ntp) const {
+        static const std::vector<model::term_id> empty;
+        auto it = _recorded_stale_terms.find(ntp);
+        return it == _recorded_stale_terms.end() ? empty : it->second;
     }
 
     ss::future<> wait_for_term_change(
-      model::topic_namespace_view,
-      model::partition_id,
-      model::term_id,
-      ss::lowres_clock::time_point,
+      model::topic_namespace_view tp_ns,
+      model::partition_id pid,
+      model::term_id stale_term,
+      ss::lowres_clock::time_point deadline,
       ss::abort_source&) final {
-        co_return;
+        auto ntp = model::ntp(tp_ns.ns, tp_ns.tp, pid);
+        _recorded_stale_terms[ntp].push_back(stale_term);
+
+        if (
+          auto cb_it = _recovery_callbacks.find(ntp);
+          cb_it != _recovery_callbacks.end()) {
+            cb_it->second();
+        }
+
+        auto it = _state.find(ntp);
+        if (it == _state.end() || it->second->term > stale_term) {
+            co_return;
+        }
+        try {
+            co_await it->second->term_changed.wait(
+              deadline, [&] { return it->second->term > stale_term; });
+        } catch (const ss::condition_variable_timed_out&) {
+        } catch (const ss::broken_condition_variable&) {
+        }
     }
 
     std::optional<int32_t>
     partition_count(model::topic_namespace_view tp_ns) const {
         int32_t count = 0;
-        for (const auto& [ntp, _] : _leader_map) {
+        for (const auto& [ntp, _] : _state) {
             if (ntp.ns == tp_ns.ns && ntp.tp.topic == tp_ns.tp) {
                 count++;
             }
@@ -265,7 +327,16 @@ public:
     }
 
 private:
-    absl::flat_hash_map<model::ntp, model::node_id> _leader_map;
+    struct partition_state {
+        std::optional<model::node_id> leader;
+        model::term_id term{1};
+        ss::condition_variable term_changed;
+    };
+
+    absl::flat_hash_map<model::ntp, std::unique_ptr<partition_state>> _state;
+    absl::flat_hash_map<model::ntp, recovery_callback> _recovery_callbacks;
+    absl::flat_hash_map<model::ntp, std::vector<model::term_id>>
+      _recorded_stale_terms;
 };
 
 class delegating_fake_partition_leader_cache : public partition_leader_cache {
@@ -285,12 +356,13 @@ public:
     }
 
     ss::future<> wait_for_term_change(
-      model::topic_namespace_view,
-      model::partition_id,
-      model::term_id,
-      ss::lowres_clock::time_point,
-      ss::abort_source&) final {
-        co_return;
+      model::topic_namespace_view tp_ns,
+      model::partition_id pid,
+      model::term_id stale_term,
+      ss::lowres_clock::time_point deadline,
+      ss::abort_source& as) final {
+        return _delegate->wait_for_term_change(
+          tp_ns, pid, stale_term, deadline, as);
     }
 
     void set_leader_node(const model::ntp& ntp, model::node_id nid) {

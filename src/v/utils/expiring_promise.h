@@ -74,14 +74,27 @@ public:
         return f;
     };
 
-    void set_value(T val) {
+    template<typename A>
+    requires std::is_same_v<A, T>
+    void set_value(A val) {
+        set_value<A&&>(std::move(val));
+    }
+
+    // todo: requires a == T after remove cv ref
+    template<typename... A>
+    requires(
+      std::is_void_v<T>
+        ? sizeof...(A) == 0
+        : (sizeof...(A) == 1
+           && (std::is_convertible_v<std::decay_t<A>, std::decay_t<T>> && ...)))
+    void set_value(A&&... a) {
         if (_timer.cancel()) {
             unlink_abort_source();
         }
 
         if (likely(!_available)) {
             _available = true;
-            _promise.set_value(std::move(val));
+            _promise.set_value(std::forward<A>(a)...);
         }
     }
 

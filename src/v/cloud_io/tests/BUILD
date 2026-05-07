@@ -146,6 +146,20 @@ redpanda_cc_gtest(
     ],
 )
 
+redpanda_cc_gtest(
+    name = "cache_write_admission_test",
+    timeout = "short",
+    srcs = [
+        "cache_write_admission_test.cc",
+    ],
+    deps = [
+        "//src/v/cloud_io:cache_write_admission",
+        "//src/v/config",
+        "//src/v/test_utils:gtest",
+        "@seastar",
+    ],
+)
+
 redpanda_cc_btest(
     name = "directory_walker_test",
     timeout = "short",

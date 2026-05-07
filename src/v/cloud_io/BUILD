@@ -52,6 +52,26 @@ redpanda_cc_library(
 )
 
 redpanda_cc_library(
+    name = "cache_write_admission",
+    srcs = [
+        "cache_write_admission.cc",
+    ],
+    hdrs = [
+        "cache_write_admission.h",
+    ],
+    implementation_deps = [
+        ":logger",
+        "//src/v/base",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/v/config",
+        "//src/v/ssx:semaphore",
+        "@seastar",
+    ],
+)
+
+redpanda_cc_library(
     name = "remote_api",
     hdrs = [
         "remote_api.h",

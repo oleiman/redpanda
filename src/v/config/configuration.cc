@@ -4720,6 +4720,31 @@ configuration::configuration()
       "How often to trigger background compaction for cloud topics.",
       {.needs_restart = needs_restart::no, .visibility = visibility::tunable},
       30s)
+  , cloud_io_cache_write_admission_max_bytes(
+      *this,
+      "cloud_io_cache_write_admission_max_bytes",
+      "Maximum bytes-in-flight permitted for cache-write operations on "
+      "downloaded objects per shard. Bounds simultaneous NVMe write queue "
+      "depth from cloud_storage cache hydration; designed to prevent "
+      "excessive holding of cloud_client connection pool leases when local "
+      "NVMe saturates. Setting too low caps drain throughput; setting too "
+      "high loses the admission benefit.",
+      {.needs_restart = needs_restart::no,
+       .example = "268435456",
+       .visibility = visibility::tunable},
+      256_MiB,
+      {.min = 16_MiB, .max = 16_GiB})
+  , cloud_io_cache_write_admission_min_reservation_bytes(
+      *this,
+      "cloud_io_cache_write_admission_min_reservation_bytes",
+      "Minimum number of bytes any single cache-write waiter must reserve. "
+      "Prevents many tiny writes from monopolizing the admission semaphore. "
+      "Should typically match the cloud_topics_upload_part_size lower bound.",
+      {.needs_restart = needs_restart::no,
+       .example = "1048576",
+       .visibility = visibility::tunable},
+      1_MiB,
+      {.min = 64_KiB, .max = 64_MiB})
   , cloud_topics_compaction_key_map_memory(
       *this,
       "cloud_topics_compaction_key_map_memory",

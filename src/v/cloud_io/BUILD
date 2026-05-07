@@ -107,6 +107,7 @@ redpanda_cc_library(
     ],
     visibility = ["//visibility:public"],
     deps = [
+        ":cache_write_admission",
         ":io_resources",
         ":io_result",
         ":provider",

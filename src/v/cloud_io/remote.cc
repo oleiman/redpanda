@@ -156,6 +156,10 @@ remote::remote(
   ss::scheduling_group sg)
   : _pool(clients)
   , _resources(std::make_unique<io_resources>(sg))
+  , _cache_write_admission(
+      config::shard_local_cfg().cloud_io_cache_write_admission_max_bytes.bind(),
+      config::shard_local_cfg()
+        .cloud_io_cache_write_admission_min_reservation_bytes.bind())
   , _cloud_storage_backend{cloud_storage_clients::
                              infer_backend_from_configuration(
                                conf, cloud_credentials_source)}
@@ -405,8 +409,14 @@ ss::future<download_result> remote::download_stream(
                 auto underlying_st = resp.value()->as_input_stream();
                 auto throttled_st = _resources->throttle_download(
                   std::move(underlying_st), _as, throttle_metric_ms_cb);
+
+                // Bound concurrent in-flight cache-write work per shard.
+                auto admission_units = co_await _cache_write_admission.wait(
+                  length, fib.root_abort_source());
+
                 uint64_t content_length = co_await cons_str(
                   length, std::move(throttled_st));
+                // admission_units released on scope exit.
                 transfer_details.on_success_size(content_length);
                 co_return download_result::success;
             } catch (...) {

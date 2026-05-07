@@ -10,6 +10,7 @@
 
 #pragma once
 
+#include "cloud_io/cache_write_admission.h"
 #include "cloud_io/io_resources.h"
 #include "cloud_io/io_result.h"
 #include "cloud_io/provider.h"
@@ -233,6 +234,7 @@ private:
     ss::gate _gate;
     ss::abort_source _as;
     std::unique_ptr<io_resources> _resources;
+    cache_write_admission _cache_write_admission;
 
     model::cloud_storage_backend _cloud_storage_backend;
     cloud_io::provider _provider;

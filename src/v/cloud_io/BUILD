@@ -62,6 +62,7 @@ redpanda_cc_library(
     implementation_deps = [
         ":logger",
         "//src/v/base",
+        "//src/v/metrics",
     ],
     visibility = ["//visibility:public"],
     deps = [

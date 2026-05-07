@@ -12,6 +12,9 @@
 
 #include "base/vlog.h"
 #include "cloud_io/logger.h"
+#include "metrics/prometheus_sanitize.h"
+
+#include <seastar/core/metrics.hh>
 
 #include <algorithm>
 
@@ -25,6 +28,37 @@ cache_write_admission::cache_write_admission(
   , _current_capacity(_max_bytes())
   , _sem(_current_capacity, "cloud_io/cache_write_admission") {
     _max_bytes.watch([this] { on_max_bytes_changed(); });
+
+    namespace sm = ss::metrics;
+
+    _metrics.add_group(
+      prometheus_sanitize::metrics_name("cloud_io_cache_write_admission"),
+      {
+        sm::make_gauge(
+          "available_bytes",
+          [this] { return _sem.current(); },
+          sm::description(
+            "Bytes currently available for cache-write admission.")),
+        sm::make_gauge(
+          "configured_capacity_bytes",
+          [this] { return _current_capacity; },
+          sm::description(
+            "Configured cache-write admission capacity in bytes.")),
+        sm::make_gauge(
+          "waiters",
+          [this] { return _sem.waiters(); },
+          sm::description(
+            "Number of fibers waiting on cache-write admission.")),
+        sm::make_counter(
+          "wait_total",
+          [this] { return _wait_count; },
+          sm::description("Total wait() calls that had to block.")),
+        sm::make_counter(
+          "wait_immediate_total",
+          [this] { return _immediate_count; },
+          sm::description(
+            "Total wait() calls that succeeded without blocking.")),
+      });
 }
 
 ss::future<ssx::semaphore_units>
@@ -35,6 +69,11 @@ cache_write_admission::wait(uint64_t bytes, ss::abort_source& as) {
     // request arrives.
     const auto capped_reservation = std::min<uint64_t>(
       reservation, _current_capacity);
+    if (_sem.current() >= capped_reservation) {
+        ++_immediate_count;
+    } else {
+        ++_wait_count;
+    }
     co_return co_await ss::get_units(_sem, capped_reservation, as);
 }
 

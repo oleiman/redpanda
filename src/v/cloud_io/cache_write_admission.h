@@ -16,6 +16,7 @@
 
 #include <seastar/core/abort_source.hh>
 #include <seastar/core/future.hh>
+#include <seastar/core/metrics_registration.hh>
 
 namespace cloud_io {
 
@@ -81,8 +82,14 @@ private:
     /// Initial capacity matches `_max_bytes` at construction; later
     /// resized via `on_max_bytes_changed`.
     uint64_t _current_capacity{0};
+    uint64_t _wait_count{0};
+    uint64_t _immediate_count{0};
 
     ssx::semaphore _sem;
+
+    // Declared last so the metric group is unregistered before the
+    // members it references are destroyed.
+    ss::metrics::metric_groups _metrics;
 };
 
 } // namespace cloud_io

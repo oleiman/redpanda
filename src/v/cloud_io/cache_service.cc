@@ -26,6 +26,7 @@
 #include <seastar/core/shard_id.hh>
 #include <seastar/core/smp.hh>
 #include <seastar/core/sstring.hh>
+#include <seastar/core/with_scheduling_group.hh>
 #include <seastar/coroutine/as_future.hh>
 #include <seastar/util/defer.hh>
 
@@ -59,7 +60,8 @@ cache::cache(
   config::binding<uint64_t> max_bytes_cfg,
   config::binding<std::optional<double>> max_percent,
   config::binding<uint32_t> max_objects,
-  config::binding<uint16_t> walk_concurrency) noexcept
+  config::binding<uint16_t> walk_concurrency,
+  ss::scheduling_group cache_write_sg) noexcept
   : _cache_dir(std::move(cache_dir))
   , _disk_size(disk_size)
   , _disk_reservation(std::move(disk_reservation))
@@ -68,6 +70,7 @@ cache::cache(
   , _max_bytes(_max_bytes_cfg())
   , _max_objects(std::move(max_objects))
   , _walk_concurrency(std::move(walk_concurrency))
+  , _cache_write_sg(cache_write_sg)
   , _cnt(0)
   , _total_cleaned(0) {
     if (ss::this_shard_id() == ss::shard_id{0}) {
@@ -1290,9 +1293,12 @@ ss::future<> cache::put(
     std::exception_ptr eptr;
     bool no_space_on_device = false;
     try {
-        co_await ss::copy(data, out)
-          .then([&out]() { return out.flush(); })
-          .finally([&out]() { return out.close(); });
+        co_await ss::with_scheduling_group(
+          _cache_write_sg, [&]() -> ss::future<> {
+              return ss::copy(data, out)
+                .then([&out]() { return out.flush(); })
+                .finally([&out]() { return out.close(); });
+          });
     } catch (const std::filesystem::filesystem_error& e) {
         // For ENOSPC errors, delay handling so that we can do a trim
         no_space_on_device = e.code() == std::errc::no_space_on_device;

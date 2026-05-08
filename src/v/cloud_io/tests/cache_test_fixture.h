@@ -66,7 +66,8 @@ public:
             config::mock_binding<uint64_t>(1_MiB + 500_KiB),
             config::mock_binding<std::optional<double>>(std::nullopt),
             config::mock_binding<uint32_t>(100000),
-            config::mock_binding<uint16_t>(3))
+            config::mock_binding<uint16_t>(3),
+            ss::default_scheduling_group())
           .get();
         sharded_cache
           .invoke_on_all([](cloud_io::cache& c) { return c.start(); })

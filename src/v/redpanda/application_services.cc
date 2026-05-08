@@ -586,6 +586,10 @@ void application::wire_up_redpanda_services(
           ss::sharded_parameter([] {
               return config::shard_local_cfg()
                 .cloud_storage_cache_trim_walk_concurrency.bind();
+          }),
+          ss::sharded_parameter([] {
+              return scheduling_groups::instance()
+                .cloud_topics_cache_write_sg();
           }))
           .get();
 

@@ -27,6 +27,7 @@
 #include <seastar/core/gate.hh>
 #include <seastar/core/iostream.hh>
 #include <seastar/core/lowres_clock.hh>
+#include <seastar/core/scheduling.hh>
 #include <seastar/core/sharded.hh>
 #include <seastar/core/thread.hh>
 
@@ -74,7 +75,8 @@ public:
       config::binding<uint64_t> max_bytes_cfg,
       config::binding<std::optional<double>> max_percent,
       config::binding<uint32_t> max_objects,
-      config::binding<uint16_t> walk_concurrency) noexcept;
+      config::binding<uint16_t> walk_concurrency,
+      ss::scheduling_group cache_write_sg) noexcept;
 
     cache(const cache&) = delete;
     cache(cache&& rhs) = delete;
@@ -338,6 +340,7 @@ private:
 
     ss::abort_source _as;
     ss::gate _gate;
+    ss::scheduling_group _cache_write_sg;
     uint64_t _cnt;
 
     // When trimming, trim to this fraction of the target size to leave some

@@ -108,6 +108,8 @@ struct archival_metadata_stm_base_fixture
             ss::sharded_parameter(
               [this] { return cloud_cfg.local().cloud_credentials_source; }),
             ss::sharded_parameter(
+              [] { return ss::default_scheduling_group(); }),
+            ss::sharded_parameter(
               [] { return ss::default_scheduling_group(); }))
           .get();
         cloud_io.invoke_on_all([](cloud_io::remote& io) { return io.start(); })

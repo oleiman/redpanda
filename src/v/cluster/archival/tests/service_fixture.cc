@@ -90,6 +90,7 @@ archiver_fixture::archiver_fixture()
         std::ref(pool),
         sharded_client_conf,
         sharded_creds_source,
+        ss::sharded_parameter([] { return ss::default_scheduling_group(); }),
         ss::sharded_parameter([] { return ss::default_scheduling_group(); }))
       .get();
     io.local().start().get();

@@ -57,7 +57,8 @@ public:
       ss::sharded<cloud_storage_clients::client_pool>& clients,
       const cloud_storage_clients::client_configuration& conf,
       model::cloud_credentials_source cloud_credentials_source,
-      ss::scheduling_group sg);
+      ss::scheduling_group sg,
+      ss::scheduling_group cache_write_sg);
 
     ~remote() override;
 
@@ -234,6 +235,7 @@ private:
     ss::gate _gate;
     ss::abort_source _as;
     std::unique_ptr<io_resources> _resources;
+    ss::scheduling_group _cache_write_sg;
     cache_write_admission _cache_write_admission;
 
     model::cloud_storage_backend _cloud_storage_backend;

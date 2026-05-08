@@ -153,9 +153,11 @@ remote::remote(
   ss::sharded<cloud_storage_clients::client_pool>& clients,
   const cloud_storage_clients::client_configuration& conf,
   model::cloud_credentials_source cloud_credentials_source,
-  ss::scheduling_group sg)
+  ss::scheduling_group sg,
+  ss::scheduling_group cache_write_sg)
   : _pool(clients)
   , _resources(std::make_unique<io_resources>(sg))
+  , _cache_write_sg(cache_write_sg)
   , _cache_write_admission(
       config::shard_local_cfg().cloud_io_cache_write_admission_max_bytes.bind(),
       config::shard_local_cfg()

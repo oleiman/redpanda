@@ -37,6 +37,7 @@ std::unique_ptr<scoped_remote> scoped_remote::create(
         std::ref(ret->pool),
         sharded_config,
         ss::sharded_parameter([] { return config_file; }),
+        ss::sharded_parameter([] { return ss::default_scheduling_group(); }),
         ss::sharded_parameter([] { return ss::default_scheduling_group(); }))
       .get();
     ret->remote

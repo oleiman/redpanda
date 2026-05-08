@@ -222,7 +222,11 @@ void application::wire_up_redpanda_services(
           cloud_config->client_config,
           cloud_config->cloud_credentials_source,
           ss::sharded_parameter(
-            [] { return scheduling_groups::instance().ts_read_sg(); }))
+            [] { return scheduling_groups::instance().ts_read_sg(); }),
+          ss::sharded_parameter([] {
+              return scheduling_groups::instance()
+                .cloud_topics_cache_write_sg();
+          }))
           .get();
         cloud_io.invoke_on_all(&cloud_io::remote::start).get();
         bucket_name = cloud_config->bucket_name;

@@ -100,6 +100,8 @@ public:
               ss::sharded_parameter([]() { return get_configuration(); }),
               ss::sharded_parameter([] { return config_file; }),
               ss::sharded_parameter(
+                [] { return ss::default_scheduling_group(); }),
+              ss::sharded_parameter(
                 [] { return ss::default_scheduling_group(); }));
 
             co_await stm_node.remote.start(

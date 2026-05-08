@@ -1437,6 +1437,7 @@ TEST(RemoteTest, TestShutdownOnRetry) {
         std::ref(pool),
         ss::sharded_parameter([&s3] { return s3.conf; }),
         ss::sharded_parameter([&] { return config_file; }),
+        ss::sharded_parameter([] { return ss::default_scheduling_group(); }),
         ss::sharded_parameter([] { return ss::default_scheduling_group(); }))
       .get();
     remote.start(std::ref(io), ss::sharded_parameter([&s3] { return s3.conf; }))

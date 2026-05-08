@@ -27,6 +27,7 @@
 #include <seastar/core/abort_source.hh>
 #include <seastar/core/loop.hh>
 #include <seastar/core/sleep.hh>
+#include <seastar/core/with_scheduling_group.hh>
 #include <seastar/coroutine/as_future.hh>
 
 #include <boost/beast/http/field.hpp>
@@ -416,8 +417,13 @@ ss::future<download_result> remote::download_stream(
                 auto admission_units = co_await _cache_write_admission.wait(
                   length, fib.root_abort_source());
 
-                uint64_t content_length = co_await cons_str(
-                  length, std::move(throttled_st));
+                // Run the cache-write phase on the dedicated scheduling
+                // group so its I/O priority is independent of the caller's
+                // sg.
+                uint64_t content_length = co_await ss::with_scheduling_group(
+                  _cache_write_sg, [&]() -> ss::future<uint64_t> {
+                      return cons_str(length, std::move(throttled_st));
+                  });
                 // admission_units released on scope exit.
                 transfer_details.on_success_size(content_length);
                 co_return download_result::success;

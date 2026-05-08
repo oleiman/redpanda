@@ -9,6 +9,7 @@
  */
 #include "cloud_topics/level_one/frontend_reader/level_one_reader.h"
 
+#include "cloud_topics/level_one/frontend_reader/l1_footer_cache.h"
 #include "cloud_topics/level_one/frontend_reader/level_one_reader_probe.h"
 #include "cloud_topics/level_one/metastore/retry.h"
 #include "cloud_topics/logger.h"
@@ -39,7 +40,8 @@ level_one_log_reader_impl::level_one_log_reader_impl(
   model::topic_id_partition tidp,
   l1::metastore* metastore,
   l1::io* io_interface,
-  level_one_reader_probe* probe)
+  level_one_reader_probe* probe,
+  l1::l1_footer_cache* footer_cache)
   : _config(cfg)
   , _ntp(std::move(ntp))
   , _tidp(tidp)
@@ -47,6 +49,7 @@ level_one_log_reader_impl::level_one_log_reader_impl(
   , _metastore(metastore)
   , _io(io_interface)
   , _probe(probe)
+  , _footer_cache(footer_cache)
   , _log(cd_log, fmt::format("[{}/{}/{}]", fmt::ptr(this), _ntp, _tidp)) {
     vlog(_log.debug, "New reader created {}", _config);
 }
@@ -291,6 +294,20 @@ level_one_log_reader_impl::lookup_object_for_offset(
 
 ss::future<l1::footer> level_one_log_reader_impl::read_footer(
   l1::object_id oid, size_t footer_pos, size_t object_size) {
+    if (_footer_cache != nullptr) {
+        if (auto cached = _footer_cache->get(oid); cached.has_value()) {
+            if (_probe != nullptr) {
+                _probe->register_footer_cache_hit();
+                _probe->update_footer_cache_size(
+                  _footer_cache->get_stats().cached_footers);
+            }
+            co_return std::move(*cached);
+        }
+        if (_probe != nullptr) {
+            _probe->register_footer_cache_miss();
+        }
+    }
+
     size_t footer_total_size = object_size - footer_pos;
     if (_probe != nullptr) {
         _probe->register_footer_read(footer_total_size);
@@ -357,7 +374,15 @@ ss::future<l1::footer> level_one_log_reader_impl::read_footer(
           object_size));
     }
 
-    co_return std::get<l1::footer>(std::move(footer_result));
+    auto parsed = std::get<l1::footer>(std::move(footer_result));
+    if (_footer_cache != nullptr) {
+        _footer_cache->put(oid, parsed.copy());
+        if (_probe != nullptr) {
+            _probe->update_footer_cache_size(
+              _footer_cache->get_stats().cached_footers);
+        }
+    }
+    co_return parsed;
 }
 
 ss::future<chunked_circular_buffer<model::record_batch>>

@@ -27,12 +27,19 @@ public:
         _bytes_skipped += bytes_skipped;
     }
 
+    void register_footer_cache_hit() noexcept { ++_footer_cache_hits; }
+    void register_footer_cache_miss() noexcept { ++_footer_cache_misses; }
+    void update_footer_cache_size(size_t n) noexcept { _footer_cache_size = n; }
+
 private:
     void setup_metrics();
 
     uint64_t _footer_bytes_read{0};
     uint64_t _bytes_read{0};
     uint64_t _bytes_skipped{0};
+    uint64_t _footer_cache_hits{0};
+    uint64_t _footer_cache_misses{0};
+    size_t _footer_cache_size{0};
 
     metrics::internal_metric_groups _metrics;
 };

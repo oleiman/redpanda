@@ -25,6 +25,10 @@ namespace cloud_topics {
 
 class level_one_reader_probe;
 
+namespace l1 {
+class l1_footer_cache;
+} // namespace l1
+
 /// Open stream for the current L1 object, held inside the reader
 /// between read_some calls within the same object.
 struct open_stream {
@@ -81,7 +85,8 @@ public:
       model::topic_id_partition tidp,
       l1::metastore* metastore,
       l1::io* io_interface,
-      level_one_reader_probe* probe = nullptr);
+      level_one_reader_probe* probe = nullptr,
+      l1::l1_footer_cache* footer_cache = nullptr);
 
     bool is_end_of_stream() const final;
 
@@ -199,6 +204,7 @@ private:
     l1::metastore* _metastore;
     l1::io* _io;
     level_one_reader_probe* _probe;
+    l1::l1_footer_cache* _footer_cache;
     prefix_logger _log;
     size_t _bytes_consumed{0};
     bool _was_cached{false};

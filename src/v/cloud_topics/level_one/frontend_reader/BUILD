@@ -39,6 +39,27 @@ redpanda_cc_library(
 )
 
 redpanda_cc_library(
+    name = "l1_footer_cache",
+    srcs = [
+        "l1_footer_cache.cc",
+    ],
+    hdrs = [
+        "l1_footer_cache.h",
+    ],
+    implementation_deps = [
+        "//src/v/ssx:future_util",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/v/cloud_topics/level_one/common:object",
+        "//src/v/cloud_topics/level_one/common:object_id",
+        "//src/v/config",
+        "//src/v/container:intrusive",
+        "@seastar",
+    ],
+)
+
+redpanda_cc_library(
     name = "reader",
     srcs = [
         "level_one_reader.cc",

@@ -126,12 +126,12 @@ public:
          * Cloud topics compaction scheduling group.
          */
         _cloud_topics_compaction = co_await ss::create_scheduling_group(
-          "cloud_topics_compaction", 150);
+          "cloud_topics_compaction", 100);
         /**
          * Cloud topics reconciler scheduling group.
          */
         _cloud_topics_reconciler = co_await ss::create_scheduling_group(
-          "cloud_topics_reconciler", 150);
+          "cloud_topics_reconciler", 400);
         /**
          * Cloud topics metastore scheduling group.
          */

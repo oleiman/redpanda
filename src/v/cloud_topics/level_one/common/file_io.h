@@ -14,7 +14,12 @@
 #include "cloud_io/remote.h"
 #include "cloud_topics/level_one/common/abstract_io.h"
 #include "cloud_topics/level_one/common/object_id.h"
+#include "container/chunked_hash_map.h"
 #include "model/fundamental.h"
+
+#include <seastar/core/shared_future.hh>
+
+#include <optional>
 
 namespace cloud_topics::l1 {
 
@@ -59,6 +64,23 @@ private:
     cloud_storage_clients::bucket_name _bucket;
     std::filesystem::path _staging_dir;
     cloud_io::cache* _cache;
+
+    // In-flight L1 download dedup. When two consumers on the same
+    // shard miss the cache on the same (oid, position, size) extent
+    // within a tiny window, the first one becomes the leader and the
+    // others wait on the shared_promise instead of triggering
+    // duplicate S3 GETs + cache writes. The promise resolves with
+    // std::nullopt on success (waiters retry the cache lookup) or with
+    // an errc on failure (waiters propagate the same error). Mirrors
+    // the L0 read_merge pattern at the L1 cache-miss boundary; the
+    // 2026-05-07 IO analysis doc previously flagged "L1 has no
+    // equivalent" to L0's cross-consumer coalescing, and 2026-05-12
+    // K=3 Mode A isolation bench data confirmed the K-fanout write
+    // amplification this addresses.
+    chunked_hash_map<
+      std::filesystem::path,
+      ss::shared_promise<std::optional<errc>>>
+      _inflight_downloads;
 };
 
 } // namespace cloud_topics::l1

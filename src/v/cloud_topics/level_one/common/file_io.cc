@@ -215,6 +215,7 @@ file_io::read_object(object_extent extent, ss::abort_source* as) {
               cd_log.debug,
               "Merging L1 read for {} into in-flight download",
               extent);
+            _probe.register_dedup_waiter();
             auto result = co_await it->second.get_shared_future();
             if (result.has_value()) {
                 // Leader's download failed; propagate the same
@@ -234,6 +235,7 @@ file_io::read_object(object_extent extent, ss::abort_source* as) {
           inserted,
           "concurrent insert into _inflight_downloads for {}",
           cache_key.native());
+        _probe.register_dedup_leader();
         std::optional<io::errc> failure_errc;
         auto cleanup = ss::defer([this, cache_key, &failure_errc]() {
             // Re-find rather than caching the iterator: coroutine

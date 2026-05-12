@@ -13,6 +13,7 @@
 #include "cloud_io/cache_service.h"
 #include "cloud_io/remote.h"
 #include "cloud_topics/level_one/common/abstract_io.h"
+#include "cloud_topics/level_one/common/file_io_probe.h"
 #include "cloud_topics/level_one/common/object_id.h"
 #include "container/chunked_hash_map.h"
 #include "model/fundamental.h"
@@ -81,6 +82,8 @@ private:
       std::filesystem::path,
       ss::shared_promise<std::optional<errc>>>
       _inflight_downloads;
+
+    file_io_probe _probe;
 };
 
 } // namespace cloud_topics::l1

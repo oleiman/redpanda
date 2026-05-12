@@ -14,7 +14,12 @@
 #include "cloud_io/remote.h"
 #include "cloud_topics/level_one/common/abstract_io.h"
 #include "cloud_topics/level_one/common/object_id.h"
+#include "container/chunked_hash_map.h"
 #include "model/fundamental.h"
+
+#include <seastar/core/shared_future.hh>
+
+#include <optional>
 
 namespace cloud_topics::l1 {
 
@@ -59,6 +64,19 @@ private:
     cloud_storage_clients::bucket_name _bucket;
     std::filesystem::path _staging_dir;
     cloud_io::cache* _cache;
+
+    // If two readers on the same shard miss the cloud cache on the
+    // same extent, only one of them triggers a download. The other
+    // waits on a shared promise corresponding to the download already
+    // in progress.
+    // If the promise resolves to nullopt, the waiter can expect a
+    // warm cache. Otherwise it should propagate the error as though
+    // the download came from its own fiber.
+    // Loosely mirrors the L0 read_merge pattern.
+    chunked_hash_map<
+      std::filesystem::path,
+      ss::shared_promise<std::optional<errc>>>
+      _inflight_downloads;
 };
 
 } // namespace cloud_topics::l1

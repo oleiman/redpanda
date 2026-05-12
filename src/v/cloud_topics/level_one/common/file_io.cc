@@ -10,6 +10,7 @@
 
 #include "cloud_topics/level_one/common/file_io.h"
 
+#include "base/vassert.h"
 #include "cloud_io/io_result.h"
 #include "cloud_io/remote.h"
 #include "cloud_storage_clients/client.h"
@@ -21,8 +22,10 @@
 
 #include <seastar/core/file.hh>
 #include <seastar/core/fstream.hh>
+#include <seastar/util/defer.hh>
 
 #include <memory>
+#include <optional>
 
 using namespace std::chrono_literals;
 
@@ -198,6 +201,64 @@ file_io::read_object(object_extent extent, ss::abort_source* as) {
         if (stream) {
             co_return std::move(stream->body);
         }
+
+        // Cache miss. If another caller on this shard is already
+        // downloading this exact extent, wait for it rather than
+        // triggering a duplicate S3 GET + cache write. This is the
+        // K-fanout write-amplification mitigation; see the 2026-05-12
+        // Mode A isolation handoff in docs/plans/ for the data and
+        // L0's read_merge for the precedent pattern this mirrors.
+        if (
+          auto it = _inflight_downloads.find(cache_key);
+          it != _inflight_downloads.end()) {
+            vlog(
+              cd_log.debug,
+              "Merging L1 read for {} into in-flight download",
+              extent);
+            auto fut = co_await ss::coroutine::as_future(
+              it->second.get_shared_future(*as));
+            if (fut.failed()) {
+                fut.ignore_ready_future();
+                co_return std::unexpected(io::errc::cloud_op_timeout);
+            }
+            auto result = fut.get();
+            if (result.has_value()) {
+                // Leader's download failed; propagate the same
+                // error rather than racing on a fresh attempt.
+                co_return std::unexpected(*result);
+            }
+            // Leader succeeded; the cache now has the data. Retry
+            // get_stream — should hit.
+            continue;
+        }
+
+        // cold miss — no preexisting download in progress, kick
+        // one off.
+        auto [_, inserted] = _inflight_downloads.emplace(
+          cache_key, ss::shared_promise<std::optional<io::errc>>{});
+        vassert(
+          inserted,
+          "concurrent insert into _inflight_downloads for {}",
+          cache_key.native());
+        std::optional<io::errc> failure_errc;
+        auto cleanup = ss::defer([this, cache_key, &failure_errc]() {
+            // Re-find rather than caching the iterator: coroutine
+            // suspensions between emplace and cleanup may have
+            // mutated the map.
+            auto it = _inflight_downloads.find(cache_key);
+            if (it == _inflight_downloads.end()) {
+                return;
+            }
+            if (!it->second.available()) {
+                // Path didn't set_value explicitly (e.g., reservation
+                // or download_stream threw before the success arm).
+                // Resolve with the captured errc so waiters propagate
+                // a real error rather than getting broken_promise.
+                it->second.set_value(failure_errc);
+            }
+            _inflight_downloads.erase(it);
+        });
+
         // TODO(cloud_topics): reserving space should also take an abort_source
         auto reservation_fut = co_await ss::coroutine::as_future<
           cloud_io::space_reservation_guard>(
@@ -209,6 +270,7 @@ file_io::read_object(object_extent extent, ss::abort_source* as) {
               "Error reserving cache space for download of {}: {}",
               extent,
               ex);
+            failure_errc = io::errc::file_io_error;
             co_return std::unexpected(io::errc::file_io_error);
         }
         cloud_io::try_consume_stream consumer =
@@ -233,16 +295,23 @@ file_io::read_object(object_extent extent, ss::abort_source* as) {
         if (result_fut.failed()) {
             auto ex = result_fut.get_exception();
             vlog(cd_log.warn, "Error downloading object {}: {}", extent, ex);
+            failure_errc = io::errc::cloud_op_error;
             co_return std::unexpected(io::errc::cloud_op_error);
         }
         switch (result_fut.get()) {
         case cloud_io::download_result::success:
-            continue; // Now that it's in the cache the lookup should succeed.
+            // Defer's set_value will resolve waiters with nullopt; no
+            // need to set the promise explicitly here.
+            failure_errc = std::nullopt;
+            continue;
         case cloud_io::download_result::notfound:
+            failure_errc = io::errc::cloud_missing_object;
             co_return std::unexpected(io::errc::cloud_missing_object);
         case cloud_io::download_result::timedout:
+            failure_errc = io::errc::cloud_op_timeout;
             co_return std::unexpected(io::errc::cloud_op_timeout);
         case cloud_io::download_result::failed:
+            failure_errc = io::errc::cloud_op_error;
             co_return std::unexpected(io::errc::cloud_op_error);
         }
         std::unreachable();

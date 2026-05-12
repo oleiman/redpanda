@@ -88,6 +88,9 @@ redpanda_cc_library(
     name = "file_io",
     srcs = ["file_io.cc"],
     hdrs = ["file_io.h"],
+    implementation_deps = [
+        "//src/v/base",
+    ],
     visibility = [
         "//src/v/cloud_topics:__pkg__",
         "//src/v/cloud_topics/level_one:__subpackages__",
@@ -103,6 +106,7 @@ redpanda_cc_library(
         "//src/v/cloud_storage_clients",
         "//src/v/cloud_topics:logger",
         "//src/v/config",
+        "//src/v/container:chunked_hash_map",
         "//src/v/model",
         "@seastar",
     ],

@@ -110,8 +110,10 @@ redpanda_cc_library(
     ],
     deps = [
         ":abstract_io",
+        ":inflight_download_map",
         ":object_id",
         ":object_utils",
+        "//src/v/base",
         "//src/v/cloud_io:cache",
         "//src/v/cloud_io:io_result",
         "//src/v/cloud_io:remote",

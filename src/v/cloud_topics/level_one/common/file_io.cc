@@ -10,6 +10,7 @@
 
 #include "cloud_topics/level_one/common/file_io.h"
 
+#include "base/vassert.h"
 #include "cloud_io/io_result.h"
 #include "cloud_io/remote.h"
 #include "cloud_storage_clients/client.h"
@@ -23,6 +24,8 @@
 #include <seastar/core/fstream.hh>
 
 #include <memory>
+#include <optional>
+#include <variant>
 
 using namespace std::chrono_literals;
 
@@ -99,6 +102,17 @@ file_io::file_io(
   , _staging_dir(std::move(staging_dir))
   , _cache(cache) {}
 
+ss::future<> file_io::stop() { return _gate.close(); }
+
+std::filesystem::path file_io::cache_key(const object_extent& extent) {
+    return std::filesystem::path(
+      fmt::format(
+        "l1_{}_position_{}_size_{}.partial",
+        extent.id,
+        extent.position,
+        extent.size));
+}
+
 ss::future<std::expected<std::unique_ptr<staging_file>, io::errc>>
 file_io::create_tmp_file() {
     co_return std::make_unique<staging_file_impl>(
@@ -166,6 +180,10 @@ ss::future<uint64_t> file_io::save_to_cache(
 ss::future<std::expected<ss::input_stream<char>, io::errc>>
 file_io::read_object(
   object_extent extent, ss::abort_source* as, cloud_io::group_id gid) {
+    if (_gate.is_closed()) {
+        co_return std::unexpected(io::errc::file_io_error);
+    }
+    auto holder = _gate.hold();
     static constexpr auto timeout = 10s;
     static constexpr auto backoff = 100ms;
     retry_chain_node root(*as, ss::lowres_clock::now() + timeout, backoff);
@@ -178,11 +196,7 @@ file_io::read_object(
     // them).
     // TODO(cloud_topics): If reading just a footer, we should skip the cache.
     // Maybe we need another method for that which is iobuf based?
-    std::filesystem::path cache_key = fmt::format(
-      "l1_{}_position_{}_size_{}.partial",
-      extent.id,
-      extent.position,
-      extent.size);
+    std::filesystem::path cache_key = file_io::cache_key(extent);
     while (true) {
         auto stream_fut = co_await ss::coroutine::as_future<
           std::optional<cloud_io::cache_item_stream>>(_cache->get_stream(
@@ -199,6 +213,57 @@ file_io::read_object(
         if (stream) {
             co_return std::move(stream->body);
         }
+
+        // Cache miss. The inflight_download_map coordinates so that
+        // only one caller per shard triggers the S3 GET + cache write
+        // for any given extent; the rest merge onto a shared future.
+        // At capacity, the caller falls through to an uncoordinated
+        // download (correctness preserved at the cost of a duplicate
+        // GET).
+        auto join = _inflight_downloads.join_or_lead(cache_key, *as);
+
+        if (std::holds_alternative<inflight_download_map::merge_future>(join)) {
+            vlog(
+              cd_log.debug,
+              "Merging L1 read for {} into in-flight download",
+              extent);
+
+            auto& mf = std::get<inflight_download_map::merge_future>(join);
+            auto fut = co_await ss::coroutine::as_future(std::move(mf));
+            if (fut.failed()) {
+                fut.ignore_ready_future();
+                // Matches the cold-miss path's abort->timeout convention.
+                co_return std::unexpected(io::errc::cloud_op_timeout);
+            }
+            auto result = fut.get();
+            if (result.has_value()) {
+                // In-flight download failed; propagate the same
+                // error rather than racing on a fresh attempt.
+                co_return std::unexpected(*result);
+            }
+            // Download succeeded; the cache now has the data.
+            continue;
+        }
+
+        // Cold miss: either become the leader (publish outcome to
+        // future mergers on guard destruction) or proceed without
+        // coordination if the map is at capacity.
+        std::optional<inflight_download_map::leader_guard> leader;
+        if (auto* g = std::get_if<inflight_download_map::leader_guard>(&join)) {
+            leader.emplace(std::move(*g));
+        }
+
+        // The leader guard's outcome defaults to errc::file_io_error,
+        // so an unset path (e.g. reservation failure below) publishes
+        // a failure to merged readers without an explicit resolve.
+        // Each subsequent exit either explicitly resolves with the
+        // observed outcome or returns early with the default.
+        auto publish = [&leader](inflight_download_map::outcome o) {
+            if (leader) {
+                leader->resolve(o);
+            }
+        };
+
         // TODO(cloud_topics): reserving space should also take an abort_source
         auto reservation_fut = co_await ss::coroutine::as_future<
           cloud_io::space_reservation_guard>(
@@ -236,16 +301,25 @@ file_io::read_object(
         if (result_fut.failed()) {
             auto ex = result_fut.get_exception();
             vlog(cd_log.warn, "Error downloading object {}: {}", extent, ex);
-            co_return std::unexpected(io::errc::cloud_op_error);
+            // Map abort to cloud_op_timeout so leader-abort and
+            // merger-abort produce the same errc for the same event.
+            auto e = as->abort_requested() ? io::errc::cloud_op_timeout
+                                           : io::errc::cloud_op_error;
+            publish(e);
+            co_return std::unexpected(e);
         }
         switch (result_fut.get()) {
         case cloud_io::download_result::success:
-            continue; // Now that it's in the cache the lookup should succeed.
+            publish(std::nullopt);
+            continue;
         case cloud_io::download_result::notfound:
+            publish(io::errc::cloud_missing_object);
             co_return std::unexpected(io::errc::cloud_missing_object);
         case cloud_io::download_result::timedout:
+            publish(io::errc::cloud_op_timeout);
             co_return std::unexpected(io::errc::cloud_op_timeout);
         case cloud_io::download_result::failed:
+            publish(io::errc::cloud_op_error);
             co_return std::unexpected(io::errc::cloud_op_error);
         }
         std::unreachable();

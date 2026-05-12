@@ -13,8 +13,13 @@
 #include "cloud_io/cache_service.h"
 #include "cloud_io/remote.h"
 #include "cloud_topics/level_one/common/abstract_io.h"
+#include "cloud_topics/level_one/common/inflight_download_map.h"
 #include "cloud_topics/level_one/common/object_id.h"
 #include "model/fundamental.h"
+
+#include <seastar/core/gate.hh>
+
+#include <optional>
 
 namespace cloud_topics::l1 {
 
@@ -32,6 +37,15 @@ public:
       cloud_io::remote* remote,
       cloud_storage_clients::bucket_name bucket,
       cloud_io::cache* cache);
+
+    /// Drain in-flight reads. Must be co_awaited before destruction so
+    /// the read_object defer-cleanup never touches a destroyed map.
+    ss::future<> stop();
+
+    /// Cloud-cache disk key for an (oid, position, size) extent. Shared
+    /// between `read_object` and tests so the format stays in lockstep.
+    static std::filesystem::path cache_key(const object_extent& extent);
+
     ss::future<std::expected<std::unique_ptr<staging_file>, errc>>
     create_tmp_file() override;
 
@@ -59,6 +73,17 @@ private:
     cloud_storage_clients::bucket_name _bucket;
     std::filesystem::path _staging_dir;
     cloud_io::cache* _cache;
+
+    // Gates all read_object calls so destruction can wait for any
+    // suspended fibers whose `leader_guard` cleanup would otherwise
+    // touch a destroyed `_inflight_downloads`.
+    ss::gate _gate;
+
+    // Per-shard single-flight coordinator. When two reads miss the
+    // cloud cache on the same extent, only the first triggers a
+    // download; the rest merge onto a shared future. Loosely mirrors
+    // the L0 read_merge pattern. See inflight_download_map.h.
+    inflight_download_map _inflight_downloads;
 };
 
 } // namespace cloud_topics::l1

@@ -103,6 +103,7 @@ private:
 
     ss::sstring _logger_name;
     ss::sharded<level_one_reader_probe> _l1_reader_probe;
+    ss::sharded<l1::file_io_probe> _l1_file_io_probe;
     ss::sharded<l1_reader_cache> _l1_reader_cache;
     ss::sharded<l1::l1_footer_cache> _l1_footer_cache;
     std::unique_ptr<data_plane_api> data_plane;

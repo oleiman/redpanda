@@ -215,6 +215,7 @@ file_io::read_object(object_extent extent, ss::abort_source* as) {
               cd_log.debug,
               "Merging L1 read for {} into in-flight download",
               extent);
+            _probe.register_concurrent_read_merge();
             auto fut = co_await ss::coroutine::as_future(
               it->second.get_shared_future(*as));
             if (fut.failed()) {

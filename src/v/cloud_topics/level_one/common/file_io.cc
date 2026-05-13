@@ -216,7 +216,13 @@ file_io::read_object(object_extent extent, ss::abort_source* as) {
               "Merging L1 read for {} into in-flight download",
               extent);
             _probe.register_dedup_waiter();
-            auto result = co_await it->second.get_shared_future();
+            auto fut = co_await ss::coroutine::as_future(
+              it->second.get_shared_future(*as));
+            if (fut.failed()) {
+                fut.ignore_ready_future();
+                co_return std::unexpected(io::errc::cloud_op_timeout);
+            }
+            auto result = fut.get();
             if (result.has_value()) {
                 // Leader's download failed; propagate the same
                 // error rather than racing on a fresh attempt.

@@ -85,3 +85,19 @@ redpanda_cc_gtest(
         "@googletest//:gtest",
     ],
 )
+
+redpanda_cc_gtest(
+    name = "partition_prefetch_hint_test",
+    timeout = "short",
+    srcs = [
+        "partition_prefetch_hint_test.cc",
+    ],
+    deps = [
+        "//src/v/cloud_topics/level_one/common:object",
+        "//src/v/cloud_topics/level_one/frontend_reader:reader",
+        "//src/v/model",
+        "//src/v/test_utils:gtest",
+        "//src/v/utils:uuid",
+        "@googletest//:gtest",
+    ],
+)

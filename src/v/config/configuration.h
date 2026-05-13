@@ -847,6 +847,7 @@ public:
     bounded_property<size_t> cloud_topics_l1_footer_cache_max_entries;
     property<std::chrono::milliseconds>
       cloud_topics_l1_footer_cache_eviction_timeout_ms;
+    bounded_property<size_t> cloud_topics_l1_partition_prefetch_max_bytes;
 
     development_feature_property<int> development_feature_property_testing_only;
 

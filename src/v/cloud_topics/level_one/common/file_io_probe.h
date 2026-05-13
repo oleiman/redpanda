@@ -28,11 +28,29 @@ public:
     void register_dedup_leader() { ++_inflight_dedup_leaders; }
     void register_dedup_waiter() { ++_inflight_dedup_waiters; }
 
+    // New for partition-segment prefetch dedup.
+    void register_prefetch_leader() { ++_inflight_prefetch_leaders; }
+    void register_prefetch_waiter() { ++_inflight_prefetch_waiters; }
+    void register_prefetch_cache_hit() { ++_prefetch_cache_hits; }
+    void register_prefetch_download_failure() { ++_prefetch_download_failures; }
+    void register_prefetch_reservation_failure() {
+        ++_prefetch_reservation_failures;
+    }
+    void register_dedup_waiter_abort() { ++_dedup_waiter_aborts; }
+
 private:
     void setup_metrics();
 
     uint64_t _inflight_dedup_leaders{0};
     uint64_t _inflight_dedup_waiters{0};
+
+    // New counters.
+    uint64_t _inflight_prefetch_leaders{0};
+    uint64_t _inflight_prefetch_waiters{0};
+    uint64_t _prefetch_cache_hits{0};
+    uint64_t _prefetch_download_failures{0};
+    uint64_t _prefetch_reservation_failures{0};
+    uint64_t _dedup_waiter_aborts{0};
 
     metrics::internal_metric_groups _metrics;
 };

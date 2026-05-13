@@ -41,6 +41,48 @@ void file_io_probe::setup_metrics() {
             "Number of L1 cache-miss callers that joined an already-in-"
             "flight download on this shard rather than issuing a "
             "duplicate.")),
+        sm::make_counter(
+          "inflight_prefetch_leaders",
+          [this] { return _inflight_prefetch_leaders; },
+          sm::description(
+            "Number of L1 cold-miss callers that became the prefetch "
+            "leader for a partition segment on this shard.")),
+        sm::make_counter(
+          "inflight_prefetch_waiters",
+          [this] { return _inflight_prefetch_waiters; },
+          sm::description(
+            "Number of L1 callers that waited on an already-in-flight "
+            "partition-segment prefetch.")),
+        sm::make_counter(
+          "prefetch_cache_hits",
+          [this] { return _prefetch_cache_hits; },
+          sm::description(
+            "Number of read_object calls served from a cached "
+            "partition-segment file via get_stream_range. Every "
+            "increment is a request the narrow byte-range cache would "
+            "have missed.")),
+        sm::make_counter(
+          "prefetch_download_failures",
+          [this] { return _prefetch_download_failures; },
+          sm::description(
+            "Number of background partition-segment downloads that "
+            "failed. Does not propagate to caller (byte-range path "
+            "serves them); future requests retry.")),
+        sm::make_counter(
+          "prefetch_reservation_failures",
+          [this] { return _prefetch_reservation_failures; },
+          sm::description(
+            "Number of partition-segment prefetches skipped because "
+            "cache space reservation failed. Caller's byte-range path "
+            "unaffected. Sustained nonzero rate suggests cache budget "
+            "is too small for the prefetch working set.")),
+        sm::make_counter(
+          "dedup_waiter_aborts",
+          [this] { return _dedup_waiter_aborts; },
+          sm::description(
+            "Number of dedup waiters (either byte-range or prefetch "
+            "layer) that returned early because the caller's abort_source "
+            "fired during the wait.")),
       });
 }
 

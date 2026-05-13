@@ -171,6 +171,124 @@ ss::future<uint64_t> file_io::save_to_cache(
     co_return content_length;
 }
 
+ss::future<> file_io::download_partition_segment(
+  std::filesystem::path prefetch_key,
+  object_id id,
+  size_t segment_position,
+  size_t segment_size) {
+    // 30s timeout (vs read_object's 10s) — partition segments are up
+    // to ~16 MiB by default, larger than typical byte-range slices,
+    // so allow more time for the transfer plus retry against
+    // transient S3 errors. Also bounds the reserve_space wait below
+    // so a stuck cache can't pin a background fiber past shutdown.
+    static constexpr auto timeout = 30s;
+    static constexpr auto backoff = 100ms;
+
+    // Per-fiber retry chain rooted in the background abort source so
+    // shutdown interrupts in-flight downloads.
+    retry_chain_node root(
+      _background_abort, ss::lowres_clock::now() + timeout, backoff);
+    lazy_abort_source las{[this] {
+        return _background_abort.abort_requested()
+                 ? std::make_optional("shutdown")
+                 : std::nullopt;
+    }};
+
+    // failure_errc is captured by cleanup so the promise resolves
+    // even if we co_return early before the success arm.
+    std::optional<io::errc> failure_errc = io::errc::file_io_error;
+    auto cleanup = ss::defer([this, prefetch_key, &failure_errc]() {
+        auto it = _inflight_prefetches.find(prefetch_key);
+        if (it == _inflight_prefetches.end()) {
+            return;
+        }
+        if (!it->second.available()) {
+            it->second.set_value(failure_errc);
+        }
+        _inflight_prefetches.erase(it);
+    });
+
+    // Reserve cache space for the partition segment. Pass an explicit
+    // deadline so the call is bounded: without it, the 2-arg
+    // reserve_space overload waits on _block_puts_cond.wait() forever
+    // when the cache is in block-puts state, which would hang
+    // _background_gate.close() during shutdown.
+    auto reservation_fut
+      = co_await ss::coroutine::as_future<cloud_io::space_reservation_guard>(
+        _cache->reserve_space(
+          segment_size, 1, ss::lowres_clock::now() + timeout));
+    if (reservation_fut.failed()) {
+        auto ex = reservation_fut.get_exception();
+        vlog(
+          cd_log.warn,
+          "Prefetch reservation failed for {}: {}",
+          prefetch_key.native(),
+          ex);
+        _probe.register_prefetch_reservation_failure();
+        failure_errc = io::errc::file_io_error;
+        co_return;
+    }
+
+    cloud_io::try_consume_stream consumer =
+      [this, r = reservation_fut.get(), prefetch_key](
+        uint64_t content_length, ss::input_stream<char> stream) mutable {
+          return save_to_cache(
+            std::move(stream), &r, prefetch_key, content_length);
+      };
+
+    auto result_fut
+      = co_await ss::coroutine::as_future<cloud_io::download_result>(
+        _remote->download_stream(
+          cloud_io::transfer_details{
+            .bucket = _bucket,
+            .key = object_path_factory::level_one_path(id),
+            .parent_rtc = root,
+          },
+          consumer,
+          "l1_partition_segment_prefetch",
+          /*acquire_hydration_units=*/true,
+          cloud_storage_clients::http_byte_range{
+            segment_position, segment_position + segment_size - 1}));
+
+    if (result_fut.failed()) {
+        auto ex = result_fut.get_exception();
+        vlog(
+          cd_log.warn,
+          "Prefetch download failed for {}: {}",
+          prefetch_key.native(),
+          ex);
+        _probe.register_prefetch_download_failure();
+        failure_errc = io::errc::cloud_op_error;
+        co_return;
+    }
+
+    switch (result_fut.get()) {
+    case cloud_io::download_result::success:
+        // Resolve in-flight with success so waiters retry cache lookup
+        // (which now hits via get_stream_range).
+        if (
+          auto it = _inflight_prefetches.find(prefetch_key);
+          it != _inflight_prefetches.end()) {
+            it->second.set_value(std::nullopt);
+        }
+        failure_errc = std::nullopt; // cleanup is a no-op on success
+        co_return;
+    case cloud_io::download_result::notfound:
+        _probe.register_prefetch_download_failure();
+        failure_errc = io::errc::cloud_missing_object;
+        co_return;
+    case cloud_io::download_result::timedout:
+        _probe.register_prefetch_download_failure();
+        failure_errc = io::errc::cloud_op_timeout;
+        co_return;
+    case cloud_io::download_result::failed:
+        _probe.register_prefetch_download_failure();
+        failure_errc = io::errc::cloud_op_error;
+        co_return;
+    }
+    std::unreachable();
+}
+
 ss::future<std::expected<ss::input_stream<char>, io::errc>>
 file_io::read_object(object_extent extent, ss::abort_source* as) {
     static constexpr auto timeout = 10s;

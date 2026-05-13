@@ -117,6 +117,8 @@ private:
     ss::abort_source _background_abort;
 
     file_io_probe _probe;
+
+    friend class file_io_test_fixture;
 };
 
 } // namespace cloud_topics::l1

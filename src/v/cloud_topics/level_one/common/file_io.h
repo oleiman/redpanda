@@ -83,6 +83,16 @@ private:
       std::filesystem::path,
       uint64_t content_length);
 
+    // Background prefetch of a partition's segment in an L1 object.
+    // Called via spawn_with_gate(_background_gate, ...) on cold miss
+    // when a prefetch_hint is present. Resolves the corresponding
+    // _inflight_prefetches entry on completion (success or failure).
+    ss::future<> download_partition_segment(
+      std::filesystem::path prefetch_key,
+      object_id id,
+      size_t segment_position,
+      size_t segment_size);
+
     cloud_io::remote* _remote;
     cloud_storage_clients::bucket_name _bucket;
     std::filesystem::path _staging_dir;

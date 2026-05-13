@@ -120,6 +120,10 @@ ss::future<> database_refresher::stop_and_wait() {
     if (db_) {
         co_await db_->close();
     }
+    // Drain any in-flight background fibers on io_ (e.g. partition-
+    // segment prefetches) before this refresher destructs and tears
+    // down the unique_ptr. ~ss::gate inside ~file_io asserts on an
+    // open gate.
     co_await io_->stop();
     vlog(logger_.debug, "Stopped");
 }
@@ -352,7 +356,8 @@ ss::future<> snapshot_manager::stop() {
     }
     co_await gate_.close();
 
-    // Stop all databases.
+    // Stop all databases. Each refresher owns its own file_io and
+    // drains its background gate before destruction.
     auto dbs = std::move(databases_);
     for (auto& [uuid, db] : dbs) {
         co_await db.refresher->stop_and_wait();

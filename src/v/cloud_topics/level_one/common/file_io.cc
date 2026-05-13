@@ -104,7 +104,11 @@ file_io::file_io(
   , _cache(cache)
   , _probe(probe) {}
 
-ss::future<> file_io::stop() { return _gate.close(); }
+ss::future<> file_io::stop() {
+    _background_abort.request_abort();
+    co_await _background_gate.close();
+    co_await _gate.close();
+}
 
 std::filesystem::path file_io::cache_key(const object_extent& extent) {
     return std::filesystem::path(

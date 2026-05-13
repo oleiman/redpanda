@@ -18,6 +18,8 @@
 #include "container/chunked_hash_map.h"
 #include "model/fundamental.h"
 
+#include <seastar/core/abort_source.hh>
+#include <seastar/core/gate.hh>
 #include <seastar/core/shared_future.hh>
 
 #include <optional>
@@ -54,6 +56,10 @@ public:
     create_multipart_upload(
       object_id, size_t part_size, ss::abort_source*) override;
 
+    // Stop background prefetch fibers. Safe to call once. Invoked by
+    // seastar's sharded service teardown.
+    ss::future<> stop();
+
 private:
     ss::future<uint64_t> save_to_cache(
       ss::input_stream<char>,
@@ -82,6 +88,23 @@ private:
       std::filesystem::path,
       ss::shared_promise<std::optional<errc>>>
       _inflight_downloads;
+
+    // In-flight L1 partition-segment download dedup. When a cold byte-
+    // range miss arrives with a prefetch_hint, file_io kicks off a
+    // background download of the partition's segment in this L1 object
+    // (capped by cloud_topics_l1_partition_prefetch_max_bytes). Future
+    // read_object calls for any byte range within that segment hit the
+    // cache file via cache_service::get_stream_range. Keyed by the
+    // partition-segment cache key path.
+    chunked_hash_map<
+      std::filesystem::path,
+      ss::shared_promise<std::optional<errc>>>
+      _inflight_prefetches;
+
+    // Tracks background prefetch fibers so stop() can wait for them.
+    ss::gate _background_gate;
+    // Signals shutdown to background fibers' download/reserve_space calls.
+    ss::abort_source _background_abort;
 
     file_io_probe _probe;
 };

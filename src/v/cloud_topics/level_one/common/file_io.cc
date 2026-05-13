@@ -102,6 +102,11 @@ file_io::file_io(
   , _staging_dir(std::move(staging_dir))
   , _cache(cache) {}
 
+ss::future<> file_io::stop() {
+    _background_abort.request_abort();
+    co_await _background_gate.close();
+}
+
 ss::future<std::expected<std::unique_ptr<staging_file>, io::errc>>
 file_io::create_tmp_file() {
     co_return std::make_unique<staging_file_impl>(

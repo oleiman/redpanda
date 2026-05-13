@@ -96,6 +96,7 @@ redpanda_cc_library(
     ],
     implementation_deps = [
         "//src/v/base",
+        "//src/v/ssx:future_util",
     ],
     visibility = [
         "//src/v/cloud_topics:__pkg__",

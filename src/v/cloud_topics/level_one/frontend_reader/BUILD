@@ -69,6 +69,7 @@ redpanda_cc_library(
     ],
     implementation_deps = [
         ":l1_footer_cache",
+        "//src/v/config",
     ],
     visibility = ["//visibility:public"],
     deps = [

@@ -13,6 +13,7 @@
 #include "cloud_topics/level_one/frontend_reader/level_one_reader_probe.h"
 #include "cloud_topics/level_one/metastore/retry.h"
 #include "cloud_topics/logger.h"
+#include "config/configuration.h"
 #include "model/fundamental.h"
 #include "model/timeout_clock.h"
 #include "utils/retry_chain_node.h"
@@ -80,11 +81,21 @@ level_one_log_reader_impl::open_reader_at(
   l1::object_id oid,
   kafka::offset last_object_offset,
   size_t extent_position,
-  size_t extent_size) {
+  size_t extent_size,
+  const l1::footer& footer) {
+    // Compute partition-segment prefetch hint from the cached footer.
+    // The footer is in-memory (PR5 l1_footer_cache + the seek path
+    // already parsed it), so this is a cheap lookup.
+    auto prefetch_max = config::shard_local_cfg()
+                          .cloud_topics_l1_partition_prefetch_max_bytes();
+    auto hint = compute_partition_prefetch_hint(
+      footer, _tidp, extent_position, prefetch_max);
+
     l1::object_extent extent{
       .id = oid,
       .position = extent_position,
       .size = extent_size,
+      .prefetch_hint = hint,
     };
     ss::abort_source default_abort_source;
     auto* abort_source = _config.abort_source
@@ -472,7 +483,11 @@ level_one_log_reader_impl::materialize_batches_from_object_offset(
     }
 
     auto reader_result = co_await open_reader_at(
-      object.oid, object.last_offset, seek_res.file_position, seek_res.length);
+      object.oid,
+      object.last_offset,
+      seek_res.file_position,
+      seek_res.length,
+      object.footer);
     if (!reader_result.has_value()) {
         vlog(
           _log.warn,

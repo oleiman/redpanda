@@ -578,4 +578,39 @@ bool level_one_log_reader_impl::is_over_limit_with_bytes(size_t size) const {
     return (_bytes_consumed + size) > _config.max_bytes;
 }
 
+std::optional<l1::partition_prefetch_hint> compute_partition_prefetch_hint(
+  const l1::footer& footer,
+  const model::topic_id_partition& tidp,
+  size_t seek_position,
+  size_t max_bytes) {
+    if (max_bytes == 0) {
+        return std::nullopt;
+    }
+    auto [range_begin, range_end] = footer.partitions.equal_range(tidp);
+    for (auto it = range_begin; it != range_end; ++it) {
+        const auto& p = it->second;
+        if (
+          seek_position >= p.file_position
+          && seek_position < p.file_position + p.length) {
+            // Found the segment containing seek_position. If the
+            // partition's contiguous data in this L1 object exceeds the
+            // prefetch cap, skip the prefetch entirely. A capped
+            // prefetch file would be shorter than seek_res.length
+            // (which is the full remaining partition bytes from the
+            // seek point per footer::file_position_before_kafka_offset),
+            // and file_io::read_object step 2 would issue a
+            // get_stream_range that runs past EOF — silently
+            // truncating the consumer's read and dropping records.
+            if (p.length > max_bytes) {
+                return std::nullopt;
+            }
+            return l1::partition_prefetch_hint{
+              .segment_position = p.file_position,
+              .segment_size = p.length,
+            };
+        }
+    }
+    return std::nullopt;
+}
+
 } // namespace cloud_topics

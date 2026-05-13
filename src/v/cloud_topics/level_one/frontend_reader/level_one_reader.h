@@ -230,4 +230,20 @@ private:
     std::optional<cached_footer> _cached_footer;
 };
 
+/// Compute the partition-segment prefetch hint for a given seek
+/// position within an L1 object. Returns the partition segment
+/// that contains seek_position, capped at max_bytes from the start
+/// of that segment. Returns nullopt if the partition isn't in the
+/// footer, if seek_position is outside any segment for this
+/// partition, or if max_bytes is 0.
+///
+/// The footer.partitions is a multimap — a single topic_id_partition
+/// can have multiple non-contiguous segments in one L1 object. We
+/// pick the segment containing seek_position.
+std::optional<l1::partition_prefetch_hint> compute_partition_prefetch_hint(
+  const l1::footer& footer,
+  const model::topic_id_partition& tidp,
+  size_t seek_position,
+  size_t max_bytes);
+
 } // namespace cloud_topics

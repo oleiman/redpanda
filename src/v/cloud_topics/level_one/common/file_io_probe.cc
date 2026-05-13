@@ -41,8 +41,36 @@ void file_io_probe::setup_metrics() {
           "merged_read_aborts",
           [this] { return _merged_read_aborts; },
           sm::description(
-            "L1 reads that joined an in-flight download and were "
-            "aborted before the download resolved.")),
+            "Reads that joined an in-flight L1 download (byte-range or "
+            "prefetch) but were aborted before the download "
+            "completed.")),
+        sm::make_counter(
+          "concurrent_prefetch_merges",
+          [this] { return _concurrent_prefetch_merges; },
+          sm::description(
+            "L1 reads that joined an already-in-flight partition-segment "
+            "prefetch on this shard.")),
+        sm::make_counter(
+          "prefetch_cache_hits",
+          [this] { return _prefetch_cache_hits; },
+          sm::description(
+            "L1 reads served from a partition-segment prefetch cache "
+            "file.")),
+        sm::make_counter(
+          "prefetch_download_failures",
+          [this] { return _prefetch_download_failures; },
+          sm::description(
+            "Background partition-segment prefetch downloads that "
+            "failed. Does not propagate to caller (byte-range path "
+            "serves them); future requests retry.")),
+        sm::make_counter(
+          "prefetch_reservation_failures",
+          [this] { return _prefetch_reservation_failures; },
+          sm::description(
+            "Partition-segment prefetches skipped because cache space "
+            "reservation failed. Caller's byte-range path unaffected. "
+            "Sustained nonzero rate suggests cache budget is too small "
+            "for the prefetch working set.")),
       });
 }
 

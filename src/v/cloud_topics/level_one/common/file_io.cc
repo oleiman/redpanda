@@ -200,9 +200,6 @@ void file_io::prefetch_partition_segment(
       inserted,
       "concurrent insert into _inflight_prefetches for {}",
       prefetch_key.native());
-    if (_probe) {
-        _probe->register_prefetch_leader();
-    }
 
     try {
         ssx::spawn_with_gate(
@@ -441,7 +438,7 @@ file_io::read_object(
                 vlog(
                   cd_log.debug, "Waiting on in-flight prefetch for {}", extent);
                 if (_probe) {
-                    _probe->register_prefetch_waiter();
+                    _probe->register_concurrent_prefetch_merge();
                 }
                 // shared_promise::get_shared_future(abort_source&) returns
                 // a future that resolves with the leader's value if already

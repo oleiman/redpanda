@@ -29,11 +29,23 @@ public:
     void register_concurrent_read_merge() { ++_concurrent_read_merges; }
     void register_merged_read_abort() { ++_merged_read_aborts; }
 
+    // Partition-segment prefetch counters.
+    void register_concurrent_prefetch_merge() { ++_concurrent_prefetch_merges; }
+    void register_prefetch_cache_hit() { ++_prefetch_cache_hits; }
+    void register_prefetch_download_failure() { ++_prefetch_download_failures; }
+    void register_prefetch_reservation_failure() {
+        ++_prefetch_reservation_failures;
+    }
+
 private:
     void setup_metrics();
 
     uint64_t _concurrent_read_merges{0};
     uint64_t _merged_read_aborts{0};
+    uint64_t _concurrent_prefetch_merges{0};
+    uint64_t _prefetch_cache_hits{0};
+    uint64_t _prefetch_download_failures{0};
+    uint64_t _prefetch_reservation_failures{0};
 
     metrics::internal_metric_groups _metrics;
 };

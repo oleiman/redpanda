@@ -191,7 +191,8 @@ private:
       l1::object_id oid,
       kafka::offset last_object_offset,
       size_t extent_position,
-      size_t extent_size);
+      size_t extent_size,
+      const l1::footer& footer);
 
     /// Close _current_stream if present, swallowing exceptions.
     ss::future<> close_current_stream();

@@ -48,8 +48,9 @@ public:
       cloud_io::cache* cache,
       file_io_probe* probe = nullptr);
 
-    /// Drain in-flight reads. Must be co_awaited before destruction so
-    /// the read_object defer-cleanup never touches a destroyed map.
+    /// Drain in-flight reads and background prefetch fibers. Must be
+    /// co_awaited before destruction so the read_object defer-cleanup
+    /// never touches a destroyed map.
     ss::future<> stop();
 
     /// Cloud-cache disk key for an (oid, position, size) extent. Shared
@@ -71,10 +72,6 @@ public:
     ss::future<std::expected<cloud_storage_clients::multipart_upload_ref, errc>>
     create_multipart_upload(
       object_id, size_t part_size, ss::abort_source*) override;
-
-    // Stop background prefetch fibers. Safe to call once. Invoked by
-    // seastar's sharded service teardown.
-    ss::future<> stop();
 
 private:
     ss::future<uint64_t> save_to_cache(

@@ -19,6 +19,7 @@
 #include "cloud_topics/level_one/common/object_utils.h"
 #include "cloud_topics/logger.h"
 #include "config/configuration.h"
+#include "ssx/future-util.h"
 
 #include <seastar/core/file.hh>
 #include <seastar/core/fstream.hh>
@@ -320,11 +321,54 @@ file_io::read_object(
     // them).
     // TODO(cloud_topics): If reading just a footer, we should skip the cache.
     // Maybe we need another method for that which is iobuf based?
-    std::filesystem::path cache_key = file_io::cache_key(extent);
+    std::filesystem::path byte_range_key = file_io::cache_key(extent);
+
+    std::optional<std::filesystem::path> prefetch_key;
+    if (extent.prefetch_hint.has_value()) {
+        prefetch_key = fmt::format(
+          "l1_{}_prefetch_{}_size_{}.partial",
+          extent.id,
+          extent.prefetch_hint->segment_position,
+          extent.prefetch_hint->segment_size);
+    }
+
+    // compute_partition_prefetch_hint already returns nullopt when
+    // cloud_topics_l1_partition_prefetch_max_bytes is 0 (and when the
+    // partition's data in this L1 object exceeds the cap), so the
+    // presence of a hint is sufficient to gate the prefetch path.
+    bool prefetch_enabled = prefetch_key.has_value();
+
     while (true) {
+        // Step 2: prefetch cache hit (broader coverage).
+        if (prefetch_enabled) {
+            auto stream_fut = co_await ss::coroutine::as_future<
+              std::optional<cloud_io::cache_item_stream>>(
+              _cache->get_stream_range(
+                *prefetch_key,
+                extent.position - extent.prefetch_hint->segment_position,
+                extent.size,
+                config::shard_local_cfg().storage_read_buffer_size(),
+                config::shard_local_cfg().storage_read_readahead_count()));
+            if (stream_fut.failed()) {
+                auto ex = stream_fut.get_exception();
+                vlog(
+                  cd_log.warn,
+                  "Error reading prefetch cache for {}: {}",
+                  extent,
+                  ex);
+                // Fall through to byte-range path; non-fatal here.
+            } else if (auto stream = stream_fut.get(); stream) {
+                if (_probe) {
+                    _probe->register_prefetch_cache_hit();
+                }
+                co_return std::move(stream->body);
+            }
+        }
+
+        // Step 3: byte-range cache hit (existing fast path).
         auto stream_fut = co_await ss::coroutine::as_future<
           std::optional<cloud_io::cache_item_stream>>(_cache->get_stream(
-          cache_key,
+          byte_range_key,
           config::shard_local_cfg().storage_read_buffer_size(),
           config::shard_local_cfg().storage_read_readahead_count()));
         if (stream_fut.failed()) {
@@ -338,12 +382,50 @@ file_io::read_object(
             co_return std::move(stream->body);
         }
 
-        // Cache miss. If another caller on this shard is already
-        // downloading this exact extent, wait for it rather than
-        // triggering a duplicate S3 GET + cache write. Mirrors the
+        // Step 4: in-flight prefetch — waiter path.
+        if (prefetch_enabled) {
+            if (
+              auto it = _inflight_prefetches.find(*prefetch_key);
+              it != _inflight_prefetches.end()) {
+                vlog(
+                  cd_log.debug, "Waiting on in-flight prefetch for {}", extent);
+                if (_probe) {
+                    _probe->register_prefetch_waiter();
+                }
+                // shared_promise::get_shared_future(abort_source&) returns
+                // a future that resolves with the leader's value if already
+                // available, or with ss::abort_requested_exception when
+                // the abort fires before the value lands. Leaders only
+                // resolve via set_value (never set_exception), so a failed
+                // future here is unambiguously the abort path.
+                auto fut = co_await ss::coroutine::as_future(
+                  it->second.get_shared_future(*as));
+                if (fut.failed()) {
+                    fut.ignore_ready_future();
+                    if (_probe) {
+                        _probe->register_merged_read_abort();
+                    }
+                    co_return std::unexpected(io::errc::cloud_op_timeout);
+                }
+                auto result = fut.get();
+                if (result.has_value()) {
+                    // Prefetch leader failed. The prefetch is best-effort
+                    // (it only adds K-fanout coverage), so we fall through
+                    // to the byte-range path which is required for the
+                    // caller. The byte-range cache may have been populated
+                    // by a separate caller in the meantime, or we'll
+                    // cold-miss and become byte-range leader ourselves.
+                    continue;
+                }
+                // Leader succeeded; retry the cache lookups.
+                continue;
+            }
+        }
+
+        // Step 5: in-flight byte-range — waiter path. Mirrors the
         // L0 read_merge pattern.
         if (
-          auto it = _inflight_downloads.find(cache_key);
+          auto it = _inflight_downloads.find(byte_range_key);
           it != _inflight_downloads.end()) {
             vlog(
               cd_log.debug,
@@ -375,35 +457,45 @@ file_io::read_object(
             continue;
         }
 
-        // cold miss — no preexisting download in progress, kick
+        // Step 6: cold miss — no preexisting download in progress, kick
         // one off.
         auto [_, inserted] = _inflight_downloads.emplace(
-          cache_key, ss::shared_promise<std::optional<io::errc>>{});
+          byte_range_key, ss::shared_promise<std::optional<io::errc>>{});
         vassert(
           inserted,
           "concurrent insert into _inflight_downloads for {}",
-          cache_key.native());
+          byte_range_key.native());
         // Default to a real error so any future co_return that forgets
         // to assign falls through to a failure signal rather than
         // resolving merged reads with spurious success. The success
         // arm below explicitly clears this to std::nullopt.
         std::optional<io::errc> failure_errc = io::errc::file_io_error;
-        auto cleanup = ss::defer([this, cache_key, &failure_errc]() {
-            // This defer is the only eraser for cache_key.
+        auto cleanup = ss::defer([this, byte_range_key, &failure_errc]() {
+            // This defer is the only eraser for byte_range_key.
             // Resolve the enclosed promise unconditionally with the captured
             // errc (or nullopt on success) so merged reads can propagate a real
             // outcome.
-            auto it = _inflight_downloads.find(cache_key);
+            auto it = _inflight_downloads.find(byte_range_key);
             vassert(
               it != _inflight_downloads.end(),
               "_inflight_downloads entry for {} was erased outside the "
               "defer",
-              cache_key.native());
+              byte_range_key.native());
             it->second.set_value(failure_errc);
             _inflight_downloads.erase(it);
         });
 
-        // TODO(cloud_topics): reserving space should also take an abort_source
+        // Note: the prefetch is no longer spawned here. The previous
+        // speculative design downloaded the partition segment of the
+        // *same* L1 object as this byte-range request, which for
+        // sequential consumption (extent covers the whole partition
+        // segment) is bit-identical to the byte-range download — pure
+        // 2x write amplification with no benefit. The new model fires
+        // prefetches for the *next* L1 object in the consumer's
+        // progression; that firing happens at the L1 reader, not on
+        // this cold-miss path.
+
+        // Fire the byte-range download (existing path, unchanged).
         auto reservation_fut = co_await ss::coroutine::as_future<
           cloud_io::space_reservation_guard>(
           _cache->reserve_space(extent.size, 1));
@@ -417,10 +509,10 @@ file_io::read_object(
             co_return std::unexpected(io::errc::file_io_error);
         }
         cloud_io::try_consume_stream consumer =
-          [this, r = reservation_fut.get(), &cache_key](
+          [this, r = reservation_fut.get(), &byte_range_key](
             uint64_t content_length, ss::input_stream<char> stream) mutable {
               return save_to_cache(
-                std::move(stream), &r, cache_key, content_length);
+                std::move(stream), &r, byte_range_key, content_length);
           };
         auto result_fut
           = co_await ss::coroutine::as_future<cloud_io::download_result>(

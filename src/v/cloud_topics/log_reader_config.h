@@ -99,12 +99,20 @@ struct cloud_topic_log_reader_config {
     allow_materialization_failure allow_mat_failure;
 
     // Number of objects to look ahead when fetching object metadata from
-    // the metastore. 0 (default) means no lookahead and is equivalent to 1:
-    // fetch one object's metadata at a time. Values > 1 batch-fetch multiple
-    // objects' metadata in a single metastore RPC.
+    // the metastore. Values > 1 batch-fetch multiple objects' metadata in
+    // a single metastore RPC, populating _lookahead_buffer with the next
+    // L1 entries so the reader can:
+    //   1. Skip a metastore round-trip on the next L1 transition.
+    //   2. Fire a partition-segment prefetch for the next L1 from
+    //      maybe_prefetch_next_partition_segment, exploiting spatial
+    //      locality of sequential consumption.
+    //
+    // Setting to 0 or 1 disables the prefetch firing path entirely (the
+    // buffer is empty after popping the current L1, so there's no next
+    // L1 to prefetch against).
     //
     // NB: Applies to the L1 reader only.
-    size_t lookahead_objects{0};
+    size_t lookahead_objects{4};
 
     // cloud_io admission lane for this reader's cloud storage requests.
     cloud_io::group_id group{cloud_io::group_id::default_group};

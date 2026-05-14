@@ -93,6 +93,24 @@ public:
     virtual ss::future<std::expected<iobuf, errc>> read_object_as_iobuf(
       object_extent, ss::abort_source*, cloud_io::group_id g);
 
+    // Fire-and-forget prefetch of a partition's contiguous byte range
+    // within an L1 object. Implementations are responsible for the
+    // background fiber's lifetime and for deduplicating against
+    // in-flight prefetches and already-cached files.
+    //
+    // The intended use is "warm the cache for the next L1 the
+    // consumer will read": the L1 reader, holding lookahead metadata
+    // for upcoming objects, calls this for the next object's
+    // partition segment while still serving the current one. A
+    // subsequent `read_object` call for that range hits cache via
+    // `cache_service::get_stream_range`.
+    //
+    // No future is returned; failures surface only through probe
+    // counters. Callers must not depend on the prefetch having
+    // completed (or even fired) at any particular time.
+    virtual void prefetch_partition_segment(
+      object_id, size_t segment_position, size_t segment_size) = 0;
+
     // Delete the specified objects from object storage.
     virtual ss::future<std::expected<void, errc>>
     delete_objects(chunked_vector<object_id>, ss::abort_source*) = 0;

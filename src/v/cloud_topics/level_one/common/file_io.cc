@@ -184,6 +184,45 @@ ss::future<uint64_t> file_io::save_to_cache(
     co_return content_length;
 }
 
+void file_io::prefetch_partition_segment(
+  object_id id, size_t segment_position, size_t segment_size) {
+    std::filesystem::path prefetch_key = fmt::format(
+      "l1_{}_prefetch_{}_size_{}.partial", id, segment_position, segment_size);
+
+    // Already in flight on this shard — dedup.
+    if (_inflight_prefetches.contains(prefetch_key)) {
+        return;
+    }
+
+    auto [it, inserted] = _inflight_prefetches.emplace(
+      prefetch_key, ss::shared_promise<std::optional<io::errc>>{});
+    vassert(
+      inserted,
+      "concurrent insert into _inflight_prefetches for {}",
+      prefetch_key.native());
+    _probe.register_prefetch_leader();
+
+    try {
+        ssx::spawn_with_gate(
+          _background_gate,
+          [this, key = prefetch_key, id, segment_position, segment_size](
+            this auto) -> ss::future<> {
+              co_await download_partition_segment(
+                std::move(key), id, segment_position, segment_size);
+          });
+    } catch (...) {
+        // Gate is closed (in-flight shutdown). Resolve waiters with
+        // a failure and remove the entry; nobody else owns it.
+        vlog(
+          cd_log.warn,
+          "Failed to spawn prefetch for {}: {}",
+          prefetch_key.native(),
+          std::current_exception());
+        it->second.set_value(io::errc::file_io_error);
+        _inflight_prefetches.erase(it);
+    }
+}
+
 ss::future<> file_io::download_partition_segment(
   std::filesystem::path prefetch_key,
   object_id id,

@@ -66,6 +66,9 @@ public:
     ss::future<std::expected<ss::input_stream<char>, errc>> read_object(
       object_extent, ss::abort_source*, cloud_io::group_id g) override;
 
+    void prefetch_partition_segment(
+      object_id, size_t segment_position, size_t segment_size) override;
+
     ss::future<std::expected<void, errc>>
     delete_objects(chunked_vector<object_id>, ss::abort_source*) override;
 
@@ -81,8 +84,8 @@ private:
       uint64_t content_length);
 
     // Background prefetch of a partition's segment in an L1 object.
-    // Called via spawn_with_gate(_background_gate, ...) on cold miss
-    // when a prefetch_hint is present. Resolves the corresponding
+    // Called via spawn_with_gate(_background_gate, ...) by
+    // prefetch_partition_segment. Resolves the corresponding
     // _inflight_prefetches entry on completion (success or failure).
     ss::future<> download_partition_segment(
       std::filesystem::path prefetch_key,

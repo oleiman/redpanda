@@ -111,8 +111,24 @@ struct cloud_topic_log_reader_config {
     // buffer is empty after popping the current L1, so there's no next
     // L1 to prefetch against).
     //
+    // Prefetch firing covers (N-1)/N of L1 transitions: the last entry
+    // in each refill cycle empties the buffer before
+    // maybe_prefetch_next_partition_segment runs, so no prefetch lands
+    // for that one transition. N=8 yields 87.5% coverage; smaller N
+    // leaves a proportionally larger residual cold-miss tail.
+    //
     // NB: Applies to the L1 reader only.
-    size_t lookahead_objects{4};
+    //
+    // TODO(bench-validation): the default of 8 was picked to maximize
+    // prefetch coverage during the bench runs that validate the next-L1
+    // prefetch design. It is not the final production default — the
+    // right shape is probably (a) add a cluster_config knob so operators
+    // can tune per-deployment, and (b) revisit the default in light of
+    // actual fetch-session length distributions. Short readers (compaction
+    // over a tiny range, reconciliation on small backlogs) pay a small
+    // RPC-response-size cost for entries they never consume. Re-evaluate
+    // before merging to dev.
+    size_t lookahead_objects{8};
 
     // cloud_io admission lane for this reader's cloud storage requests.
     cloud_io::group_id group{cloud_io::group_id::default_group};

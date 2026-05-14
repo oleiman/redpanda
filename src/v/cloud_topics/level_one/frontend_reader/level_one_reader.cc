@@ -300,11 +300,74 @@ level_one_log_reader_impl::lookup_object_for_offset(
     auto footer = co_await read_footer(
       obj.oid, obj.footer_pos, obj.object_size);
 
+    // Speculatively prefetch the partition segment of the next L1
+    // object in the lookahead buffer, exploiting spatial locality of
+    // sequential consumption. By the time the reader transitions into
+    // that object, its partition segment is already cached and the
+    // byte-range read in file_io::read_object hits step 2 without a
+    // cold S3 GET. The footer fetch is synchronous but amortized by
+    // _footer_cache; the partition-segment download runs detached in
+    // file_io's background gate.
+    co_await maybe_prefetch_next_partition_segment();
+
     co_return object_info{
       .oid = obj.oid,
       .footer = std::move(footer),
       .last_offset = obj.last_offset,
     };
+}
+
+ss::future<>
+level_one_log_reader_impl::maybe_prefetch_next_partition_segment() {
+    if (_lookahead_buffer.empty()) {
+        co_return;
+    }
+    auto prefetch_max = config::shard_local_cfg()
+                          .cloud_topics_l1_partition_prefetch_max_bytes();
+    if (prefetch_max == 0) {
+        co_return;
+    }
+
+    // Snapshot the identifiers up front; read_footer awaits and the
+    // buffer must not be mutated under us, but copying these is cheap
+    // and removes any doubt.
+    auto next_oid = _lookahead_buffer.front().oid;
+    auto next_footer_pos = _lookahead_buffer.front().footer_pos;
+    auto next_object_size = _lookahead_buffer.front().object_size;
+
+    auto footer_fut = co_await ss::coroutine::as_future(
+      read_footer(next_oid, next_footer_pos, next_object_size));
+    if (footer_fut.failed()) {
+        // Prefetch is best-effort: absorb the failure so it doesn't
+        // poison the in-flight consumer fetch. The next L1 will be
+        // re-fetched when the reader transitions into it.
+        auto ex = footer_fut.get_exception();
+        vlog(
+          _log.debug,
+          "Skipping next-L1 prefetch for object {}: footer fetch failed: {}",
+          next_oid,
+          ex);
+        co_return;
+    }
+    auto footer = footer_fut.get();
+
+    auto [range_begin, range_end] = footer->partitions.equal_range(_tidp);
+    if (range_begin == range_end) {
+        // Partition not present in the next L1.
+        co_return;
+    }
+    const auto& segment = range_begin->second;
+    if (segment.length == 0 || segment.length > prefetch_max) {
+        // Skip when the segment can't fit under the prefetch budget:
+        // a capped prefetch file would be shorter than the partition's
+        // remaining bytes, and read_object step 2's get_stream_range
+        // would silently truncate the consumer's read. Matches the
+        // ceiling enforced in compute_partition_prefetch_hint.
+        co_return;
+    }
+
+    _io->prefetch_partition_segment(
+      next_oid, segment.file_position, segment.length);
 }
 
 ss::future<ss::lw_shared_ptr<const l1::footer>>

@@ -170,6 +170,19 @@ private:
     ss::future<ss::lw_shared_ptr<const l1::footer>>
     read_footer(l1::object_id oid, size_t footer_pos, size_t object_size);
 
+    /// Fire-and-forget prefetch of the partition's segment in the next
+    /// L1 object queued in the lookahead buffer. Reads the next L1's
+    /// footer (cached after the first call) to locate this reader's
+    /// partition segment, then asks file_io to start a background
+    /// download. Subsequent read_object calls into that L1 hit the
+    /// cached partition segment via cache_service::get_stream_range.
+    /// Returns when the footer fetch resolves; the segment download
+    /// runs in file_io's background gate independent of the reader.
+    /// No-op when the lookahead buffer is empty, when the partition
+    /// has no segment in the next object, or when the partition's
+    /// contiguous segment exceeds the configured prefetch cap.
+    ss::future<> maybe_prefetch_next_partition_segment();
+
     /*
      * Returns batches starting at next offset. It will continue to advance next
      * offset until batches are read or end-of-stream is reached.

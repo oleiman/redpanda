@@ -200,7 +200,9 @@ void file_io::prefetch_partition_segment(
       inserted,
       "concurrent insert into _inflight_prefetches for {}",
       prefetch_key.native());
-    _probe.register_prefetch_leader();
+    if (_probe) {
+        _probe->register_prefetch_leader();
+    }
 
     try {
         ssx::spawn_with_gate(
@@ -276,7 +278,9 @@ ss::future<> file_io::download_partition_segment(
           "Prefetch reservation failed for {}: {}",
           prefetch_key.native(),
           ex);
-        _probe.register_prefetch_reservation_failure();
+        if (_probe) {
+            _probe->register_prefetch_reservation_failure();
+        }
         failure_errc = io::errc::file_io_error;
         co_return;
     }
@@ -309,7 +313,9 @@ ss::future<> file_io::download_partition_segment(
           "Prefetch download failed for {}: {}",
           prefetch_key.native(),
           ex);
-        _probe.register_prefetch_download_failure();
+        if (_probe) {
+            _probe->register_prefetch_download_failure();
+        }
         failure_errc = io::errc::cloud_op_error;
         co_return;
     }
@@ -326,15 +332,21 @@ ss::future<> file_io::download_partition_segment(
         failure_errc = std::nullopt; // cleanup is a no-op on success
         co_return;
     case cloud_io::download_result::notfound:
-        _probe.register_prefetch_download_failure();
+        if (_probe) {
+            _probe->register_prefetch_download_failure();
+        }
         failure_errc = io::errc::cloud_missing_object;
         co_return;
     case cloud_io::download_result::timedout:
-        _probe.register_prefetch_download_failure();
+        if (_probe) {
+            _probe->register_prefetch_download_failure();
+        }
         failure_errc = io::errc::cloud_op_timeout;
         co_return;
     case cloud_io::download_result::failed:
-        _probe.register_prefetch_download_failure();
+        if (_probe) {
+            _probe->register_prefetch_download_failure();
+        }
         failure_errc = io::errc::cloud_op_error;
         co_return;
     }

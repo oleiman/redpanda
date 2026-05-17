@@ -280,3 +280,102 @@ SEASTAR_THREAD_TEST_CASE(test_client_pool_max_upstreams_limit) {
                  != std::string_view::npos;
       });
 }
+
+// ---------------------------------------------------------------------------
+// Scheduler-gated acquire tests
+// ---------------------------------------------------------------------------
+
+// Smoke the 3-arg acquire(bucket, as, deadline) convenience overload.
+// The overload delegates to the 4-arg overload with group_id::default_group.
+SEASTAR_THREAD_TEST_CASE(test_acquire_legacy_overload_still_works) {
+    ss::sharded<cloud_storage_clients::client_pool> pool;
+    auto stop_guard
+      = test_pool_builder.connections_per_shard(1).build(pool).get();
+
+    ss::abort_source as;
+    auto lease = pool.local().acquire(test_bucket, as).get();
+    BOOST_REQUIRE(lease.client != nullptr);
+    // Permit is local (not a borrow) and was granted immediately.
+    BOOST_REQUIRE(!lease._permit.is_remote());
+}
+
+// Capacity-1 pool. First acquire succeeds. Second concurrent acquire's
+// future is !available() while the first lease is held, and has_waiters()
+// returns true. Dropping the first lease unblocks the second.
+SEASTAR_THREAD_TEST_CASE(test_scheduler_gated_acquire_blocks_at_capacity) {
+    constexpr size_t capacity = 1;
+
+    ss::sharded<cloud_storage_clients::client_pool> pool;
+    auto stop_guard
+      = test_pool_builder.connections_per_shard(capacity)
+          .overdraft_policy(
+            cloud_storage_clients::client_pool_overdraft_policy::wait_if_empty)
+          .build(pool)
+          .get();
+
+    ss::abort_source as;
+
+    // First acquire — should succeed immediately.
+    auto lease1 = pool.local()
+                    .acquire(test_bucket, cloud_io::group_id::default_group, as)
+                    .get();
+    BOOST_REQUIRE(lease1.client != nullptr);
+
+    // Second acquire — should block because the only slot is taken.
+    auto fut2 = pool.local().acquire(
+      test_bucket, cloud_io::group_id::default_group, as);
+
+    // Yield until the waiter is registered.
+    while (!pool.local().has_waiters()) {
+        ss::yield().get();
+    }
+
+    BOOST_TEST_REQUIRE(!fut2.available(), "second acquire should be blocked");
+    BOOST_REQUIRE(pool.local().has_waiters());
+
+    // Releasing the first lease must unblock the second acquire.
+    {
+        auto _ = std::move(lease1);
+    }
+
+    auto lease2
+      = ss::with_timeout(ss::lowres_clock::now() + 1s, std::move(fut2)).get();
+    BOOST_REQUIRE(lease2.client != nullptr);
+}
+
+// Capacity-1 single-shard pool (borrow disabled). Verify that
+// has_waiters() returns true while an acquire is queued and false
+// once the queue drains.
+SEASTAR_THREAD_TEST_CASE(test_has_waiters_reflects_scheduler_state) {
+    constexpr size_t capacity = 1;
+
+    ss::sharded<cloud_storage_clients::client_pool> pool;
+    auto stop_guard
+      = test_pool_builder.connections_per_shard(capacity)
+          .overdraft_policy(
+            cloud_storage_clients::client_pool_overdraft_policy::wait_if_empty)
+          .build(pool)
+          .get();
+
+    // No waiters initially.
+    BOOST_REQUIRE(!pool.local().has_waiters());
+
+    ss::abort_source as;
+    auto lease1 = pool.local().acquire(test_bucket, as).get();
+
+    // Queue a second acquire.
+    auto fut2 = pool.local().acquire(test_bucket, as);
+    while (!pool.local().has_waiters()) {
+        ss::yield().get();
+    }
+    BOOST_REQUIRE(pool.local().has_waiters());
+
+    // Abort the pending acquire; has_waiters() must return false afterwards.
+    as.request_abort();
+    BOOST_REQUIRE_THROW(fut2.get(), ss::abort_requested_exception);
+
+    while (pool.local().has_waiters()) {
+        ss::yield().get();
+    }
+    BOOST_REQUIRE(!pool.local().has_waiters());
+}

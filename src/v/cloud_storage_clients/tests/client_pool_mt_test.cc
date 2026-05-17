@@ -571,3 +571,120 @@ SEASTAR_THREAD_TEST_CASE(test_client_pool_multiple_upstreams) {
 
     BOOST_REQUIRE_EQUAL(pool.local().idle_count(), pool.local().capacity());
 }
+
+// ---------------------------------------------------------------------------
+// Scheduler-gated borrow tests
+// ---------------------------------------------------------------------------
+
+// Saturate the local shard's pool (capacity-1, borrow_if_empty).
+// Issue a second acquire from local shard — expect a borrow from the peer.
+// Verify via permit::is_remote() that the lease was borrowed from a peer.
+// Drop both leases; verify both shards show no background ops.
+SEASTAR_THREAD_TEST_CASE(test_borrow_path_acquires_from_peer_scheduler) {
+    BOOST_REQUIRE(ss::this_smp_shard_count() == 2);
+
+    constexpr size_t capacity = 1;
+
+    ss::sharded<cloud_storage_clients::client_pool> pool;
+    auto stop_guard = test_pool_builder.connections_per_shard(capacity)
+                        .overdraft_policy(
+                          cloud_storage_clients::client_pool_overdraft_policy::
+                            borrow_if_empty)
+                        .build(pool)
+                        .get();
+
+    ss::abort_source as;
+
+    // Acquire local slot — now local pool is fully saturated.
+    auto lease1 = pool.local().acquire(test_bucket, as).get();
+    BOOST_REQUIRE(!lease1._permit.is_remote());
+
+    // With local pool empty, the next acquire should borrow from the peer.
+    auto lease2 = pool.local().acquire(test_bucket, as).get();
+    BOOST_REQUIRE(lease2._permit.is_remote());
+
+    // Drop leases and wait for all background housekeeping (return_one) to
+    // complete before the stop guard destructs.
+    {
+        auto _ = std::move(lease2);
+    }
+    {
+        auto _ = std::move(lease1);
+    }
+
+    pool
+      .invoke_on_all([](cloud_storage_clients::client_pool& p) {
+          while (p.has_background_operations()) {
+              return ss::yield();
+          }
+          return ss::now();
+      })
+      .get();
+}
+
+// Both shards saturated: local pool empty AND peer's scheduler has no free
+// slots (peer capacity=1, already borrowed). The acquire falls through to
+// the local scheduler queue; has_waiters() must be true. Dropping a local
+// lease unblocks the queued acquire.
+SEASTAR_THREAD_TEST_CASE(test_fallback_queues_locally_when_peer_saturated) {
+    BOOST_REQUIRE(ss::this_smp_shard_count() == 2);
+
+    // capacity=2 per shard; borrow_if_empty policy.
+    // Steps:
+    //   1. Lease both local slots → local pool empty.
+    //   2. Borrow both peer slots by issuing 2 more acquires from local shard
+    //      (each borrow consumes one peer scheduler slot).
+    //   3. Issue a 5th acquire → peer has no slots left; local pool is empty;
+    //      leased count >= capacity*2 so the code falls through to the local
+    //      scheduler wait.
+    //   4. Verify has_waiters() on local shard.
+    //   5. Drop one local lease → pending acquire resolves.
+    constexpr size_t capacity = 2;
+
+    ss::sharded<cloud_storage_clients::client_pool> pool;
+    auto stop_guard = test_pool_builder.connections_per_shard(capacity)
+                        .overdraft_policy(
+                          cloud_storage_clients::client_pool_overdraft_policy::
+                            borrow_if_empty)
+                        .build(pool)
+                        .get();
+
+    ss::abort_source as;
+
+    // Lease all local + borrow all peer slots (2+2 = 4 total from local shard).
+    std::deque<cloud_storage_clients::client_pool::client_lease> leases;
+    for (size_t i = 0; i < capacity * 2; i++) {
+        leases.push_back(pool.local().acquire(test_bucket, as).get());
+    }
+
+    // 5th acquire must queue (pool empty, peer exhausted, leased >=
+    // capacity*2).
+    auto pending = pool.local().acquire(test_bucket, as);
+
+    while (!pool.local().has_waiters()) {
+        ss::yield().get();
+    }
+    BOOST_TEST_REQUIRE(!pending.available(), "acquire should be blocked");
+    BOOST_REQUIRE(pool.local().has_waiters());
+
+    // Release a local lease — the queued acquire should resolve.
+    leases.pop_front();
+
+    try {
+        ss::with_timeout(ss::lowres_clock::now() + 2s, std::move(pending))
+          .get();
+    } catch (const ss::timed_out_error&) {
+        BOOST_FAIL("Timed out waiting for queued acquire to resolve");
+    }
+
+    leases.clear();
+
+    pool
+      .invoke_on_all([](cloud_storage_clients::client_pool& p) {
+          while (p.has_background_operations()) {
+              return ss::yield();
+          }
+          return ss::now();
+      })
+      .get();
+}

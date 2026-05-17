@@ -10,6 +10,7 @@
 
 #pragma once
 
+#include "cloud_io/scheduler.h"
 #include "cloud_storage_clients/bucket_name_parts.h"
 #include "cloud_storage_clients/client.h"
 #include "cloud_storage_clients/client_probe.h"
@@ -133,11 +134,20 @@ public:
     /// \note it's guaranteed that the client can only be acquired once
     ///       before it gets released (release happens implicitly, when
     ///       the lifetime of the pointer ends).
+    /// \param g - cloud_io::group_id used to gate the lease through the
+    ///            per-shard scheduler.
     /// \param as
     /// \param deadline - Optional timeout. If deadline is reached before a
     ///                   client becomes available, throw ss::timed_out_error
     /// \return client pointer (via future that can wait if all clients
     ///         are in use)
+    ss::future<client_lease> acquire(
+      const bucket_name_parts& bucket,
+      cloud_io::group_id g,
+      ss::abort_source& as,
+      std::optional<ss::lowres_clock::time_point> deadline = std::nullopt);
+
+    /// Convenience overload — delegates with group_id::default_group.
     ss::future<client_lease> acquire(
       const bucket_name_parts& bucket,
       ss::abort_source& as,
@@ -153,11 +163,21 @@ public:
     ///   - Passed to client_pool::acquire, which throws if we reach the
     ///     deadline before a client becomes available.
     ///
+    /// \param g - cloud_io::group_id used to gate the lease through the
+    ///            per-shard scheduler.
     /// \param as
     /// \param deadline - Lease expiration time, after which the client is
     ///                   forcibly shut down.
     /// \param ctx - Optional context for the log message. e.g. the string
     ///              representation of a retry_chain_node.
+    ss::future<client_lease> acquire_with_timeout(
+      const bucket_name_parts& bucket,
+      cloud_io::group_id g,
+      ss::abort_source& as,
+      ss::lowres_clock::duration deadline,
+      std::optional<ss::sstring> ctx = std::nullopt);
+
+    /// Convenience overload — delegates with group_id::default_group.
     ss::future<client_lease> acquire_with_timeout(
       const bucket_name_parts& bucket,
       ss::abort_source& as,
@@ -208,6 +228,13 @@ private:
     bool borrow_one(unsigned other) noexcept;
     void return_one(upstream_registry::handle& up, unsigned other) noexcept;
 
+    /// Run admit(g) then borrow_one(requester) on this peer back-to-back,
+    /// with no scheduling point between them. On success the peer's
+    /// admission slot is held; the borrower's lease deleter releases it
+    /// via invoke_on at lease drop.
+    ss::future<bool> try_admit_then_borrow(
+      cloud_io::group_id g, ss::shard_id requester) noexcept;
+
     /// Add a new idle client to the pool.
     void emplace_idle(upstream_registry::handle& up) noexcept;
 
@@ -250,6 +277,7 @@ private:
     // connections.
     intrusive_list<client_lease, &client_lease::_hook> _leased;
 
+    cloud_io::scheduler _sched;
     ss::condition_variable _cvar;
     ss::abort_source _as;
     ss::gate _gate;

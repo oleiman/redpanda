@@ -148,6 +148,18 @@ redpanda_cc_library(
 )
 
 redpanda_cc_library(
+    name = "group_id",
+    hdrs = [
+        "group_id.h",
+    ],
+    include_prefix = "cloud_io",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/v/base",
+    ],
+)
+
+redpanda_cc_library(
     name = "provider",
     hdrs = [
         "provider.h",

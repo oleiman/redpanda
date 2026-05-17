@@ -75,6 +75,11 @@ scheduler::permit scheduler::make_permit(group_id g) noexcept {
     return permit{this, g};
 }
 
+scheduler::permit
+scheduler::make_remote_permit(group_id g, ss::shard_id remote_sid) noexcept {
+    return permit{g, remote_sid};
+}
+
 void scheduler::release_permit(group_id g) noexcept { _policy->release(g); }
 
 void scheduler::release_remote(group_id g) noexcept { _policy->release(g); }

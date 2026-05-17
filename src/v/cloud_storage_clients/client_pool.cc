@@ -10,13 +10,16 @@
 
 #include "cloud_storage_clients/client_pool.h"
 
+#include "cloud_io/scheduler.h"
 #include "cloud_storage_clients/logger.h"
+#include "config/configuration.h"
 #include "crash_tracker/recorder.h"
 #include "model/timeout_clock.h"
 #include "random/generators.h"
 #include "ssx/abort_source.h"
 #include "ssx/future-util.h"
 
+#include <seastar/core/coroutine.hh>
 #include <seastar/core/smp.hh>
 #include <seastar/core/timed_out_error.hh>
 
@@ -85,10 +88,13 @@ client_pool::client_pool(
   , _capacity(size)
   , _config(std::move(conf))
   , _probe(registry.probe())
-  , _policy(policy) {}
+  , _policy(policy)
+  , _sched(config::shard_local_cfg().cloud_io_scheduler_policy(), size) {}
 
 ss::future<> client_pool::start(
   std::optional<std::reference_wrapper<stop_signal>> application_stop_signal) {
+    co_await _sched.start();
+
     ssx::spawn_with_gate(_gate, [this, application_stop_signal]() {
         // Eagerly attempt to start the default upstream and trigger stop on
         // any failure.
@@ -152,7 +158,7 @@ ss::future<> client_pool::stop() {
     if (!_as.abort_requested()) {
         _as.request_abort();
     }
-    _cvar.broken();
+    co_await _sched.stop();
     _pool_ready_barrier.broken();
     // Wait for all background operations to complete.
     co_await _bg_gate.close();
@@ -180,7 +186,6 @@ void client_pool::shutdown_connections() {
       _leased.size());
 
     _as.request_abort();
-    _cvar.broken();
     _pool_ready_barrier.broken();
 
     for (auto& it : _leased) {
@@ -207,6 +212,7 @@ bool client_pool::shutdown_initiated() { return _as.abort_requested(); }
 ///         are in use)
 ss::future<client_pool::client_lease> client_pool::acquire(
   const bucket_name_parts& bucket,
+  cloud_io::group_id g,
   ss::abort_source& as,
   std::optional<ss::lowres_clock::time_point> deadline) {
     auto guard = _gate.hold();
@@ -215,6 +221,7 @@ ss::future<client_pool::client_lease> client_pool::acquire(
 
     std::optional<unsigned int> source_sid;
     std::optional<client_ptr> client;
+    std::optional<cloud_io::scheduler::permit> permit;
 
     auto deadline_reached = [&deadline] {
         return deadline.has_value()
@@ -271,9 +278,14 @@ ss::future<client_pool::client_lease> client_pool::acquire(
                 // upstreams. Just create a new client every time.
                 // But we still need to respect capacity limits by consuming
                 // a slot from the pool.
+                permit = co_await ssx::with_timeout_abortable(
+                  _sched.admit(g, as),
+                  deadline.value_or(model::no_timeout),
+                  as);
+                // Raced: another coroutine may have consumed the idle slot
+                // while we were waiting for admit. Check again.
                 if (_idle_clients.empty()) {
-                    co_await ssx::with_timeout_abortable(
-                      _cvar.wait(), deadline.value_or(model::no_timeout), as);
+                    permit.reset();
                     continue;
                 }
                 // Consume a slot from the pool.
@@ -300,29 +312,53 @@ ss::future<client_pool::client_lease> client_pool::acquire(
                         client.reset();
                         emplace_idle(up);
                     }();
+                    // Release the permit we already hold: the slot was just
+                    // given back via emplace_idle; releasing unblocks a waiter.
+                    if (permit.has_value()) {
+                        permit.reset();
+                    }
                 } else {
                     break;
                 }
             }
 
             if (likely(!_idle_clients.empty())) {
+                permit = co_await ssx::with_timeout_abortable(
+                  _sched.admit(g, as),
+                  deadline.value_or(model::no_timeout),
+                  as);
+                // Raced: slot may have been taken between the empty check and
+                // admit completing.
+                if (_idle_clients.empty()) {
+                    permit.reset();
+                    continue;
+                }
                 client = pop_most_recently_used();
             } else if (
               ss::this_smp_shard_count() == 1
               || _policy == client_pool_overdraft_policy::wait_if_empty
               || _leased.size() >= _capacity * 2) {
-                // If borrowing is disabled or this shard borrowed '_capacity'
-                // client connections then wait util one of the clients is
-                // freed.
-                co_await ssx::with_timeout_abortable(
-                  _cvar.wait(), deadline.value_or(model::no_timeout), as);
+                // If borrowing is disabled or this shard has borrowed up to
+                // capacity, wait for a local slot.
+                permit = co_await ssx::with_timeout_abortable(
+                  _sched.admit(g, as),
+                  deadline.value_or(model::no_timeout),
+                  as);
 
                 vlog(
                   pool_log.debug,
-                  "cvar triggered, pool size: {}",
+                  "admit completed, pool size: {}",
                   _idle_clients.size());
+                if (!_idle_clients.empty()) {
+                    client = pop_most_recently_used();
+                    break;
+                }
+                permit.reset();
             } else {
-                // Try borrowing from peer shard.
+                // Try borrowing from peer shard using atomic admit+borrow.
+                auto [sid1, sid2] = pick_two_random_shards();
+                size_t cnt1 = _capacity;
+                size_t cnt2 = _capacity;
                 auto clients_in_use = [](client_pool& other) {
                     return ss::get_units(other._pool_ready_barrier, 1)
                       .then([&other](ssx::semaphore_units) {
@@ -332,10 +368,6 @@ ss::future<client_pool::client_lease> client_pool::acquire(
                             other._capacity);
                       });
                 };
-                // Use 2-random approach. Pick 2 random shards
-                auto [sid1, sid2] = pick_two_random_shards();
-                size_t cnt1 = _capacity;
-                size_t cnt2 = _capacity;
                 try {
                     cnt1 = co_await container().invoke_on(sid1, clients_in_use);
                     cnt2 = sid1 == sid2 ? cnt1
@@ -354,44 +386,50 @@ ss::future<client_pool::client_lease> client_pool::acquire(
                   sid,
                   cnt,
                   _capacity);
-                bool success = false;
+
                 if (cnt < _capacity) {
-                    success = co_await container().invoke_on(
-                      sid, [my_sid = ss::this_shard_id()](client_pool& other) {
-                          return other.borrow_one(my_sid);
+                    auto [permit_opt, ok] = co_await container().invoke_on(
+                      sid,
+                      [g, my_sid = ss::this_shard_id()](client_pool& peer) {
+                          return peer.try_borrow_with_admit(g, my_sid);
                       });
-                }
-                // Depending on the result either wait or create new connection
-                if (success) {
-                    vlog(pool_log.debug, "successfully borrowed from {}", sid);
-                    if (_probe) {
-                        _probe->register_borrow();
-                    }
-                    source_sid = sid;
-                    client = up->make_client(_as);
-                } else {
-                    vlog(pool_log.debug, "can't borrow connection, waiting");
-                    // In-between failing to borrow from local pool and failing
-                    // to borrow from a remote pool (co_await/async-operation),
-                    // local pool may have gotten a client back. There is no
-                    // need to wait in such case.
-                    if (_idle_clients.empty()) {
-                        co_await ssx::with_timeout_abortable(
-                          _cvar.wait(),
-                          deadline.value_or(model::no_timeout),
-                          as);
+                    if (ok) {
+                        vassert(
+                          permit_opt.has_value(),
+                          "try_borrow_with_admit returned ok but no permit");
                         vlog(
-                          pool_log.debug,
-                          "cvar triggered, pool size: {}",
-                          _idle_clients.size());
+                          pool_log.debug, "successfully borrowed from {}", sid);
+                        if (_probe) {
+                            _probe->register_borrow();
+                        }
+                        source_sid = sid;
+                        permit = std::move(permit_opt);
+                        client = up->make_client(_as);
+                        break;
                     }
                 }
+
+                vlog(pool_log.debug, "can't borrow connection, waiting");
+                // Fall through to local wait.
+                permit = co_await ssx::with_timeout_abortable(
+                  _sched.admit(g, as),
+                  deadline.value_or(model::no_timeout),
+                  as);
+
+                vlog(
+                  pool_log.debug,
+                  "admit completed, pool size: {}",
+                  _idle_clients.size());
+                if (!_idle_clients.empty()) {
+                    client = pop_most_recently_used();
+                    break;
+                }
+                permit.reset();
             }
         }
-    } catch (const ss::broken_condition_variable&) {
     } catch (const ss::broken_named_semaphore&) {
-        // this is thrown at shutdown_connections/stop if we are waiting on
-        // _self_config_barrier
+        // thrown at shutdown_connections/stop while waiting on
+        // _pool_ready_barrier
     }
     if (_gate.is_closed() || _as.abort_requested()) {
         throw ss::gate_closed_exception();
@@ -399,6 +437,7 @@ ss::future<client_pool::client_lease> client_pool::acquire(
         throw ss::timed_out_error();
     }
     vassert(client.has_value(), "'acquire' invariant is broken");
+    vassert(permit.has_value(), "'acquire' permit invariant is broken");
 
     update_usage_stats();
     vlog(
@@ -414,10 +453,12 @@ ss::future<client_pool::client_lease> client_pool::acquire(
 
     client_lease lease(
       client.value(),
+      std::move(*permit),
       as,
       ss::make_deleter([pool = weak_from_this(),
                         client = client.value(),
-                        g = std::move(guard),
+                        g,
+                        gate_guard = std::move(guard),
                         source_sid,
                         up_key]() mutable {
           if (pool) {
@@ -426,7 +467,8 @@ ss::future<client_pool::client_lease> client_pool::acquire(
                   // upstreams. Just shutdown the client and return the slot
                   // to the pool.
                   pool->emplace_idle(pool->_default_upstream.value());
-                  pool->_cvar.signal();
+                  // permit destructs after deleter, releasing the scheduler
+                  // slot and waking any waiter.
                   client->shutdown();
                   ssx::spawn_with_gate(pool->_bg_gate, [client] {
                       return client->stop().finally([client] {});
@@ -457,13 +499,14 @@ ss::future<client_pool::client_lease> client_pool::acquire(
                       return client->stop().finally([client] {});
                   });
                   // In the background return the client to the connection pool
-                  // of the source shard. The lifetime is guaranteed by the gate
-                  // guard.
+                  // of the source shard and release the remote permit slot.
+                  // The lifetime is guaranteed by the gate guard.
                   ssx::spawn_with_gate(
-                    pool->_bg_gate, [pool, source_sid] noexcept {
+                    pool->_bg_gate, [pool, source_sid, g] noexcept {
                         return pool->container().invoke_on(
                           source_sid.value(),
-                          [my_sid = ss::this_shard_id()](client_pool& other) {
+                          [my_sid = ss::this_shard_id(),
+                           g](client_pool& other) {
                               if (other._as.abort_requested()) {
                                   // We are shutting down, ok to skip returning
                                   // the borrowed connection.
@@ -471,15 +514,19 @@ ss::future<client_pool::client_lease> client_pool::acquire(
                               }
                               auto h = other._bg_gate.hold();
                               return ss::get_units(other._pool_ready_barrier, 1)
-                                .then([&](ssx::semaphore_units) {
+                                .then([&other, my_sid, g](
+                                        ssx::semaphore_units) {
                                     other.return_one(
                                       other._default_upstream.value(), my_sid);
+                                    other._sched.release_remote(g);
                                 })
                                 .finally([h = std::move(h)] {});
                           });
                     });
               } else {
                   pool->release_most_recently_used(client);
+                  // permit destructs after deleter, releasing the local
+                  // scheduler slot and waking any waiter.
               }
           }
       }),
@@ -491,12 +538,20 @@ ss::future<client_pool::client_lease> client_pool::acquire(
     co_return lease;
 }
 
-auto client_pool::acquire_with_timeout(
+ss::future<client_pool::client_lease> client_pool::acquire(
   const bucket_name_parts& bucket,
   ss::abort_source& as,
+  std::optional<ss::lowres_clock::time_point> deadline) {
+    return acquire(bucket, cloud_io::group_id::default_group, as, deadline);
+}
+
+ss::future<client_pool::client_lease> client_pool::acquire_with_timeout(
+  const bucket_name_parts& bucket,
+  cloud_io::group_id g,
+  ss::abort_source& as,
   ss::lowres_clock::duration timeout,
-  std::optional<ss::sstring> ctx) -> ss::future<client_lease> {
-    auto lease = co_await acquire(bucket, as);
+  std::optional<ss::sstring> ctx) {
+    auto lease = co_await acquire(bucket, g, as);
     if (timeout < ss::lowres_clock::duration::max()) {
         // take a copy of the shared_ptr held by the lease to avoid racing with
         // client_pool teardown
@@ -527,6 +582,15 @@ auto client_pool::acquire_with_timeout(
           });
     }
     co_return lease;
+}
+
+ss::future<client_pool::client_lease> client_pool::acquire_with_timeout(
+  const bucket_name_parts& bucket,
+  ss::abort_source& as,
+  ss::lowres_clock::duration timeout,
+  std::optional<ss::sstring> ctx) {
+    return acquire_with_timeout(
+      bucket, cloud_io::group_id::default_group, as, timeout, std::move(ctx));
 }
 
 void client_pool::update_usage_stats() {
@@ -578,7 +642,42 @@ void client_pool::return_one(
       "creating new client, current usage is {}/{}",
       normalized_num_clients_in_use(),
       _capacity);
-    _cvar.signal();
+    // Wakeup is driven by release_remote(g) called by the lease deleter
+    // on the borrower shard after invoking return_one. No explicit signal
+    // needed here.
+}
+
+ss::future<std::tuple<std::optional<cloud_io::scheduler::permit>, bool>>
+client_pool::try_borrow_with_admit(
+  cloud_io::group_id g, ss::shard_id requester) noexcept {
+    try {
+        auto units_h = co_await ss::get_units(_pool_ready_barrier, 1);
+        if (_idle_clients.empty()) {
+            co_return std::make_tuple(std::nullopt, false);
+        }
+        auto permit_opt = _sched.try_admit(g);
+        if (!permit_opt.has_value()) {
+            co_return std::make_tuple(std::nullopt, false);
+        }
+        bool ok = borrow_one(requester);
+        if (!ok) {
+            // borrow_one declined (pool empty by now); release the permit.
+            {
+                auto _ = std::move(*permit_opt);
+            }
+            co_return std::make_tuple(std::nullopt, false);
+        }
+        // Transfer slot ownership to the lease deleter: disown the local
+        // permit (prevents double-release) and return a remote-flavored
+        // permit to the borrower shard. The borrower's lease deleter
+        // will call release_remote(g) on this shard to release the slot.
+        permit_opt->disown();
+        const ss::shard_id my_sid = ss::this_shard_id();
+        co_return std::make_tuple(
+          cloud_io::scheduler::make_remote_permit(g, my_sid), true);
+    } catch (...) {
+        co_return std::make_tuple(std::nullopt, false);
+    }
 }
 
 void client_pool::emplace_idle(upstream_registry::handle& up) noexcept {
@@ -629,7 +728,8 @@ void client_pool::release_most_recently_used(client_ptr leased) noexcept {
       "tried to release a client but the client is already in idle clients");
     // Cold clients are at the front. Hot clients are at the back.
     _idle_clients_lru.push_back(it->second);
-    _cvar.signal();
+    // Wakeup is driven by the permit destructor (which runs after this
+    // deleter due to reverse-of-declaration ordering in client_lease).
 }
 
 client_pool::client_ptr
@@ -660,15 +760,6 @@ void client_pool::populate_client_pool(upstream_registry::handle& up) {
     for (size_t i = 0; i < _capacity; i++) {
         emplace_idle(up);
     }
-
-    // Be defensive in checking that we properly synchronized access to
-    // `_idle_clients` and `_cvar`. Before populate_client_pool() is called, we
-    // do not expect anyone to check the size of the pool or wait on the
-    // condition variable.
-    vassert(
-      !_cvar.has_waiters(),
-      "This is a bug: _cvar is not expected to have waiters at this point. "
-      "Missing synchronization?");
 
     _pool_ready_barrier.signal(_pool_ready_barrier.max_counter());
 }

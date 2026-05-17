@@ -73,6 +73,12 @@ public:
     /// after a successful admit.
     [[nodiscard]] permit make_permit(group_id g) noexcept;
 
+    /// Mint a remote-flavored permit for the borrower shard.
+    /// The permit's destructor is a no-op; the lease deleter is
+    /// responsible for calling release_remote(g) on the owning shard.
+    [[nodiscard]] static permit
+    make_remote_permit(group_id g, ss::shard_id remote_sid) noexcept;
+
     /// Internal helper: lease deleter (cross-shard borrow path)
     /// calls this on the peer shard to release a remote permit's
     /// slot. Public for accessibility from client_pool; not
@@ -103,6 +109,11 @@ public:
 
     /// Explicit early release (otherwise releases on destruction).
     void return_all() noexcept;
+
+    /// Disown the local scheduler reference without releasing the
+    /// reserved slot. Used by the cross-shard borrow path when handing
+    /// off slot ownership to the lease deleter's release_remote call.
+    void disown() noexcept { _shell = nullptr; }
 
     group_id group() const noexcept { return _group; }
     bool is_remote() const noexcept { return _remote_sid.has_value(); }

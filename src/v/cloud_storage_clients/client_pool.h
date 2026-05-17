@@ -10,6 +10,8 @@
 
 #pragma once
 
+#include "cloud_io/group_id.h"
+#include "cloud_io/scheduler.h"
 #include "cloud_storage_clients/bucket_name_parts.h"
 #include "cloud_storage_clients/client.h"
 #include "cloud_storage_clients/client_probe.h"
@@ -18,7 +20,6 @@
 #include "ssx/watchdog.h"
 #include "utils/stop_signal.h"
 
-#include <seastar/core/condition-variable.hh>
 #include <seastar/core/sharded.hh>
 #include <seastar/core/shared_ptr.hh>
 
@@ -47,6 +48,10 @@ public:
     using client_ptr = ss::shared_ptr<client>;
     struct client_lease {
         client_ptr client;
+        // _permit destructs AFTER deleter (reverse-of-declaration order in C++)
+        // so the deleter's cross-shard return_one happens before the local
+        // permit slot is released.
+        cloud_io::scheduler::permit _permit;
         ss::deleter deleter;
         ss::abort_source::subscription as_sub;
         intrusive_list_hook _hook;
@@ -55,10 +60,12 @@ public:
 
         client_lease(
           client_ptr p,
+          cloud_io::scheduler::permit permit,
           ss::abort_source& as,
           ss::deleter deleter,
           std::unique_ptr<client_probe::hist_t::measurement> m)
           : client(std::move(p))
+          , _permit(std::move(permit))
           , deleter(std::move(deleter))
           , _track_duration(std::move(m)) {
             auto as_sub_opt = as.subscribe(
@@ -79,6 +86,7 @@ public:
 
         client_lease(client_lease&& other) noexcept
           : client(std::move(other.client))
+          , _permit(std::move(other._permit))
           , deleter(std::move(other.deleter))
           , as_sub(std::move(other.as_sub))
           , _track_duration(std::move(other._track_duration))
@@ -88,6 +96,7 @@ public:
 
         client_lease& operator=(client_lease&& other) noexcept {
             client = std::move(other.client);
+            _permit = std::move(other._permit);
             deleter = std::move(other.deleter);
             as_sub = std::move(other.as_sub);
             _hook.swap_nodes(other._hook);
@@ -133,11 +142,20 @@ public:
     /// \note it's guaranteed that the client can only be acquired once
     ///       before it gets released (release happens implicitly, when
     ///       the lifetime of the pointer ends).
+    /// \param bucket
+    /// \param g - Scheduling group for admission ordering.
     /// \param as
     /// \param deadline - Optional timeout. If deadline is reached before a
     ///                   client becomes available, throw ss::timed_out_error
     /// \return client pointer (via future that can wait if all clients
     ///         are in use)
+    ss::future<client_lease> acquire(
+      const bucket_name_parts& bucket,
+      cloud_io::group_id g,
+      ss::abort_source& as,
+      std::optional<ss::lowres_clock::time_point> deadline = std::nullopt);
+
+    /// Convenience overload — delegates with group_id::default_group.
     ss::future<client_lease> acquire(
       const bucket_name_parts& bucket,
       ss::abort_source& as,
@@ -153,15 +171,25 @@ public:
     ///   - Passed to client_pool::acquire, which throws if we reach the
     ///     deadline before a client becomes available.
     ///
+    /// \param bucket
+    /// \param g - Scheduling group for admission ordering.
     /// \param as
-    /// \param deadline - Lease expiration time, after which the client is
-    ///                   forcibly shut down.
+    /// \param timeout - Lease expiration duration, after which the client is
+    ///                  forcibly shut down.
     /// \param ctx - Optional context for the log message. e.g. the string
     ///              representation of a retry_chain_node.
     ss::future<client_lease> acquire_with_timeout(
       const bucket_name_parts& bucket,
+      cloud_io::group_id g,
       ss::abort_source& as,
-      ss::lowres_clock::duration deadline,
+      ss::lowres_clock::duration timeout,
+      std::optional<ss::sstring> ctx = std::nullopt);
+
+    /// Convenience overload — delegates with group_id::default_group.
+    ss::future<client_lease> acquire_with_timeout(
+      const bucket_name_parts& bucket,
+      ss::abort_source& as,
+      ss::lowres_clock::duration timeout,
       std::optional<ss::sstring> ctx = std::nullopt);
 
     /// \brief Idle clients waiting in the pool. If this number is less than
@@ -178,7 +206,7 @@ public:
     }
 
     bool has_waiters() const noexcept {
-        return _cvar.has_waiters() || _pool_ready_barrier.waiters() > 0;
+        return _sched.has_waiters() || _pool_ready_barrier.waiters() > 0;
     }
 
 private:
@@ -207,6 +235,12 @@ private:
     size_t normalized_num_clients_in_use() const;
     bool borrow_one(unsigned other) noexcept;
     void return_one(upstream_registry::handle& up, unsigned other) noexcept;
+
+    /// Atomically attempt to admit g AND borrow_one(requester) on this peer.
+    /// Returns {permit, true} on success; {nullopt, false} if either fails.
+    ss::future<std::tuple<std::optional<cloud_io::scheduler::permit>, bool>>
+    try_borrow_with_admit(
+      cloud_io::group_id g, ss::shard_id requester) noexcept;
 
     /// Add a new idle client to the pool.
     void emplace_idle(upstream_registry::handle& up) noexcept;
@@ -250,7 +284,7 @@ private:
     // connections.
     intrusive_list<client_lease, &client_lease::_hook> _leased;
 
-    ss::condition_variable _cvar;
+    cloud_io::scheduler _sched;
     ss::abort_source _as;
     ss::gate _gate;
     // A gate for background operations. Most useful in testing where we want

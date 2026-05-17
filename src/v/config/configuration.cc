@@ -2187,6 +2187,16 @@ configuration::configuration()
       "to upload and download activities.",
       {.visibility = visibility::user},
       20)
+  , cloud_io_scheduler_policy(
+      *this,
+      "cloud_io_scheduler_policy",
+      "Selects the admission policy used by cloud_io::scheduler. 'null' "
+      "disables admission control (client pool is the only constraint).",
+      {.needs_restart = needs_restart::yes,
+       .example = "null",
+       .visibility = visibility::tunable},
+      cloud_io::policy_type::null,
+      {cloud_io::policy_type::null})
   , cloud_storage_disable_tls(
       *this,
       "cloud_storage_disable_tls",

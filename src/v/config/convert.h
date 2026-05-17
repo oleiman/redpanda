@@ -11,6 +11,7 @@
 
 #pragma once
 
+#include "cloud_io/policy_type.h"
 #include "config/leaders_preference.h"
 #include "config/types.h"
 #include "model/compression.h"
@@ -837,6 +838,29 @@ struct convert<security::oidc::nested_group_behavior> {
         }
         std::istringstream iss(value);
         iss >> rhs;
+        return true;
+    }
+};
+
+template<>
+struct convert<cloud_io::policy_type> {
+    using type = cloud_io::policy_type;
+
+    static constexpr auto acceptable_values = std::to_array(
+      {to_string_view(type::null)});
+
+    static Node encode(const type& rhs) { return Node(fmt::format("{}", rhs)); }
+
+    static bool decode(const Node& node, type& rhs) {
+        auto value = node.as<std::string>();
+
+        if (!std::ranges::contains(acceptable_values, value)) {
+            return false;
+        }
+
+        rhs = string_switch<type>(std::string_view{value})
+                .match(to_string_view(type::null), type::null);
+
         return true;
     }
 };

@@ -136,6 +136,18 @@ redpanda_cc_library(
 )
 
 redpanda_cc_library(
+    name = "policy_type",
+    hdrs = [
+        "policy_type.h",
+    ],
+    include_prefix = "cloud_io",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/v/base",
+    ],
+)
+
+redpanda_cc_library(
     name = "provider",
     hdrs = [
         "provider.h",

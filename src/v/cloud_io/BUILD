@@ -58,6 +58,7 @@ redpanda_cc_library(
     ],
     visibility = ["//visibility:public"],
     deps = [
+        "//src/v/cloud_io:group_id",
         "//src/v/cloud_io:io_result",
         "//src/v/cloud_io:transfer_details",
         "//src/v/cloud_storage_clients",
@@ -87,6 +88,7 @@ redpanda_cc_library(
     ],
     visibility = ["//visibility:public"],
     deps = [
+        ":group_id",
         ":io_resources",
         ":io_result",
         ":provider",

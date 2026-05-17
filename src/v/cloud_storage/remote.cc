@@ -401,6 +401,7 @@ ss::future<download_result> remote::download_stream(
       cons_str,
       stream_label,
       false,
+      cloud_io::group_id::default_group,
       byte_range,
       [this](size_t ms) {
           _materialized->get_read_path_probe().download_throttled(ms);
@@ -434,6 +435,7 @@ ss::future<download_result> remote::download_segment(
         cons_str,
         "segment",
         false,
+        cloud_io::group_id::default_group,
         byte_range,
         [this](size_t ms) {
             _materialized->get_read_path_probe().download_throttled(ms);

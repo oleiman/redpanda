@@ -51,7 +51,7 @@ public:
     MOCK_METHOD(
       ss::future<cloud_io::download_result>,
       download_object,
-      (cloud_io::basic_download_request<ss::manual_clock>),
+      (cloud_io::basic_download_request<ss::manual_clock>, cloud_io::group_id),
       (override));
 
     MOCK_METHOD(
@@ -60,13 +60,14 @@ public:
       (const cloud_storage_clients::bucket_name&,
        const cloud_storage_clients::object_key&,
        basic_retry_chain_node<ss::manual_clock>&,
-       std::string_view),
+       std::string_view,
+       cloud_io::group_id),
       (override));
 
     MOCK_METHOD(
       ss::future<cloud_io::upload_result>,
       upload_object,
-      (cloud_io::basic_upload_request<ss::manual_clock>),
+      (cloud_io::basic_upload_request<ss::manual_clock>, cloud_io::group_id),
       (override));
 
     MOCK_METHOD(
@@ -77,7 +78,8 @@ public:
        const reset_input_stream&,
        lazy_abort_source&,
        const std::string_view,
-       std::optional<size_t>),
+       std::optional<size_t>,
+       cloud_io::group_id),
       (override));
 
     MOCK_METHOD(
@@ -87,6 +89,7 @@ public:
        const cloud_io::try_consume_stream&,
        const std::string_view,
        bool,
+       cloud_io::group_id,
        std::optional<cloud_storage_clients::http_byte_range>,
        std::function<void(size_t)>),
       (override));
@@ -129,8 +132,8 @@ public:
         co_await remote.start();
         co_await uploads.start();
         co_await remote.invoke_on_all([this](remote_mock& remote) {
-            EXPECT_CALL(remote, upload_object(::testing::_))
-              .WillRepeatedly([this](auto req) {
+            EXPECT_CALL(remote, upload_object(::testing::_, ::testing::_))
+              .WillRepeatedly([this](auto req, cloud_io::group_id) {
                   uploads.local().push_back(req.payload.size_bytes());
                   return seastar::make_ready_future<cloud_io::upload_result>(
                     cloud_io::upload_result::success);

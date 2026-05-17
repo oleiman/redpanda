@@ -10,6 +10,7 @@
 
 #pragma once
 
+#include "cloud_io/group_id.h"
 #include "cloud_io/io_resources.h"
 #include "cloud_io/io_result.h"
 #include "cloud_io/provider.h"
@@ -82,14 +83,16 @@ public:
     /// \param download_request holds a reference to an iobuf in the `payload`
     /// field which will hold the downloaded object if the download was
     /// successful
-    ss::future<download_result>
-    download_object(download_request download_request) override;
+    ss::future<download_result> download_object(
+      download_request download_request,
+      group_id g = group_id::default_group) override;
 
     ss::future<download_result> object_exists(
       const cloud_storage_clients::bucket_name& bucket,
       const cloud_storage_clients::object_key& path,
       retry_chain_node& parent,
-      std::string_view object_type) override;
+      std::string_view object_type,
+      group_id g = group_id::default_group) override;
 
     /// \brief Delete object from S3
     ///
@@ -97,7 +100,8 @@ public:
     ///
     /// \param path is a full S3 object path
     /// \param bucket is a name of the S3 bucket
-    ss::future<upload_result> delete_object(transfer_details);
+    ss::future<upload_result>
+    delete_object(transfer_details, group_id g = group_id::default_group);
 
     /// \brief Delete multiple objects from S3
     ///
@@ -120,7 +124,8 @@ public:
       const cloud_storage_clients::bucket_name& bucket,
       R keys,
       retry_chain_node& parent,
-      std::function<void(size_t)> req_cb);
+      std::function<void(size_t)> req_cb,
+      group_id g = group_id::default_group);
 
     /// \brief Lists objects in a bucket
     ///
@@ -155,13 +160,15 @@ public:
       std::optional<cloud_storage_clients::client::item_filter> item_filter
       = std::nullopt,
       std::optional<size_t> max_keys = std::nullopt,
-      std::optional<ss::sstring> continuation_token = std::nullopt);
+      std::optional<ss::sstring> continuation_token = std::nullopt,
+      group_id g = group_id::default_group);
 
     /// \brief Upload small objects to bucket. Suitable for uploading simple
     /// strings, does not check for leadership before upload like the segment
     /// upload function.
-    ss::future<upload_result>
-    upload_object(upload_request upload_request) override;
+    ss::future<upload_result> upload_object(
+      upload_request upload_request,
+      group_id g = group_id::default_group) override;
 
     /// \brief Initiate a multipart upload for large objects
     ///
@@ -180,7 +187,8 @@ public:
       const cloud_storage_clients::bucket_name& bucket,
       const cloud_storage_clients::object_key& key,
       size_t part_size,
-      ss::lowres_clock::duration timeout);
+      ss::lowres_clock::duration timeout,
+      group_id g = group_id::default_group);
 
     // If you need to spawn a background task that relies on
     // this object staying alive, spawn it with this gate.
@@ -193,13 +201,15 @@ public:
       const reset_input_stream& reset_str,
       lazy_abort_source& lazy_abort_source,
       const std::string_view stream_label,
-      std::optional<size_t> max_retries) override;
+      std::optional<size_t> max_retries,
+      group_id g = group_id::default_group) override;
 
     ss::future<download_result> download_stream(
       transfer_details transfer_details,
       const try_consume_stream& cons_str,
       const std::string_view stream_label,
       bool acquire_hydration_units,
+      group_id g = group_id::default_group,
       std::optional<cloud_storage_clients::http_byte_range> byte_range
       = std::nullopt,
       std::function<void(size_t)> throttle_metric_ms_cb = {}) override;
@@ -213,7 +223,8 @@ public:
       const cloud_storage_clients::bucket_name& bucket,
       R keys,
       retry_chain_node& parent,
-      std::function<void(size_t)> req_cb);
+      std::function<void(size_t)> req_cb,
+      group_id g = group_id::default_group);
 
     /// Delete a single batch of keys. The batch size must not exceed the
     /// backend limits.
@@ -223,7 +234,8 @@ public:
       const cloud_storage_clients::bucket_name& bucket,
       chunked_vector<cloud_storage_clients::object_key> keys,
       retry_chain_node& parent,
-      std::function<void(size_t)> req_cb);
+      std::function<void(size_t)> req_cb,
+      group_id g = group_id::default_group);
 
     const io_resources& resources() const { return *_resources; }
 

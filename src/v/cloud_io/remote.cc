@@ -11,6 +11,7 @@
 #include "cloud_io/remote.h"
 
 #include "bytes/iostream.h"
+#include "cloud_io/group_id.h"
 #include "cloud_io/logger.h"
 #include "cloud_io/provider.h"
 #include "cloud_io/transfer_details.h"
@@ -224,7 +225,8 @@ ss::future<upload_result> remote::upload_stream(
   const reset_input_stream& reset_str,
   lazy_abort_source& lazy_abort_source,
   const std::string_view stream_label,
-  std::optional<size_t> max_retries) {
+  std::optional<size_t> max_retries,
+  group_id g) {
     const auto& path = transfer_details.key;
     const auto& bucket = transfer_details.bucket;
     const auto bucket_parts = cloud_storage_clients::parse_bucket_name(bucket);
@@ -254,7 +256,11 @@ ss::future<upload_result> remote::upload_stream(
         }
         auto fut = co_await ss::coroutine::as_future(
           _pool.local().acquire_with_timeout(
-            *bucket_parts, fib.root_abort_source(), _lease_timeout(), fib()));
+            *bucket_parts,
+            g,
+            fib.root_abort_source(),
+            _lease_timeout(),
+            fib()));
         if (fut.failed()) {
             co_return throw_if_not_timeout(
               fut.get_exception(), upload_result::timedout);
@@ -357,6 +363,7 @@ ss::future<download_result> remote::download_stream(
   const try_consume_stream& cons_str,
   const std::string_view stream_label,
   [[maybe_unused]] bool acquire_hydration_units,
+  group_id g,
   std::optional<cloud_storage_clients::http_byte_range> byte_range,
   std::function<void(size_t)> throttle_metric_ms_cb) {
     const auto& path = transfer_details.key;
@@ -379,10 +386,14 @@ ss::future<download_result> remote::download_stream(
     vlog(ctxlog.debug, "Download {} {}", stream_label, path);
     std::optional<download_result> result;
     while (!_gate.is_closed() && permit.is_allowed && !result) {
-        auto fut = co_await [this, &fib, &transfer_details, &bucket_parts] {
+        auto fut = co_await [this, g, &fib, &transfer_details, &bucket_parts] {
             transfer_details.on_client_acquire();
             return ss::coroutine::as_future(_pool.local().acquire_with_timeout(
-              *bucket_parts, fib.root_abort_source(), _lease_timeout(), fib()));
+              *bucket_parts,
+              g,
+              fib.root_abort_source(),
+              _lease_timeout(),
+              fib()));
         }();
         if (fut.failed()) {
             co_return throw_if_not_timeout(
@@ -494,7 +505,7 @@ ss::future<download_result> remote::download_stream(
 }
 
 ss::future<download_result>
-remote::download_object(download_request download_request) {
+remote::download_object(download_request download_request, group_id g) {
     auto guard = _gate.hold();
     auto& transfer_details = download_request.transfer_details;
     retry_chain_node fib(&transfer_details.parent_rtc);
@@ -520,7 +531,11 @@ remote::download_object(download_request download_request) {
     while (!_gate.is_closed() && permit.is_allowed && !result) {
         auto fut = co_await ss::coroutine::as_future(
           _pool.local().acquire_with_timeout(
-            *bucket_parts, fib.root_abort_source(), _lease_timeout(), fib()));
+            *bucket_parts,
+            g,
+            fib.root_abort_source(),
+            _lease_timeout(),
+            fib()));
         if (fut.failed()) {
             co_return throw_if_not_timeout(
               fut.get_exception(), download_result::timedout);
@@ -606,7 +621,8 @@ ss::future<download_result> remote::object_exists(
   const cloud_storage_clients::bucket_name& bucket,
   const cloud_storage_clients::object_key& path,
   retry_chain_node& parent,
-  std::string_view object_type) {
+  std::string_view object_type,
+  group_id g) {
     const auto bucket_parts = cloud_storage_clients::parse_bucket_name(bucket);
     if (!bucket_parts) {
         vlog(
@@ -626,7 +642,11 @@ ss::future<download_result> remote::object_exists(
     while (!_gate.is_closed() && permit.is_allowed && !result) {
         auto fut = co_await ss::coroutine::as_future(
           _pool.local().acquire_with_timeout(
-            *bucket_parts, fib.root_abort_source(), _lease_timeout(), fib()));
+            *bucket_parts,
+            g,
+            fib.root_abort_source(),
+            _lease_timeout(),
+            fib()));
         if (fut.failed()) {
             co_return throw_if_not_timeout(
               fut.get_exception(), download_result::timedout);
@@ -695,7 +715,7 @@ ss::future<download_result> remote::object_exists(
 }
 
 ss::future<upload_result>
-remote::delete_object(transfer_details transfer_details) {
+remote::delete_object(transfer_details transfer_details, group_id g) {
     const auto& bucket = transfer_details.bucket;
     const auto bucket_parts = cloud_storage_clients::parse_bucket_name(bucket);
     if (!bucket_parts) {
@@ -717,7 +737,11 @@ remote::delete_object(transfer_details transfer_details) {
     while (!_gate.is_closed() && permit.is_allowed && !result) {
         auto fut = co_await ss::coroutine::as_future(
           _pool.local().acquire_with_timeout(
-            *bucket_parts, fib.root_abort_source(), _lease_timeout(), fib()));
+            *bucket_parts,
+            g,
+            fib.root_abort_source(),
+            _lease_timeout(),
+            fib()));
         if (fut.failed()) {
             co_return throw_if_not_timeout(
               fut.get_exception(), upload_result::timedout);
@@ -797,7 +821,8 @@ ss::future<upload_result> remote::delete_objects(
   const cloud_storage_clients::bucket_name& bucket,
   R keys,
   retry_chain_node& parent,
-  std::function<void(size_t)> req_cb) {
+  std::function<void(size_t)> req_cb,
+  group_id g) {
     ss::gate::holder gh{_gate};
     retry_chain_logger ctxlog(log, parent);
 
@@ -810,7 +835,7 @@ ss::future<upload_result> remote::delete_objects(
 
     if (!is_batch_delete_supported()) {
         co_return co_await delete_objects_sequentially(
-          bucket, std::forward<R>(keys), parent, std::move(req_cb));
+          bucket, std::forward<R>(keys), parent, std::move(req_cb), g);
     }
 
     const auto batches_to_delete = num_chunks(keys, delete_objects_max_keys());
@@ -820,7 +845,7 @@ ss::future<upload_result> remote::delete_objects(
     co_await ss::max_concurrent_for_each(
       boost::irange(batches_to_delete),
       concurrency(),
-      [this, bucket, &keys, &parent, &results, cb = std::move(req_cb)](
+      [this, g, bucket, &keys, &parent, &results, cb = std::move(req_cb)](
         auto chunk_ix) -> ss::future<> {
           auto chunk_start_offset = (chunk_ix * delete_objects_max_keys());
 
@@ -845,7 +870,8 @@ ss::future<upload_result> remote::delete_objects(
             key_batch.size() > 0,
             "The chunking logic must always produce non-empty batches.");
 
-          return delete_object_batch(bucket, std::move(key_batch), parent, cb)
+          return delete_object_batch(
+                   bucket, std::move(key_batch), parent, cb, g)
             .then([&results](auto result) { results.push_back(result); });
       });
 
@@ -871,7 +897,8 @@ ss::future<upload_result> remote::delete_object_batch(
   const cloud_storage_clients::bucket_name& bucket,
   chunked_vector<cloud_storage_clients::object_key> keys,
   retry_chain_node& parent,
-  std::function<void(size_t)> req_cb) {
+  std::function<void(size_t)> req_cb,
+  group_id g) {
     const auto bucket_parts = cloud_storage_clients::parse_bucket_name(bucket);
     if (!bucket_parts) {
         vlog(
@@ -892,7 +919,11 @@ ss::future<upload_result> remote::delete_object_batch(
     while (!_gate.is_closed() && permit.is_allowed && !result) {
         auto fut = co_await ss::coroutine::as_future(
           _pool.local().acquire_with_timeout(
-            *bucket_parts, fib.root_abort_source(), _lease_timeout(), fib()));
+            *bucket_parts,
+            g,
+            fib.root_abort_source(),
+            _lease_timeout(),
+            fib()));
         if (fut.failed()) {
             co_return throw_if_not_timeout(
               fut.get_exception(), upload_result::timedout);
@@ -978,21 +1009,24 @@ remote::delete_objects<std::vector<cloud_storage_clients::object_key>>(
   const cloud_storage_clients::bucket_name& bucket,
   std::vector<cloud_storage_clients::object_key> keys,
   retry_chain_node& parent,
-  std::function<void(size_t)>);
+  std::function<void(size_t)>,
+  group_id g);
 
 template ss::future<upload_result>
 remote::delete_objects<std::deque<cloud_storage_clients::object_key>>(
   const cloud_storage_clients::bucket_name& bucket,
   std::deque<cloud_storage_clients::object_key> keys,
   retry_chain_node& parent,
-  std::function<void(size_t)>);
+  std::function<void(size_t)>,
+  group_id g);
 
 template ss::future<upload_result>
 remote::delete_objects<chunked_vector<cloud_storage_clients::object_key>>(
   const cloud_storage_clients::bucket_name& bucket,
   chunked_vector<cloud_storage_clients::object_key> keys,
   retry_chain_node& parent,
-  std::function<void(size_t)>);
+  std::function<void(size_t)>,
+  group_id g);
 
 template<typename R>
 requires std::ranges::range<R>
@@ -1003,7 +1037,8 @@ ss::future<upload_result> remote::delete_objects_sequentially(
   const cloud_storage_clients::bucket_name& bucket,
   R keys,
   retry_chain_node& parent,
-  std::function<void(size_t)> req_cb) {
+  std::function<void(size_t)> req_cb,
+  group_id g) {
     retry_chain_logger ctxlog(log, parent);
 
     vlog(
@@ -1032,13 +1067,15 @@ ss::future<upload_result> remote::delete_objects_sequentially(
         key_nodes.begin(),
         key_nodes.end(),
         concurrency(),
-        [this, &bucket, &results, ctxlog, req_cb = std::move(req_cb)](
+        [this, g, &bucket, &results, ctxlog, req_cb = std::move(req_cb)](
           auto& kn) -> ss::future<> {
             vlog(ctxlog.trace, "Deleting key {}", kn.key);
-            return delete_object({.bucket = bucket,
-                                  .key = kn.key,
-                                  .parent_rtc = *kn.node,
-                                  .on_req_cb = req_cb})
+            return delete_object(
+                     {.bucket = bucket,
+                      .key = kn.key,
+                      .parent_rtc = *kn.node,
+                      .on_req_cb = req_cb},
+                     g)
               .then([&results](auto result) { results.push_back(result); });
         }));
     if (fut.failed()) {
@@ -1080,7 +1117,8 @@ ss::future<list_result> remote::list_objects(
   std::optional<char> delimiter,
   std::optional<cloud_storage_clients::client::item_filter> item_filter,
   std::optional<size_t> max_keys,
-  std::optional<ss::sstring> continuation_token) {
+  std::optional<ss::sstring> continuation_token,
+  group_id g) {
     const auto bucket_parts = cloud_storage_clients::parse_bucket_name(bucket);
     if (!bucket_parts) {
         vlog(
@@ -1113,7 +1151,11 @@ ss::future<list_result> remote::list_objects(
     while (!_gate.is_closed() && permit.is_allowed && !result) {
         auto fut = co_await ss::coroutine::as_future(
           _pool.local().acquire_with_timeout(
-            *bucket_parts, fib.root_abort_source(), _lease_timeout(), fib()));
+            *bucket_parts,
+            g,
+            fib.root_abort_source(),
+            _lease_timeout(),
+            fib()));
         if (fut.failed()) {
             co_return throw_if_not_timeout(
               fut.get_exception(), cloud_storage_clients::error_outcome::retry);
@@ -1213,7 +1255,8 @@ ss::future<list_result> remote::list_objects(
     co_return std::move(*result);
 }
 
-ss::future<upload_result> remote::upload_object(upload_request upload_request) {
+ss::future<upload_result>
+remote::upload_object(upload_request upload_request, group_id g) {
     auto guard = _gate.hold();
 
     auto& transfer_details = upload_request.transfer_details;
@@ -1241,7 +1284,11 @@ ss::future<upload_result> remote::upload_object(upload_request upload_request) {
     while (!_gate.is_closed() && permit.is_allowed && !result) {
         auto fut = co_await ss::coroutine::as_future(
           _pool.local().acquire_with_timeout(
-            *bucket_parts, fib.root_abort_source(), _lease_timeout(), fib()));
+            *bucket_parts,
+            g,
+            fib.root_abort_source(),
+            _lease_timeout(),
+            fib()));
         if (fut.failed()) {
             co_return throw_if_not_timeout(
               fut.get_exception(), upload_result::timedout);
@@ -1332,7 +1379,8 @@ remote::initiate_multipart_upload(
   const cloud_storage_clients::bucket_name& bucket,
   const cloud_storage_clients::object_key& key,
   size_t part_size,
-  ss::lowres_clock::duration timeout) {
+  ss::lowres_clock::duration timeout,
+  group_id g) {
     auto guard = _gate.hold();
 
     const auto bucket_parts = cloud_storage_clients::parse_bucket_name(bucket);
@@ -1347,7 +1395,7 @@ remote::initiate_multipart_upload(
 
     // Acquire a client lease from the pool
     auto fut = co_await ss::coroutine::as_future(
-      _pool.local().acquire(*bucket_parts, _as));
+      _pool.local().acquire(*bucket_parts, g, _as));
     if (fut.failed()) {
         vlog(
           log.warn,

@@ -228,6 +228,7 @@ file_io::read_object(object_extent extent, ss::abort_source* as) {
               consumer,
               "l1_file_download",
               /*acquire_hydration_units=*/true,
+              cloud_io::group_id::default_group,
               cloud_storage_clients::http_byte_range{
                 extent.position, extent.position + extent.size - 1}));
         if (result_fut.failed()) {

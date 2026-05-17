@@ -168,6 +168,56 @@ redpanda_cc_library(
 )
 
 redpanda_cc_library(
+    name = "scheduler_policy",
+    hdrs = [
+        "scheduler_policy.h",
+    ],
+    include_prefix = "cloud_io",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":group_id",
+        "//src/v/base",
+        "//src/v/metrics",
+        "@seastar",
+    ],
+)
+
+redpanda_cc_library(
+    name = "scheduler",
+    srcs = [
+        "null_policy.cc",
+        "scheduler.cc",
+        "scheduler_factory.cc",
+    ],
+    hdrs = [
+        "null_policy.h",
+        "scheduler.h",
+    ],
+    include_prefix = "cloud_io",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":group_id",
+        ":logger",
+        ":policy_type",
+        ":scheduler_policy",
+        "//src/v/base",
+        "//src/v/config",
+        "//src/v/metrics",
+        "//src/v/ssx:semaphore",
+        "@seastar",
+    ],
+)
+
+# Alias so callers can reference :null_policy independently; the
+# implementation lives inside :scheduler to avoid a circular dependency
+# (null_policy.h includes scheduler.h).
+alias(
+    name = "null_policy",
+    actual = ":scheduler",
+    visibility = ["//visibility:public"],
+)
+
+redpanda_cc_library(
     name = "cache",
     srcs = [
         "access_time_tracker.cc",

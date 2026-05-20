@@ -81,6 +81,11 @@ public:
     /// Current min_reserved floor for a group. Not on the ABC.
     uint32_t min_reserved(group_id) const noexcept;
 
+    /// Runtime reservation size for a group. Starts equal to
+    /// min_reserved; decays when idle past dwell; grows back via
+    /// steal-back. Diagnostic accessor; not on the ABC.
+    uint32_t current_reserved(group_id) const noexcept;
+
     /// Test hook — override the clock function for deterministic
     /// dwell-window testing.
     using now_fn_t = std::function<ss::lowres_clock::time_point()>;
@@ -98,14 +103,19 @@ private:
     /// whose dwell window has expired since the last call. O(N).
     void refresh_dwell_expirations(ss::lowres_clock::time_point now);
 
+    /// Pick the effective-active group most under its min_reserved
+    /// target for steal-back. Returns num_group_ids if no eligible
+    /// group exists.
+    size_t pick_steal_back_target() noexcept;
+
     size_t _current_total_capacity{0};
     /// Slots not pre-reserved to any specific group. All groups draw
     /// from this as the second-choice fast-path source, and slow-path
     /// dispatch (dispatch_next) routes through this pool.
     ssx::semaphore _shared;
-    /// Per-group dedicated slot pools sized to min_reserved[g]. Phase
-    /// 1 hard reservation: only the owning group can consume these
-    /// slots; cross-group lending is not permitted (Phase 2 concern).
+    /// Per-group dedicated slot pools sized to current_reserved[g].
+    /// Hard reservation: only the owning group consumes these slots.
+    /// Size grows and shrinks via steal-back and dwell-decay (Phase 2).
     std::array<ssx::semaphore, num_group_ids> _reserved;
 
     std::array<fair_group_state, num_group_ids> _groups;

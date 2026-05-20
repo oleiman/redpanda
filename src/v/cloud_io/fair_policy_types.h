@@ -62,6 +62,13 @@ struct fair_group_state {
     /// Hard-reserved slot count for this group. Backed by a dedicated
     /// per-group sub-semaphore; admits draw from it first (Phase 1).
     uint32_t min_reserved = 0;
+    /// Runtime reservation size. Starts equal to min_reserved on
+    /// set_min_reserved. Decays toward 0 when the group goes idle
+    /// past default_dwell_duration. Grows back via steal-back on
+    /// subsequent shared-release events when the group is
+    /// effective-active. Invariants: 0 <= current_reserved <=
+    /// min_reserved.
+    uint32_t current_reserved = 0;
     size_t in_flight = 0;
     /// Of the total in_flight, how many slots came from this group's
     /// reserved semaphore (vs the shared pool). Invariants:

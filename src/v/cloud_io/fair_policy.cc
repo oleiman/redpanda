@@ -75,11 +75,6 @@ fair_policy::fair_policy(size_t capacity)
     // configured hard reservations. Starting at 0 here avoids a
     // constructor-time vassert when tests construct with small capacities
     // that would otherwise be smaller than the config defaults.
-    //
-    // TODO(phase-2): reserved slots sit idle when their owner is dormant.
-    // A follow-up will reclaim idle reserved capacity via dwell-tied
-    // expiry or priority-debt borrowing so the shared pool recovers the
-    // wasted concurrency budget.
     _shared.signal(capacity);
 
     vlog(
@@ -186,6 +181,13 @@ fair_policy::fair_policy(size_t capacity)
                 "Seconds since this group last transitioned to "
                 "inactive. 0 if currently active or never active. "
                 "Capped at 4 × dwell to bound metric range."),
+              labels),
+            sm::make_gauge(
+              "current_reserved",
+              [this, idx] { return _groups[idx].current_reserved; },
+              sm::description(
+                "Runtime reservation size. Starts at min_reserved; "
+                "decays when idle past dwell; restored via steal-back."),
               labels),
           });
     }
@@ -471,10 +473,20 @@ void fair_policy::release(group_id g) noexcept {
         return;
     }
 
-    // Shared release: existing cross-group dispatch_next applies.
-    if (!dispatch_next()) {
-        _shared.signal(1);
+    // Shared release: try dispatch_next first (existing); if no
+    // waiter to dispatch, try steal-back to grow an under-reserved
+    // active group's reservation; only if neither applies does the
+    // slot return to the shared pool.
+    if (dispatch_next()) {
+        return;
     }
+    const size_t target = pick_steal_back_target();
+    if (target != num_group_ids) {
+        ++_groups[target].current_reserved;
+        _reserved[target].signal(1);
+        return;
+    }
+    _shared.signal(1);
 }
 
 bool fair_policy::dispatch_next() noexcept {
@@ -548,9 +560,9 @@ bool fair_policy::dispatch_next() noexcept {
         vlog(
           log.info,
           "fair_policy: dispatch #{} picked={} reason={} dev={} eaw={} | "
-          "pu(if={}[r={}], w={}, min={}, q={}, dev={}) "
-          "cf(if={}[r={}], w={}, min={}, q={}, dev={}) "
-          "default(if={}[r={}], w={}, min={}, q={}, dev={})",
+          "pu(if={}[r={}], w={}, min={}, cr={}, q={}, dev={}) "
+          "cf(if={}[r={}], w={}, min={}, cr={}, q={}, dev={}) "
+          "default(if={}[r={}], w={}, min={}, cr={}, q={}, dev={})",
           _multi_group_dispatch_counter,
           to_string_view(static_cast<group_id>(picked_idx)),
           floor_used ? "floor" : "dev",
@@ -560,18 +572,21 @@ bool fair_policy::dispatch_next() noexcept {
           pu.reserved_in_flight,
           pu.weight,
           pu.min_reserved,
+          pu.current_reserved,
           std::distance(pu.waiters.begin(), pu.waiters.end()),
           devs[static_cast<size_t>(group_id::producer_upload)],
           cf.in_flight,
           cf.reserved_in_flight,
           cf.weight,
           cf.min_reserved,
+          cf.current_reserved,
           std::distance(cf.waiters.begin(), cf.waiters.end()),
           devs[static_cast<size_t>(group_id::consumer_fetch)],
           dg.in_flight,
           dg.reserved_in_flight,
           dg.weight,
           dg.min_reserved,
+          dg.current_reserved,
           std::distance(dg.waiters.begin(), dg.waiters.end()),
           devs[static_cast<size_t>(group_id::default_group)]);
     }
@@ -616,33 +631,40 @@ void fair_policy::set_weight(group_id g, uint32_t weight) {
     gs.weight = weight;
 }
 
-uint32_t fair_policy::min_reserved(group_id g) const noexcept {
-    return _groups[static_cast<size_t>(g)].min_reserved;
-}
-
 void fair_policy::set_min_reserved(group_id g, uint32_t value) {
     const auto idx = static_cast<size_t>(g);
     auto& gs = _groups[idx];
-    const uint32_t old_value = gs.min_reserved;
-    if (old_value == value) {
-        return;
-    }
-    if (value > old_value) {
-        const uint32_t delta = value - old_value;
+    // Reconcile the reserved semaphore to reflect the new target.
+    // Use current_reserved (the runtime value) rather than the old
+    // min_reserved so that after dwell-decay the semaphore is
+    // correctly restored. Delta = value - current_reserved accounts
+    // for any decay or steal-back that occurred since the last call.
+    if (value > gs.current_reserved) {
+        const uint32_t delta = value - gs.current_reserved;
         _shared.consume(delta);
         _reserved[idx].signal(delta);
-    } else {
-        const uint32_t delta = old_value - value;
+    } else if (value < gs.current_reserved) {
+        const uint32_t delta = gs.current_reserved - value;
         _reserved[idx].consume(delta);
         _shared.signal(delta);
     }
     gs.min_reserved = value;
+    gs.current_reserved = value;
+}
+
+uint32_t fair_policy::min_reserved(group_id g) const noexcept {
+    return _groups[static_cast<size_t>(g)].min_reserved;
+}
+
+uint32_t fair_policy::current_reserved(group_id g) const noexcept {
+    return _groups[static_cast<size_t>(g)].current_reserved;
 }
 
 void fair_policy::set_now_fn_for_test(now_fn_t fn) { _now_fn = std::move(fn); }
 
 void fair_policy::refresh_dwell_expirations(ss::lowres_clock::time_point now) {
-    for (auto& gs : _groups) {
+    for (size_t idx = 0; idx < num_group_ids; ++idx) {
+        auto& gs = _groups[idx];
         if (is_active(gs)) {
             continue;
         }
@@ -652,8 +674,49 @@ void fair_policy::refresh_dwell_expirations(ss::lowres_clock::time_point now) {
         if (now - gs.last_active >= default_dwell_duration) {
             _effective_active_weight -= int64_t(gs.weight);
             gs.last_active = ss::lowres_clock::time_point{};
+
+            // Phase 2: decay reservation. Reclaim idle reserved slots
+            // to the shared pool. Slots currently in-flight from the
+            // reserved lane will decay on a subsequent refresh after
+            // they release.
+            if (gs.current_reserved > 0) {
+                const ssize_t cur = _reserved[idx].current();
+                const uint32_t available = cur > 0 ? static_cast<uint32_t>(cur)
+                                                   : 0u;
+                const auto decay = std::min(available, gs.current_reserved);
+                if (decay > 0) {
+                    _reserved[idx].consume(decay);
+                    gs.current_reserved -= decay;
+                    _shared.signal(decay);
+                }
+            }
         }
     }
+}
+
+size_t fair_policy::pick_steal_back_target() noexcept {
+    const auto now = _now_fn();
+    size_t best_idx = num_group_ids;
+    int64_t best_ratio = std::numeric_limits<int64_t>::max();
+    for (size_t i = 0; i < num_group_ids; ++i) {
+        const auto& gs = _groups[i];
+        if (gs.min_reserved == 0) {
+            continue;
+        }
+        if (gs.current_reserved >= gs.min_reserved) {
+            continue;
+        }
+        if (!is_effective_active(gs, now)) {
+            continue;
+        }
+        const int64_t ratio = int64_t(gs.current_reserved) * 1000
+                              / int64_t(gs.min_reserved);
+        if (ratio < best_ratio) {
+            best_ratio = ratio;
+            best_idx = i;
+        }
+    }
+    return best_idx;
 }
 
 } // namespace cloud_io

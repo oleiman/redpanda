@@ -25,12 +25,19 @@ enum class policy_type : uint8_t {
     /// No-op admission gate; the client pool's capacity is the only
     /// constraint.
     passthrough,
+    /// Reservation-based admission policy. Each group has a
+    /// reservation lane sized to a configured target while it is
+    /// active; idle reservations are reclaimed to a common pool and
+    /// refilled into demanding groups.
+    reservation,
 };
 
 constexpr std::string_view to_string_view(policy_type t) {
     switch (t) {
     case policy_type::passthrough:
         return "passthrough";
+    case policy_type::reservation:
+        return "reservation";
     }
     std::unreachable();
 }

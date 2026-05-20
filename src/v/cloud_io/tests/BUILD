@@ -176,6 +176,21 @@ redpanda_cc_gtest(
     ],
 )
 
+redpanda_cc_gtest(
+    name = "min_share_policy_test",
+    timeout = "short",
+    srcs = [
+        "min_share_policy_test.cc",
+    ],
+    deps = [
+        "//src/v/cloud_io:min_share_policy",
+        "//src/v/cloud_io:scheduler_types",
+        "//src/v/test_utils:gtest",
+        "@googletest//:gtest",
+        "@seastar",
+    ],
+)
+
 redpanda_cc_btest(
     name = "directory_walker_test",
     timeout = "short",

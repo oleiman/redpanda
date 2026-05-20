@@ -789,6 +789,15 @@ struct configuration final : public config_store {
 
 public:
     enum_property<cloud_io::policy_type> cloud_io_scheduler_policy;
+    bounded_property<uint32_t> cloud_io_scheduler_fair_producer_upload_weight;
+    bounded_property<uint32_t> cloud_io_scheduler_fair_consumer_fetch_weight;
+    bounded_property<uint32_t> cloud_io_scheduler_fair_default_group_weight;
+    bounded_property<uint32_t>
+      cloud_io_scheduler_fair_producer_upload_min_reserved;
+    bounded_property<uint32_t>
+      cloud_io_scheduler_fair_consumer_fetch_min_reserved;
+    bounded_property<uint32_t>
+      cloud_io_scheduler_fair_default_group_min_reserved;
 
     enterprise<property<bool>> cloud_topics_enabled;
     property<size_t> cloud_topics_produce_batching_size_threshold;

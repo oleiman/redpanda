@@ -4629,6 +4629,71 @@ configuration::configuration()
        .visibility = visibility::tunable},
       cloud_io::policy_type::null,
       {cloud_io::policy_type::null})
+  , cloud_io_scheduler_fair_producer_upload_weight(
+      *this,
+      "cloud_io_scheduler_fair_producer_upload_weight",
+      "Weight for the producer_upload group in the fair_policy "
+      "admission scheduler. Higher weight = larger share under "
+      "contention. Only consulted when cloud_io_scheduler_policy=fair.",
+      {.needs_restart = needs_restart::yes, .visibility = visibility::tunable},
+      1000,
+      {.min = 1, .max = 10000})
+  , cloud_io_scheduler_fair_consumer_fetch_weight(
+      *this,
+      "cloud_io_scheduler_fair_consumer_fetch_weight",
+      "Weight for the consumer_fetch group in the fair_policy "
+      "admission scheduler. Higher weight = larger share under "
+      "contention. Only consulted when cloud_io_scheduler_policy=fair.",
+      {.needs_restart = needs_restart::yes, .visibility = visibility::tunable},
+      1000,
+      {.min = 1, .max = 10000})
+  , cloud_io_scheduler_fair_default_group_weight(
+      *this,
+      "cloud_io_scheduler_fair_default_group_weight",
+      "Weight for the default_group (archival, hydration, metadata, "
+      "housekeeping) in the fair_policy admission scheduler. Higher "
+      "weight = larger share under contention. Only consulted when "
+      "cloud_io_scheduler_policy=fair.",
+      {.needs_restart = needs_restart::yes, .visibility = visibility::tunable},
+      1500,
+      {.min = 1, .max = 10000})
+  , cloud_io_scheduler_fair_producer_upload_min_reserved(
+      *this,
+      "cloud_io_scheduler_fair_producer_upload_min_reserved",
+      "Hard-reserved per-shard slot pool size for producer_upload in "
+      "the fair_policy admission scheduler. These slots are dedicated "
+      "to producer_upload regardless of contention from other groups, "
+      "ensuring sporadic-but-latency-critical producer traffic always "
+      "has access. Phase 1 design: reserved slots sit idle when "
+      "producer_upload is dormant (no work-conservation); a follow-up "
+      "will reclaim idle reserved slots. Only consulted when "
+      "cloud_io_scheduler_policy=fair.",
+      {.needs_restart = needs_restart::yes, .visibility = visibility::tunable},
+      2,
+      {.min = 0, .max = 1000})
+  , cloud_io_scheduler_fair_consumer_fetch_min_reserved(
+      *this,
+      "cloud_io_scheduler_fair_consumer_fetch_min_reserved",
+      "Hard-reserved per-shard slot pool size for consumer_fetch in "
+      "the fair_policy admission scheduler. These slots are dedicated "
+      "to consumer_fetch regardless of contention from other groups. "
+      "Phase 1 design: reserved slots sit idle when consumer_fetch is "
+      "dormant; a follow-up will reclaim idle reserved slots. Only "
+      "consulted when cloud_io_scheduler_policy=fair.",
+      {.needs_restart = needs_restart::yes, .visibility = visibility::tunable},
+      2,
+      {.min = 0, .max = 1000})
+  , cloud_io_scheduler_fair_default_group_min_reserved(
+      *this,
+      "cloud_io_scheduler_fair_default_group_min_reserved",
+      "Hard-reserved per-shard slot pool size for default_group in "
+      "the fair_policy admission scheduler. Default 0 (no reservation) "
+      "— default_group is the catch-all and isn't structurally "
+      "protected vs. the latency-critical groups. Only consulted when "
+      "cloud_io_scheduler_policy=fair.",
+      {.needs_restart = needs_restart::yes, .visibility = visibility::tunable},
+      0,
+      {.min = 0, .max = 1000})
   , cloud_topics_enabled(
       *this,
       true,

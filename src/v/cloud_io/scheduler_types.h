@@ -13,6 +13,7 @@
 
 #include <cstdint>
 #include <string_view>
+#include <utility>
 
 namespace cloud_io {
 
@@ -22,13 +23,18 @@ enum class policy_type : uint8_t {
     /// No-op admission gate; the client pool's capacity is the only
     /// constraint.
     null,
+    /// Weighted fair-share-by-occupancy admission policy.
+    fair,
 };
 
 constexpr std::string_view to_string_view(policy_type t) {
     switch (t) {
     case policy_type::null:
         return "null";
+    case policy_type::fair:
+        return "fair";
     }
+    std::unreachable();
 }
 
 inline fmt::iterator format_to(policy_type t, fmt::iterator out) {
@@ -58,6 +64,7 @@ constexpr std::string_view to_string_view(group_id g) {
     case group_id::default_group:
         return "default_group";
     }
+    std::unreachable();
 }
 
 inline fmt::iterator format_to(group_id g, fmt::iterator out) {

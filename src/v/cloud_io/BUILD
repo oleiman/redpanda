@@ -188,10 +188,10 @@ redpanda_cc_library(
 redpanda_cc_library(
     name = "scheduler",
     srcs = [
+        "null_policy.h",
         "scheduler.cc",
     ],
     hdrs = [
-        "null_policy.h",
         "scheduler.h",
     ],
     include_prefix = "cloud_io",
@@ -200,6 +200,31 @@ redpanda_cc_library(
         ":scheduler_policy",
         ":scheduler_types",
         "//src/v/base",
+        "//src/v/ssx:semaphore",
+        "@seastar",
+    ],
+)
+
+redpanda_cc_library(
+    name = "fair_policy",
+    srcs = [
+        "fair_policy.cc",
+    ],
+    hdrs = [
+        "fair_policy.h",
+    ],
+    implementation_deps = [
+        "//src/v/base",
+        "//src/v/cloud_io:logger",
+        "//src/v/config",
+    ],
+    include_prefix = "cloud_io",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":fair_policy_types",
+        ":scheduler_policy",
+        ":scheduler_types",
+        "//src/v/metrics",
         "//src/v/ssx:semaphore",
         "@seastar",
     ],

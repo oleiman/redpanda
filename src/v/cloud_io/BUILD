@@ -188,11 +188,17 @@ redpanda_cc_library(
 redpanda_cc_library(
     name = "scheduler",
     srcs = [
+        "null_policy.h",
         "scheduler.cc",
     ],
     hdrs = [
-        "null_policy.h",
         "scheduler.h",
+    ],
+    implementation_deps = [
+        ":logger",
+        ":min_share_policy",
+        "//src/v/base",
+        "//src/v/config",
     ],
     include_prefix = "cloud_io",
     visibility = ["//visibility:public"],

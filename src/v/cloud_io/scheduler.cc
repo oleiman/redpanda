@@ -9,8 +9,12 @@
  */
 #include "cloud_io/scheduler.h"
 
-#include "cloud_io/null_policy.h"
+#include "base/vlog.h"
+#include "cloud_io/logger.h"
+#include "cloud_io/min_share_policy.h"
 #include "cloud_io/scheduler_policy.h"
+#include "config/configuration.h"
+#include "null_policy.h"
 
 #include <seastar/core/coroutine.hh>
 
@@ -23,6 +27,28 @@ scheduler::make_policy(policy_type t, size_t capacity) {
     switch (t) {
     case policy_type::null:
         return std::make_unique<null_policy>(capacity);
+    case policy_type::min_share: {
+        min_share_policy_config policy_cfg;
+        for (const auto& entry :
+             config::shard_local_cfg().cloud_io_scheduler_min_share()) {
+            bool matched = false;
+            for (const auto g : all_group_ids) {
+                if (entry.group_name == to_string_view(g)) {
+                    policy_cfg.target_reserved[g] = entry.target_reserved;
+                    matched = true;
+                    break;
+                }
+            }
+            if (!matched) {
+                vlog(
+                  log.warn,
+                  "cloud_io_scheduler_min_share: ignoring unknown "
+                  "group_name '{}'",
+                  entry.group_name);
+            }
+        }
+        return std::make_unique<min_share_policy>(capacity, policy_cfg);
+    }
     }
     std::unreachable();
 }

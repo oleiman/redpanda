@@ -19,6 +19,7 @@
 #include "config/data_directory_path.h"
 #include "config/endpoint_tls_config.h"
 #include "config/leaders_preference.h"
+#include "config/min_share_group_target.h"
 #include "config/property.h"
 #include "config/sasl_mechanisms.h"
 #include "config/throughput_control_group.h"
@@ -399,6 +400,7 @@ struct configuration final : public config_store {
       cloud_storage_upload_loop_max_backoff_ms;
     property<int16_t> cloud_storage_max_connections;
     enum_property<cloud_io::policy_type> cloud_io_scheduler_policy;
+    property<std::vector<min_share_group_target>> cloud_io_scheduler_min_share;
     property<bool> cloud_storage_disable_tls;
     property<int16_t> cloud_storage_api_endpoint_port;
     property<std::optional<ss::sstring>> cloud_storage_trust_file;

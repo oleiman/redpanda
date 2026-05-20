@@ -2191,12 +2191,35 @@ configuration::configuration()
       *this,
       "cloud_io_scheduler_policy",
       "Selects the admission policy used by cloud_io::scheduler. 'null' "
-      "disables admission control (client pool is the only constraint).",
+      "disables admission control (client pool is the only constraint). "
+      "'min_share' enforces per-group reserved-slot admission across "
+      "producer_upload, consumer_fetch, and default_group.",
       {.needs_restart = needs_restart::yes,
        .example = "null",
        .visibility = visibility::tunable},
       cloud_io::policy_type::null,
-      {cloud_io::policy_type::null})
+      {cloud_io::policy_type::null, cloud_io::policy_type::min_share})
+  , cloud_io_scheduler_min_share(
+      *this,
+      "cloud_io_scheduler_min_share",
+      "Per-group target_reserved values for the min_share_policy "
+      "admission scheduler. Each entry maps a group name to the "
+      "configured target reservation in slots. The policy keeps each "
+      "group's reservation lane sized to this target while the group "
+      "is active; idle reservations past the dwell window are "
+      "reclaimed back to the common pool. Entries with an unknown "
+      "group name are ignored (with a warning) so the schema survives "
+      "adding or removing group_ids across upgrades. Only consulted "
+      "when cloud_io_scheduler_policy=min_share.",
+      {.needs_restart = needs_restart::yes,
+       .example
+       = R"([{'group_name': 'producer_upload', 'target_reserved': 2}, {'group_name': 'consumer_fetch', 'target_reserved': 2}, {'group_name': 'default_group', 'target_reserved': 2}])",
+       .visibility = visibility::tunable},
+      {
+        {.group_name = "producer_upload", .target_reserved = 2},
+        {.group_name = "consumer_fetch", .target_reserved = 2},
+        {.group_name = "default_group", .target_reserved = 2},
+      })
   , cloud_storage_disable_tls(
       *this,
       "cloud_storage_disable_tls",

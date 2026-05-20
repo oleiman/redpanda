@@ -865,7 +865,8 @@ struct convert<cloud_io::policy_type> {
         using type = cloud_io::policy_type;
         try {
             rhs = string_switch<type>(node.as<std::string>())
-                    .match(to_string_view(type::null), type::null);
+                    .match(to_string_view(type::null), type::null)
+                    .match(to_string_view(type::min_share), type::min_share);
             return true;
         } catch (const std::runtime_error&) {
             return false;

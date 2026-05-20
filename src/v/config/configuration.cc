@@ -4623,12 +4623,14 @@ configuration::configuration()
       *this,
       "cloud_io_scheduler_policy",
       "Selects the admission policy used by cloud_io::scheduler. 'null' "
-      "disables admission control (client pool is the only constraint).",
+      "disables admission control (client pool is the only constraint). "
+      "'fair' enforces weighted fair-share admission across "
+      "producer_upload, consumer_fetch, and default_group operations.",
       {.needs_restart = needs_restart::yes,
        .example = "null",
        .visibility = visibility::tunable},
       cloud_io::policy_type::null,
-      {cloud_io::policy_type::null})
+      {cloud_io::policy_type::null, cloud_io::policy_type::fair})
   , cloud_io_scheduler_fair_producer_upload_weight(
       *this,
       "cloud_io_scheduler_fair_producer_upload_weight",

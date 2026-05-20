@@ -194,6 +194,10 @@ redpanda_cc_library(
     hdrs = [
         "scheduler.h",
     ],
+    implementation_deps = [
+        ":fair_policy",
+        "//src/v/config",
+    ],
     include_prefix = "cloud_io",
     visibility = ["//visibility:public"],
     deps = [

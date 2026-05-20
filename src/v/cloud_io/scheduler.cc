@@ -9,8 +9,11 @@
  */
 #include "cloud_io/scheduler.h"
 
-#include "cloud_io/null_policy.h"
+#include "base/vassert.h"
+#include "cloud_io/fair_policy.h"
 #include "cloud_io/scheduler_policy.h"
+#include "config/configuration.h"
+#include "null_policy.h"
 
 #include <seastar/core/coroutine.hh>
 
@@ -23,6 +26,28 @@ scheduler::make_policy(policy_type t, size_t capacity) {
     switch (t) {
     case policy_type::null:
         return std::make_unique<null_policy>(capacity);
+    case policy_type::fair: {
+        auto fp = std::make_unique<fair_policy>(capacity);
+        const auto& cfg = config::shard_local_cfg();
+        const auto pu_min
+          = cfg.cloud_io_scheduler_fair_producer_upload_min_reserved();
+        const auto cf_min
+          = cfg.cloud_io_scheduler_fair_consumer_fetch_min_reserved();
+        const auto dg_min
+          = cfg.cloud_io_scheduler_fair_default_group_min_reserved();
+        const size_t total_reserved = size_t{pu_min} + size_t{cf_min}
+                                      + size_t{dg_min};
+        vassert(
+          total_reserved <= capacity,
+          "fair_policy: configured min_reserved sum ({}) exceeds capacity "
+          "({}); reduce cloud_io_scheduler_fair_*_min_reserved to fix",
+          total_reserved,
+          capacity);
+        fp->set_min_reserved(group_id::producer_upload, pu_min);
+        fp->set_min_reserved(group_id::consumer_fetch, cf_min);
+        fp->set_min_reserved(group_id::default_group, dg_min);
+        return fp;
+    }
     }
     std::unreachable();
 }

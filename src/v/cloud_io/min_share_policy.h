@@ -10,6 +10,7 @@
 #pragma once
 
 #include "base/seastarx.h"
+#include "cloud_io/min_share_policy_probe.h"
 #include "cloud_io/min_share_policy_types.h"
 #include "cloud_io/scheduler_policy.h"
 #include "cloud_io/scheduler_types.h"
@@ -158,6 +159,8 @@ private:
     /// Monotonically increments on every dispatch; modulo-throttles
     /// the periodic diagnostic log.
     uint64_t _dispatch_counter = 0;
+
+    std::unique_ptr<min_share_policy_probe> _probe;
 };
 
 } // namespace cloud_io

@@ -69,6 +69,8 @@ min_share_policy::min_share_policy(size_t capacity, min_share_policy_config cfg)
         set_target_reserved(g, cfg.target_reserved[g]);
     }
 
+    _probe = std::make_unique<min_share_policy_probe>(*this);
+
     vlog(
       log.info,
       "min_share_policy initialized: capacity={} dwell={}s target_reserved={}",

@@ -209,9 +209,11 @@ redpanda_cc_library(
     name = "min_share_policy",
     srcs = [
         "min_share_policy.cc",
+        "min_share_policy_probe.cc",
     ],
     hdrs = [
         "min_share_policy.h",
+        "min_share_policy_probe.h",
     ],
     implementation_deps = [
         "//src/v/base",
@@ -225,6 +227,7 @@ redpanda_cc_library(
         ":min_share_policy_types",
         ":scheduler_policy",
         ":scheduler_types",
+        "//src/v/metrics",
         "//src/v/ssx:semaphore",
         "@seastar",
     ],

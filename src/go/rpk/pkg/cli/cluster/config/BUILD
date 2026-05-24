@@ -44,6 +44,7 @@ go_test(
     size = "small",
     srcs = [
         "edit_test.go",
+        "export_test.go",
         "get_test.go",
         "import_test.go",
         "list_test.go",

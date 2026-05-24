@@ -22,6 +22,7 @@ import (
 	"github.com/redpanda-data/redpanda/src/go/rpk/pkg/out"
 	"github.com/spf13/afero"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 )
 
 func exportConfig(
@@ -103,7 +104,13 @@ func exportConfig(
 			case float64:
 				scalarVal = strconv.FormatFloat(x, 'f', -1, 64)
 			case string:
-				scalarVal = x
+				// yaml-quote strings that would otherwise be parsed as
+				// reserved words (null, true, false, ...) on re-import.
+				buf, err := yaml.Marshal(x)
+				if err != nil {
+					return fmt.Errorf("formatting %s value: %w", name, err)
+				}
+				scalarVal = strings.TrimRight(string(buf), "\n")
 			case bool:
 				scalarVal = strconv.FormatBool(x)
 			case nil:

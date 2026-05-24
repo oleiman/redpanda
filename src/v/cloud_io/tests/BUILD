@@ -170,7 +170,9 @@ redpanda_cc_gtest(
     ],
     deps = [
         "//src/v/cloud_io:scheduler",
+        "//src/v/config",
         "//src/v/test_utils:gtest",
+        "//src/v/test_utils:scoped_config",
         "@googletest//:gtest",
         "@seastar",
     ],

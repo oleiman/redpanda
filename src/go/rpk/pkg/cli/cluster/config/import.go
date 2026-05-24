@@ -28,6 +28,37 @@ import (
 	yaml "gopkg.in/yaml.v3"
 )
 
+// logicalEqual reports whether a and b are equal modulo decoder
+// differences. The current config comes from the admin API as JSON
+// (numbers decode to float64), while the import file is YAML
+// (integral numbers decode to int). reflect.DeepEqual treats those
+// as unequal even when they represent the same value. We canonicalize
+// both sides through a yaml round-trip so the types align, then
+// compare.
+func logicalEqual(a, b any) bool {
+	if reflect.DeepEqual(a, b) {
+		return true
+	}
+	canonA, errA := yamlCanonicalize(a)
+	canonB, errB := yamlCanonicalize(b)
+	if errA != nil || errB != nil {
+		return false
+	}
+	return reflect.DeepEqual(canonA, canonB)
+}
+
+func yamlCanonicalize(v any) (any, error) {
+	buf, err := yaml.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	var out any
+	if err := yaml.Unmarshal(buf, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 type formattedError struct {
 	s string
 }
@@ -177,14 +208,15 @@ func importConfig(
 				continue
 			}
 			// If value changed, add it to list of updates.
-			// DeepEqual because values can be slices.
-			if !reflect.DeepEqual(oldVal, v) {
+			// logicalEqual canonicalizes JSON-vs-YAML number types
+			// before comparing slices/maps.
+			if !logicalEqual(oldVal, v) {
 				addProperty(oldVal)
 			}
 		} else {
 			// Present in input but not original config, insert if it differs
 			// from the Virtual current value (which may be a default)
-			if !haveOldValVirtual || !reflect.DeepEqual(oldValVirtual, v) {
+			if !haveOldValVirtual || !logicalEqual(oldValVirtual, v) {
 				addProperty(oldValVirtual)
 			}
 		}

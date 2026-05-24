@@ -25,6 +25,34 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// formatArrayElement renders a single array element as a YAML list item
+// with 4-space outer indentation. Scalars use fmt's default formatting;
+// objects (maps) are marshaled via yaml so their fields land as nested
+// keys rather than as a Go-literal "map[k:v]" string.
+func formatArrayElement(v any) (string, error) {
+	switch v.(type) {
+	case map[string]any, []any:
+		buf, err := yaml.Marshal(v)
+		if err != nil {
+			return "", err
+		}
+		lines := strings.Split(strings.TrimRight(string(buf), "\n"), "\n")
+		var sb strings.Builder
+		for i, line := range lines {
+			if i == 0 {
+				sb.WriteString("    - ")
+			} else {
+				sb.WriteString("      ")
+			}
+			sb.WriteString(line)
+			sb.WriteByte('\n')
+		}
+		return sb.String(), nil
+	default:
+		return fmt.Sprintf("    - %v\n", v), nil
+	}
+}
+
 func exportConfig(
 	file *os.File, schema rpadmin.ConfigSchema, config rpadmin.Config, all bool,
 ) (err error) {
@@ -90,7 +118,11 @@ func exportConfig(
 				if len(x) > 0 {
 					fmt.Fprintf(&sb, "%s:\n", name)
 					for _, v := range x {
-						fmt.Fprintf(&sb, "    - %v\n", v)
+						elem, err := formatArrayElement(v)
+						if err != nil {
+							return fmt.Errorf("formatting %s element: %w", name, err)
+						}
+						sb.WriteString(elem)
 					}
 				} else {
 					fmt.Fprintf(&sb, "%s: []", name)

@@ -11,6 +11,7 @@
 
 #include "cloud_io/reservation_policy.h"
 #include "cloud_io/scheduler_policy.h"
+#include "cloud_io/scheduler_traits.h"
 
 #include <seastar/core/coroutine.hh>
 
@@ -23,9 +24,12 @@ namespace {
 /// No-op admission policy.
 ///
 /// When active, concurrency is bounded by the client pool's capacity alone.
-class passthrough final : public scheduler_policy {
+template<typename Traits>
+class passthrough final : public scheduler_policy<Traits> {
 public:
-    using scheduler_policy::scheduler_policy;
+    using base = scheduler_policy<Traits>;
+    using base::base;
+    using typename base::amount_t;
 
     ss::future<> admit(group_id, ss::abort_source&) override {
         return ss::now();
@@ -37,56 +41,86 @@ public:
 
     size_t in_flight(group_id) const noexcept override { return 0; }
     size_t waiters(group_id) const noexcept override { return 0; }
-    size_t available_slots() const noexcept override { return _capacity; }
-    size_t total_capacity() const noexcept override { return _capacity; }
+    amount_t available_slots() const noexcept override {
+        return this->_capacity;
+    }
+    amount_t total_capacity() const noexcept override {
+        return this->_capacity;
+    }
 };
 
 } // namespace
 
-std::unique_ptr<scheduler_policy>
-scheduler::make_policy(size_t capacity, scheduler_config cfg) {
+template<typename Traits>
+std::unique_ptr<scheduler_policy<Traits>>
+scheduler<Traits>::make_policy(amount_t capacity, scheduler_config cfg) {
     switch (cfg.policy) {
     case policy_type::passthrough:
-        return std::make_unique<passthrough>(capacity);
+        return std::make_unique<passthrough<Traits>>(capacity);
     case policy_type::reservation:
-        return std::make_unique<reservation_policy>(
+        return std::make_unique<reservation_policy<Traits>>(
           capacity,
           std::move(cfg.reservation).value_or(reservation_policy_config{}));
     }
     std::unreachable();
 }
 
-scheduler::scheduler(size_t capacity, scheduler_config cfg)
+template<typename Traits>
+scheduler<Traits>::scheduler(amount_t capacity, scheduler_config cfg)
   : _policy(make_policy(capacity, std::move(cfg))) {}
 
-scheduler::~scheduler() noexcept = default;
+template<typename Traits>
+scheduler<Traits>::~scheduler() noexcept = default;
 
-ss::future<> scheduler::stop() {
+template<typename Traits>
+ss::future<> scheduler<Traits>::stop() {
     _draining = true;
     co_await _policy->stop();
 }
 
-ss::future<> scheduler::admit(group_id g, ss::abort_source& as) {
+template<typename Traits>
+ss::future<> scheduler<Traits>::admit(group_id g, ss::abort_source& as) {
     if (_draining) {
         throw ss::abort_requested_exception{};
     }
     co_await _policy->admit(g, as);
 }
 
-bool scheduler::try_admit(group_id g) {
+template<typename Traits>
+bool scheduler<Traits>::try_admit(group_id g) {
     if (_draining) {
         return false;
     }
     return _policy->try_admit(g);
 }
 
-void scheduler::release(group_id g) { _policy->release(g); }
+template<typename Traits>
+void scheduler<Traits>::release(group_id g) {
+    _policy->release(g);
+}
 
-size_t scheduler::in_flight(group_id g) const { return _policy->in_flight(g); }
-size_t scheduler::waiters(group_id g) const { return _policy->waiters(g); }
-size_t scheduler::available_slots() const { return _policy->available_slots(); }
-size_t scheduler::total_capacity() const { return _policy->total_capacity(); }
-bool scheduler::has_waiters() const {
+template<typename Traits>
+size_t scheduler<Traits>::in_flight(group_id g) const {
+    return _policy->in_flight(g);
+}
+
+template<typename Traits>
+size_t scheduler<Traits>::waiters(group_id g) const {
+    return _policy->waiters(g);
+}
+
+template<typename Traits>
+auto scheduler<Traits>::available_slots() const -> amount_t {
+    return _policy->available_slots();
+}
+
+template<typename Traits>
+auto scheduler<Traits>::total_capacity() const -> amount_t {
+    return _policy->total_capacity();
+}
+
+template<typename Traits>
+bool scheduler<Traits>::has_waiters() const {
     for (uint8_t i = 0; i < num_group_ids; ++i) {
         if (_policy->waiters(static_cast<group_id>(i)) > 0) {
             return true;
@@ -94,5 +128,7 @@ bool scheduler::has_waiters() const {
     }
     return false;
 }
+
+template class scheduler<slot_resource_traits>;
 
 } // namespace cloud_io

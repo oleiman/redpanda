@@ -93,7 +93,7 @@ client_pool::client_pool(
 
 ss::future<> client_pool::start(
   std::optional<std::reference_wrapper<stop_signal>> application_stop_signal) {
-    _sched = std::make_unique<cloud_io::scheduler>(
+    _sched = std::make_unique<cloud_io::slot_scheduler>(
       _capacity, std::move(_scheduler_cfg));
     ssx::spawn_with_gate(_gate, [this, application_stop_signal]() {
         // Eagerly attempt to start the default upstream and trigger stop on

@@ -150,6 +150,19 @@ redpanda_cc_library(
 )
 
 redpanda_cc_library(
+    name = "scheduler_traits",
+    hdrs = [
+        "scheduler_traits.h",
+    ],
+    include_prefix = "cloud_io",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/v/ssx:semaphore",
+        "@seastar",
+    ],
+)
+
+redpanda_cc_library(
     name = "reservation_policy_types",
     hdrs = [
         "reservation_policy_types.h",
@@ -157,6 +170,7 @@ redpanda_cc_library(
     include_prefix = "cloud_io",
     visibility = ["//visibility:public"],
     deps = [
+        ":scheduler_traits",
         ":scheduler_types",
         "//src/v/base",
         "//src/v/container:intrusive",
@@ -201,6 +215,7 @@ redpanda_cc_library(
     visibility = ["//visibility:public"],
     deps = [
         ":scheduler_policy",
+        ":scheduler_traits",
         ":scheduler_types",
         "//src/v/base",
         "//src/v/ssx:semaphore",
@@ -227,6 +242,7 @@ redpanda_cc_library(
     deps = [
         ":reservation_policy_types",
         ":scheduler_policy",
+        ":scheduler_traits",
         ":scheduler_types",
         "//src/v/metrics",
         "//src/v/ssx:semaphore",

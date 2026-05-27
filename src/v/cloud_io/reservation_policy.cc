@@ -38,11 +38,11 @@ constexpr std::array<group_id, num_group_ids> all_groups{
 };
 
 /// Build the per-group state. Each group's reservation lane gets a
-/// semaphore named after its group_id.
-template<size_t... Is>
-per_group<reservation_group_state>
+/// container named after its group_id.
+template<typename Traits, size_t... Is>
+per_group<reservation_group_state<Traits>>
 make_group_states(std::index_sequence<Is...>) {
-    return {{reservation_group_state{
+    return {{reservation_group_state<Traits>{
       static_cast<group_id>(Is),
       fmt::format(
         "cloud_io/reservation_policy/reserved/{}",
@@ -51,7 +51,8 @@ make_group_states(std::index_sequence<Is...>) {
 
 } // namespace
 
-void reservation_policy::setup_metrics() {
+template<typename Traits>
+void reservation_policy<Traits>::setup_metrics() {
     if (config::shard_local_cfg().disable_metrics()) {
         return;
     }
@@ -164,25 +165,13 @@ void reservation_policy::setup_metrics() {
     }
 }
 
-fmt::iterator reservation_group_state::format_to(fmt::iterator out) const {
-    return fmt::format_to(
-      out,
-      "{}{{in_flight={}[reserved_in_flight={}], target_reserved={}, "
-      "current_reserved={}, waiter_count={}}}",
-      to_string_view(id),
-      in_flight,
-      reserved_in_flight,
-      target_reserved,
-      current_reserved(),
-      waiter_count());
-}
-
-reservation_policy::reservation_policy(
-  size_t capacity, reservation_policy_config cfg)
-  : scheduler_policy(capacity)
+template<typename Traits>
+reservation_policy<Traits>::reservation_policy(
+  amount_t capacity, reservation_policy_config cfg)
+  : scheduler_policy<Traits>(capacity)
   , _current_total_capacity(capacity)
-  , _shared(0, "cloud_io/reservation_policy/shared")
-  , _groups(make_group_states(std::make_index_sequence<num_group_ids>{}))
+  , _shared(Traits::make_container(0, "cloud_io/reservation_policy/shared"))
+  , _groups(make_group_states<Traits>(std::make_index_sequence<num_group_ids>{}))
   , _now_fn([] { return ss::lowres_clock::now(); }) {
     const size_t target_sum = std::ranges::fold_left(
       cfg.target_reserved, size_t{0}, std::plus{});
@@ -192,7 +181,7 @@ reservation_policy::reservation_policy(
       target_sum,
       capacity);
 
-    _shared.signal(capacity);
+    Traits::grant(_shared, capacity);
     for (const auto g : all_group_ids) {
         set_target_reserved(g, cfg.target_reserved[g]);
     }
@@ -208,7 +197,8 @@ reservation_policy::reservation_policy(
       cfg.target_reserved.data);
 }
 
-reservation_policy::~reservation_policy() noexcept {
+template<typename Traits>
+reservation_policy<Traits>::~reservation_policy() noexcept {
     for (const auto& gs : _groups) {
         vassert(
           gs.waiters.empty(),
@@ -216,7 +206,8 @@ reservation_policy::~reservation_policy() noexcept {
     }
 }
 
-ss::future<> reservation_policy::stop() {
+template<typename Traits>
+ss::future<> reservation_policy<Traits>::stop() {
     _metrics.clear();
     _public_metrics.clear();
     // Synchronous: abort all queued waiters.
@@ -228,27 +219,33 @@ ss::future<> reservation_policy::stop() {
     return ss::now();
 }
 
-size_t reservation_policy::in_flight(group_id g) const noexcept {
+template<typename Traits>
+size_t reservation_policy<Traits>::in_flight(group_id g) const noexcept {
     return _groups[g].in_flight;
 }
 
-size_t reservation_policy::waiters(group_id g) const noexcept {
+template<typename Traits>
+size_t reservation_policy<Traits>::waiters(group_id g) const noexcept {
     return _groups[g].waiter_count();
 }
 
-size_t reservation_policy::available_slots() const noexcept {
-    size_t total = _shared.current();
+template<typename Traits>
+auto reservation_policy<Traits>::available_slots() const noexcept -> amount_t {
+    amount_t total = Traits::available(_shared);
     for (const auto& gs : _groups) {
-        total += gs.reserved_sem.current();
+        total += Traits::available(gs.reserved_container);
     }
     return total;
 }
 
-size_t reservation_policy::total_capacity() const noexcept {
+template<typename Traits>
+auto reservation_policy<Traits>::total_capacity() const noexcept -> amount_t {
     return _current_total_capacity;
 }
 
-ss::future<> reservation_policy::admit(group_id g, ss::abort_source& as) {
+template<typename Traits>
+ss::future<>
+reservation_policy<Traits>::admit(group_id g, ss::abort_source& as) {
     // Fast path.
     if (try_admit(g)) {
         co_return;
@@ -279,7 +276,8 @@ ss::future<> reservation_policy::admit(group_id g, ss::abort_source& as) {
     co_return;
 }
 
-bool reservation_policy::try_admit(group_id g) noexcept {
+template<typename Traits>
+bool reservation_policy<Traits>::try_admit(group_id g) noexcept {
     auto& gs = _groups[g];
 
     // Reclaim idle reservations first. Otherwise a waiting group could
@@ -291,7 +289,7 @@ bool reservation_policy::try_admit(group_id g) noexcept {
         return true;
     }
 
-    if (_shared.try_wait(1)) {
+    if (Traits::try_acquire(_shared, Traits::unit)) {
         gs.on_immediate_admit(/*from_reserved=*/false);
         return true;
     }
@@ -299,12 +297,13 @@ bool reservation_policy::try_admit(group_id g) noexcept {
     return false;
 }
 
-void reservation_policy::release(group_id g) noexcept {
+template<typename Traits>
+void reservation_policy<Traits>::release(group_id g) noexcept {
     auto& gs = _groups[g];
     gs.on_release(_now_fn());
 
     // Try to return a slot directly to this group, either to another waiter or
-    // to the reservation semaphore.
+    // to the reservation lane.
     if (gs.maybe_return_reserved_slot()) {
         return;
     }
@@ -317,11 +316,12 @@ void reservation_policy::release(group_id g) noexcept {
     if (const auto target = pick_refill_candidate(); target.has_value()) {
         _groups[*target].grant_reserved_slot();
     } else {
-        _shared.signal(1);
+        Traits::grant(_shared, Traits::unit);
     }
 }
 
-bool reservation_policy::dispatch_next() noexcept {
+template<typename Traits>
+bool reservation_policy<Traits>::dispatch_next() noexcept {
     // One pass picks two candidates: the oldest seq among under-target
     // groups (preferred), and the oldest seq globally (fallback).
     std::optional<group_id> under_target_pick;
@@ -365,14 +365,15 @@ bool reservation_policy::dispatch_next() noexcept {
     return true;
 }
 
-void reservation_policy::set_total_slots(size_t desired) {
+template<typename Traits>
+void reservation_policy<Traits>::set_total_slots(amount_t desired) {
     if (desired == _current_total_capacity) {
         return;
     }
     if (desired > _current_total_capacity) {
-        _shared.signal(desired - _current_total_capacity);
+        Traits::grant(_shared, desired - _current_total_capacity);
     } else {
-        _shared.consume(_current_total_capacity - desired);
+        Traits::take(_shared, _current_total_capacity - desired);
     }
     vlog(
       log.info,
@@ -382,79 +383,93 @@ void reservation_policy::set_total_slots(size_t desired) {
     _current_total_capacity = desired;
 }
 
-void reservation_policy::set_target_reserved(group_id g, size_t value) {
+template<typename Traits>
+void reservation_policy<Traits>::set_target_reserved(group_id g, amount_t value) {
     auto& gs = _groups[g];
     // Reconcile the reservation lane to reflect the new target. Compute
     // the delta against current_reserved() (the derived current size) so
     // that any reclamation or refill since the last call are accounted
     // for; the lane may have ebbed and flowed between calls.
-    const size_t cur = gs.current_reserved();
+    const auto cur = gs.current_reserved();
     if (value > cur) {
-        const size_t delta = value - cur;
+        const auto delta = value - cur;
         vassert(
-          _shared.current() >= delta,
+          Traits::available(_shared) >= delta,
           "set_target_reserved({}, {}): would underflow _shared "
           "(current={}, delta={})",
           to_string_view(g),
           value,
-          _shared.current(),
+          Traits::available(_shared),
           delta);
-        _shared.consume(delta);
-        gs.reserved_sem.signal(delta);
+        Traits::take(_shared, delta);
+        Traits::grant(gs.reserved_container, delta);
     } else if (value < cur) {
-        const size_t delta = cur - value;
+        const auto delta = cur - value;
         vassert(
-          gs.reserved_sem.current() >= delta,
-          "set_target_reserved({}, {}): would underflow reserved_sem "
+          Traits::available(gs.reserved_container) >= delta,
+          "set_target_reserved({}, {}): would underflow reserved_container "
           "(current={}, in_flight={}, delta={})",
           to_string_view(g),
           value,
-          gs.reserved_sem.current(),
+          Traits::available(gs.reserved_container),
           gs.reserved_in_flight,
           delta);
-        gs.reserved_sem.consume(delta);
-        _shared.signal(delta);
+        Traits::take(gs.reserved_container, delta);
+        Traits::grant(_shared, delta);
     }
     gs.target_reserved = value;
 }
 
-size_t reservation_policy::target_reserved(group_id g) const noexcept {
+template<typename Traits>
+auto reservation_policy<Traits>::target_reserved(group_id g) const noexcept
+  -> amount_t {
     return _groups[g].target_reserved;
 }
 
-size_t reservation_policy::current_reserved(group_id g) const noexcept {
+template<typename Traits>
+auto reservation_policy<Traits>::current_reserved(group_id g) const noexcept
+  -> amount_t {
     return _groups[g].current_reserved();
 }
 
-uint64_t reservation_policy::admit_total(group_id g) const noexcept {
+template<typename Traits>
+uint64_t
+reservation_policy<Traits>::admit_total(group_id g) const noexcept {
     return _groups[g].admit_total;
 }
 
-uint64_t reservation_policy::admit_immediate_total(group_id g) const noexcept {
+template<typename Traits>
+uint64_t reservation_policy<Traits>::admit_immediate_total(
+  group_id g) const noexcept {
     return _groups[g].admit_immediate_total;
 }
 
-size_t reservation_policy::total_waiters() const noexcept {
+template<typename Traits>
+size_t reservation_policy<Traits>::total_waiters() const noexcept {
     return std::ranges::fold_left(
       _groups, size_t{0}, [](size_t acc, const auto& gs) {
           return acc + gs.waiter_count();
       });
 }
 
-void reservation_policy::set_now_fn_for_test(now_fn_t fn) {
+template<typename Traits>
+void reservation_policy<Traits>::set_now_fn_for_test(now_fn_t fn) {
     _now_fn = std::move(fn);
 }
 
-void reservation_policy::reclaim_idle_reservations(
+template<typename Traits>
+void reservation_policy<Traits>::reclaim_idle_reservations(
   ss::lowres_clock::time_point now) {
     for (auto& gs : _groups) {
         if (gs.is_dwell_expired(now)) {
-            _shared.signal(gs.drain_idle_reserved());
+            Traits::grant(_shared, gs.drain_idle_reserved());
         }
     }
 }
 
-std::optional<group_id> reservation_policy::pick_refill_candidate() noexcept {
+template<typename Traits>
+std::optional<group_id>
+reservation_policy<Traits>::pick_refill_candidate() noexcept {
     const auto now = _now_fn();
     std::optional<group_id> winner;
     // Smaller ratio = more under-target.
@@ -471,5 +486,7 @@ std::optional<group_id> reservation_policy::pick_refill_candidate() noexcept {
     }
     return winner;
 }
+
+template class reservation_policy<slot_resource_traits>;
 
 } // namespace cloud_io

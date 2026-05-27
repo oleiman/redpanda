@@ -281,7 +281,7 @@ private:
     // connections.
     intrusive_list<client_lease, &client_lease::_hook> _leased;
 
-    std::unique_ptr<cloud_io::scheduler> _sched;
+    std::unique_ptr<cloud_io::slot_scheduler> _sched;
     ss::condition_variable _cvar;
     ss::abort_source _as;
     ss::gate _gate;

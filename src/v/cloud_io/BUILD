@@ -242,6 +242,7 @@ redpanda_cc_library(
     deps = [
         ":reservation_policy_types",
         ":scheduler_policy",
+        ":scheduler_traits",
         ":scheduler_types",
         "//src/v/metrics",
         "//src/v/ssx:semaphore",

@@ -12,9 +12,9 @@
 #include "base/seastarx.h"
 #include "cloud_io/reservation_policy_types.h"
 #include "cloud_io/scheduler_policy.h"
+#include "cloud_io/scheduler_traits.h"
 #include "cloud_io/scheduler_types.h"
 #include "metrics/metrics.h"
-#include "ssx/semaphore.h"
 
 #include <seastar/core/abort_source.hh>
 #include <seastar/core/future.hh>
@@ -30,17 +30,28 @@ namespace cloud_io {
 ///
 /// Bounds simultaneous in-flight cloud_io ops to the configured capacity.
 /// Slots live in one of two places: each group's reservation lane (held by
-/// the group's reserved_sem inside reservation_group_state) or the common
-/// pool (_shared, below). Reservations ebb and flow with demand: refill
-/// builds a lane back up toward target_reserved while the group is
+/// the group's reserved_container inside reservation_group_state) or the
+/// common pool (_shared, below). Reservations ebb and flow with demand:
+/// refill builds a lane back up toward target_reserved while the group is
 /// active; the policy reclaims idle reservations to the common pool after
 /// the dwell window. See reservation_group_state for the mechanism details.
 ///
+/// Templated on resource Traits: the slot scheduler uses
+/// slot_resource_traits, which backs lanes with an ssx::semaphore. A
+/// future bytes scheduler will use bytes_resource_traits backed by a
+/// token_bucket. The policy logic is identical between the two; the
+/// container primitives differ via the trait.
+///
 /// Per-shard; not movable (metrics lambdas capture `this`).
-class reservation_policy final : public scheduler_policy {
+template<typename Traits>
+class reservation_policy final : public scheduler_policy<Traits> {
 public:
+    using amount_t = typename Traits::amount_t;
+    using container_t = typename Traits::container_t;
+    using group_state_t = reservation_group_state<Traits>;
+
     explicit reservation_policy(
-      size_t capacity, reservation_policy_config = {});
+      amount_t capacity, reservation_policy_config = {});
     reservation_policy(const reservation_policy&) = delete;
     reservation_policy& operator=(const reservation_policy&) = delete;
     reservation_policy(reservation_policy&&) = delete;
@@ -54,8 +65,8 @@ public:
 
     size_t in_flight(group_id) const noexcept override;
     size_t waiters(group_id) const noexcept override;
-    size_t available_slots() const noexcept override;
-    size_t total_capacity() const noexcept override;
+    amount_t available_slots() const noexcept override;
+    amount_t total_capacity() const noexcept override;
 
     // ---- reservation_policy-specific public API (not on ABC) ----
 
@@ -63,22 +74,22 @@ public:
     /// targets via reservation_policy_config; this exists for runtime
     /// cluster reconfiguration after the fact (and for tests that
     /// mutate targets mid-scenario).
-    void set_target_reserved(group_id, size_t);
+    void set_target_reserved(group_id, amount_t);
 
     /// Current target_reserved floor for a group.
-    size_t target_reserved(group_id) const noexcept;
+    amount_t target_reserved(group_id) const noexcept;
 
     /// Runtime reservation size for a group, derived from the group's
-    /// reservation semaphore and reserved_in_flight count. See
+    /// reservation container and reserved_in_flight count. See
     /// reservation_group_state::current_reserved for semantics.
-    size_t current_reserved(group_id) const noexcept;
+    amount_t current_reserved(group_id) const noexcept;
 
     // ---- test-only public API ----
 
     /// Runtime capacity mutator. Production cluster config can't change
     /// capacity at runtime. Exists so tests can grow or shrink the
     /// common pool without rebuilding the policy.
-    void set_total_slots(size_t);
+    void set_total_slots(amount_t);
 
     // ---- observability accessors ----
 
@@ -109,8 +120,8 @@ private:
     bool dispatch_next() noexcept;
 
     /// Walk groups and reclaim the reservation of any inactive group
-    /// whose dwell window has elapsed. Reclaimed slots return to the
-    /// common pool. O(N) where N is num_group_ids.
+    /// whose dwell window has elapsed. Reclaimed capacity returns to
+    /// the common pool. O(N) where N is num_group_ids.
     void reclaim_idle_reservations(ss::lowres_clock::time_point now);
 
     /// Pick the group that should receive a common-pool slot as a refill.
@@ -121,14 +132,14 @@ private:
     /// common pool.
     std::optional<group_id> pick_refill_candidate() noexcept;
 
-    size_t _current_total_capacity{0};
-    /// The common pool of slots. Any group can claim from it; releases
-    /// go back here unless refill diverts them into a reservation lane.
-    ssx::semaphore _shared;
+    amount_t _current_total_capacity{0};
+    /// The common pool. Any group can claim from it; releases go back
+    /// here unless refill diverts them into a reservation lane.
+    container_t _shared;
 
-    /// Per-group state including the reservation semaphore. See
+    /// Per-group state including the reservation container. See
     /// reservation_group_state for the layout and invariants.
-    per_group<reservation_group_state> _groups;
+    per_group<group_state_t> _groups;
 
     /// Clock provider; defaults to ss::lowres_clock::now. Override
     /// via set_now_fn_for_test for deterministic unit tests.
@@ -145,5 +156,7 @@ private:
     metrics::internal_metric_groups _metrics;
     metrics::public_metric_groups _public_metrics;
 };
+
+extern template class reservation_policy<slot_resource_traits>;
 
 } // namespace cloud_io

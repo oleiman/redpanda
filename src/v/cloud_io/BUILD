@@ -150,6 +150,19 @@ redpanda_cc_library(
 )
 
 redpanda_cc_library(
+    name = "scheduler_traits",
+    hdrs = [
+        "scheduler_traits.h",
+    ],
+    include_prefix = "cloud_io",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/v/ssx:semaphore",
+        "@seastar",
+    ],
+)
+
+redpanda_cc_library(
     name = "reservation_policy_types",
     hdrs = [
         "reservation_policy_types.h",

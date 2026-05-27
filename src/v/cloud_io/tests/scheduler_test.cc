@@ -19,7 +19,7 @@
 using namespace cloud_io;
 
 TEST_CORO(scheduler, NullAdmitAlwaysSucceeds) {
-    scheduler s{2};
+    slot_scheduler s{2};
     EXPECT_EQ(s.total_capacity(), 2u);
 
     ss::abort_source as;
@@ -31,7 +31,7 @@ TEST_CORO(scheduler, NullAdmitAlwaysSucceeds) {
 }
 
 TEST_CORO(scheduler, NullTryAdmitAlwaysSucceeds) {
-    scheduler s{1};
+    slot_scheduler s{1};
 
     EXPECT_TRUE(s.try_admit(group_id::default_group));
     EXPECT_TRUE(s.try_admit(group_id::consumer_fetch));
@@ -46,7 +46,7 @@ TEST_CORO(scheduler, NullTryAdmitAlwaysSucceeds) {
 // internals are exercised by reservation_policy_test.cc.
 
 TEST_CORO(scheduler, ReservationHasWaitersReflectsQueueState) {
-    scheduler s{1, scheduler_config{.policy = policy_type::reservation}};
+    slot_scheduler s{1, scheduler_config{.policy = policy_type::reservation}};
     EXPECT_FALSE(s.has_waiters());
 
     ss::abort_source as;
@@ -66,7 +66,7 @@ TEST_CORO(scheduler, ReservationHasWaitersReflectsQueueState) {
 }
 
 TEST_CORO(scheduler, ReservationStopDrainsAndRejectsAdmits) {
-    scheduler s{1, scheduler_config{.policy = policy_type::reservation}};
+    slot_scheduler s{1, scheduler_config{.policy = policy_type::reservation}};
 
     ss::abort_source as;
     co_await s.admit(group_id::default_group, as);
@@ -93,7 +93,7 @@ TEST_CORO(scheduler, ReservationReservationsRespectConfiguredTargets) {
     // capacity=4, producer_upload reserved=2 → shared=2. Once pu is
     // active, the shared pool is exhausted by default_group, but
     // producer_upload can still admit twice from its dedicated lane.
-    scheduler s{
+    slot_scheduler s{
       4,
       scheduler_config{
         .policy = policy_type::reservation,

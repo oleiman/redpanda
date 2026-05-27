@@ -88,6 +88,14 @@ private:
 /// cloud client leases per group.
 using slot_scheduler = scheduler<slot_resource_traits>;
 
+/// Bytes-resource specialization. Lanes are token_buckets whose rate
+/// allocation is the group's bandwidth budget. The current template
+/// instantiation is a structural validation of the trait abstraction;
+/// production bandwidth control needs an admit/release API that carries
+/// the per-op byte count (see bytes_resource_traits docs).
+using bandwidth_scheduler = scheduler<bytes_resource_traits>;
+
 extern template class scheduler<slot_resource_traits>;
+extern template class scheduler<bytes_resource_traits>;
 
 } // namespace cloud_io

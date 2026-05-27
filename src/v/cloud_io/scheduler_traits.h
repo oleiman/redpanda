@@ -10,6 +10,7 @@
 #pragma once
 
 #include "ssx/semaphore.h"
+#include "utils/token_bucket.h"
 
 #include <seastar/core/sstring.hh>
 
@@ -63,6 +64,52 @@ struct slot_resource_traits {
     /// Current count of units immediately acquirable.
     [[nodiscard]] static amount_t available(const container_t& c) noexcept {
         return c.current();
+    }
+};
+
+/// \brief Resource traits for the bandwidth scheduler.
+///
+/// Each lane and the common pool is a token_bucket whose configured
+/// refill rate represents the lane's allocated bytes-per-second budget.
+/// `try_acquire(c, n)` consumes n bytes (instantaneous burst) from the
+/// bucket. `grant`/`take`/`available` operate on the lane's *rate*
+/// allocation, not its instantaneous token count — moves between lanes
+/// shift the steady-state budget; the bucket's internal timer continues
+/// to refill tokens at the new rate.
+///
+/// Bytes-side caveats vs slot_resource_traits:
+///   - `returnable = false`: refills are time-driven, so the policy has
+///     no caller-driven release path. release() on a bandwidth_scheduler
+///     would not pair with acquire().
+///   - `unit = 1` is a placeholder: real bandwidth callers pass the
+///     chunk size to try_acquire; the policy's current admit() API
+///     hardcodes unit=1, which is incidental for the validation
+///     instantiation but inadequate for production bandwidth control.
+struct bytes_resource_traits {
+    using container_t = token_bucket<>;
+    using amount_t = size_t;
+
+    static constexpr bool returnable = false;
+    static constexpr amount_t unit = 1;
+
+    static container_t make_container(amount_t initial, ss::sstring name) {
+        return container_t(initial, std::move(name));
+    }
+
+    [[nodiscard]] static bool try_acquire(container_t& c, amount_t n) {
+        return c.try_throttle(n);
+    }
+
+    static void grant(container_t& c, amount_t n) {
+        c.update_rate(c.rate() + n);
+    }
+
+    static void take(container_t& c, amount_t n) {
+        c.update_rate(c.rate() - n);
+    }
+
+    [[nodiscard]] static amount_t available(const container_t& c) noexcept {
+        return c.rate();
     }
 };
 

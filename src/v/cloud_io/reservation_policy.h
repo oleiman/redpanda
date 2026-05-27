@@ -158,5 +158,6 @@ private:
 };
 
 extern template class reservation_policy<slot_resource_traits>;
+extern template class reservation_policy<bytes_resource_traits>;
 
 } // namespace cloud_io

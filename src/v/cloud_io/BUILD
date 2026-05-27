@@ -214,6 +214,7 @@ redpanda_cc_library(
     visibility = ["//visibility:public"],
     deps = [
         ":scheduler_policy",
+        ":scheduler_traits",
         ":scheduler_types",
         "//src/v/base",
         "//src/v/ssx:semaphore",

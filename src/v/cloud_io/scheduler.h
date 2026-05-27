@@ -10,6 +10,7 @@
 #pragma once
 
 #include "base/seastarx.h"
+#include "cloud_io/scheduler_traits.h"
 #include "cloud_io/scheduler_types.h"
 
 #include <seastar/core/abort_source.hh>
@@ -19,6 +20,7 @@
 
 namespace cloud_io {
 
+template<typename Traits>
 class scheduler_policy;
 
 /// Per-shard admission gate for cloud_io operations.
@@ -28,7 +30,7 @@ class scheduler_policy;
 /// scheduler instance and one policy, chosen at construction from the
 /// cloud_io_scheduler_policy cluster property.
 ///
-///   scheduler ─owns→ unique_ptr<scheduler_policy>
+///   scheduler ─owns→ unique_ptr<scheduler_policy<Traits>>
 ///                       │
 ///                       └─ passthrough_policy │ ...
 ///
@@ -36,9 +38,17 @@ class scheduler_policy;
 /// policy. Admission state lives in the policy (per-group counters,
 /// waiters, etc.). The caller is responsible for pairing each `admit`
 /// with a `release` on the same scheduler instance.
+///
+/// Templated on resource Traits (see scheduler_traits.h). The slot
+/// scheduler is `scheduler<slot_resource_traits>` (alias slot_scheduler
+/// below); a future bytes scheduler will instantiate the same template
+/// over bytes_resource_traits.
+template<typename Traits>
 class scheduler {
 public:
-    scheduler(size_t capacity, scheduler_config = {});
+    using amount_t = typename Traits::amount_t;
+
+    scheduler(amount_t capacity, scheduler_config = {});
     scheduler(const scheduler&) = delete;
     scheduler& operator=(const scheduler&) = delete;
     scheduler(scheduler&&) = delete;
@@ -61,16 +71,23 @@ public:
 
     size_t in_flight(group_id) const;
     size_t waiters(group_id) const;
-    size_t available_slots() const;
-    size_t total_capacity() const;
+    amount_t available_slots() const;
+    amount_t total_capacity() const;
     bool has_waiters() const;
 
 private:
-    static std::unique_ptr<scheduler_policy>
-    make_policy(size_t capacity, scheduler_config);
+    static std::unique_ptr<scheduler_policy<Traits>>
+    make_policy(amount_t capacity, scheduler_config);
 
-    std::unique_ptr<scheduler_policy> _policy;
+    std::unique_ptr<scheduler_policy<Traits>> _policy;
     bool _draining = false;
 };
+
+/// Slot-resource specialization of cloud_io::scheduler. This is the
+/// concrete admission gate used by client_pool to bound concurrent
+/// cloud client leases per group.
+using slot_scheduler = scheduler<slot_resource_traits>;
+
+extern template class scheduler<slot_resource_traits>;
 
 } // namespace cloud_io

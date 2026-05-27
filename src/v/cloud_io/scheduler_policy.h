@@ -22,9 +22,17 @@ namespace cloud_io {
 
 /// Abstract base for cloud_io::scheduler admission policies. A policy
 /// decides whether and when an admit request is allowed to proceed.
+///
+/// Templated on resource Traits (see scheduler_traits.h). The slot
+/// scheduler instantiates scheduler_policy<slot_resource_traits> whose
+/// amount_t is slot count; a future bytes scheduler will instantiate
+/// scheduler_policy<bytes_resource_traits> with amount_t in bytes/sec.
+template<typename Traits>
 class scheduler_policy {
 public:
-    explicit scheduler_policy(size_t capacity) noexcept
+    using amount_t = typename Traits::amount_t;
+
+    explicit scheduler_policy(amount_t capacity) noexcept
       : _capacity(capacity) {}
     scheduler_policy(const scheduler_policy&) = delete;
     scheduler_policy& operator=(const scheduler_policy&) = delete;
@@ -48,14 +56,14 @@ public:
     /// Observability getters.
     virtual size_t in_flight(group_id) const = 0;
     virtual size_t waiters(group_id) const = 0;
-    virtual size_t available_slots() const = 0;
-    virtual size_t total_capacity() const = 0;
+    virtual amount_t available_slots() const = 0;
+    virtual amount_t total_capacity() const = 0;
 
     /// Optional lifecycle hook. Default no-op.
     virtual ss::future<> stop() { return ss::now(); }
 
 protected:
-    size_t _capacity;
+    amount_t _capacity;
 };
 
 } // namespace cloud_io

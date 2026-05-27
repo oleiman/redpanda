@@ -147,6 +147,9 @@ public:
         return _sem.current();
     }
 
+    /// Currently configured refill rate.
+    [[nodiscard]] size_t rate() const noexcept { return _rate; }
+
 private:
     void refresh() {
         auto now = clock_type::now();

@@ -130,5 +130,6 @@ bool scheduler<Traits>::has_waiters() const {
 }
 
 template class scheduler<slot_resource_traits>;
+template class scheduler<bytes_resource_traits>;
 
 } // namespace cloud_io

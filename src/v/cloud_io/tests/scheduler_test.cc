@@ -124,3 +124,30 @@ TEST_CORO(scheduler, ReservationReservationsRespectConfiguredTargets) {
     s.release(group_id::producer_upload);
     co_await s.stop();
 }
+
+// Smoke tests for the bytes-trait instantiation of the templated
+// scheduler. These verify the trait abstraction compiles and admits
+// behave as expected for token_bucket-backed lanes. The bytes scheduler
+// is not yet functionally complete (no caller-driven release, admit is
+// hardcoded to 1-byte units), so these tests deliberately stay on the
+// non-blocking try_admit path. See bytes_resource_traits docs.
+
+TEST_CORO(scheduler, BytesPassthroughTryAdmitAlwaysSucceeds) {
+    bandwidth_scheduler s{1024};
+    EXPECT_EQ(s.total_capacity(), 1024u);
+    EXPECT_TRUE(s.try_admit(group_id::producer_upload));
+    EXPECT_TRUE(s.try_admit(group_id::consumer_fetch));
+    co_await s.stop();
+}
+
+TEST_CORO(scheduler, BytesReservationCommonPoolExhausts) {
+    // Capacity = 1 byte/sec total. The reservation policy initializes
+    // the common pool's token_bucket at rate=1 with one starting token.
+    // First try_admit consumes the token; the second fails (refresh
+    // formula adds < 1 token within the test's wall time).
+    bandwidth_scheduler s{
+      1, scheduler_config{.policy = policy_type::reservation}};
+    EXPECT_TRUE(s.try_admit(group_id::default_group));
+    EXPECT_FALSE(s.try_admit(group_id::default_group));
+    co_await s.stop();
+}

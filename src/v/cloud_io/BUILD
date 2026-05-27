@@ -158,6 +158,7 @@ redpanda_cc_library(
     visibility = ["//visibility:public"],
     deps = [
         "//src/v/ssx:semaphore",
+        "//src/v/utils:token_bucket",
         "@seastar",
     ],
 )

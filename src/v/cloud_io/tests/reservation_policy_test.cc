@@ -9,6 +9,7 @@
  */
 
 #include "cloud_io/reservation_policy.h"
+#include "cloud_io/scheduler_traits.h"
 #include "cloud_io/scheduler_types.h"
 #include "test_utils/test.h"
 
@@ -26,6 +27,9 @@
 
 namespace {
 
+using policy_t
+  = cloud_io::reservation_policy<cloud_io::slot_resource_traits>;
+
 template<typename T>
 ss::future<T> with_test_timeout(ss::future<T> fut) {
     return ss::with_timeout(
@@ -34,7 +38,7 @@ ss::future<T> with_test_timeout(ss::future<T> fut) {
 
 // Apply target_reserved + capacity post-construction.
 void configure(
-  cloud_io::reservation_policy& policy,
+  policy_t& policy,
   size_t total_slots = 20,
   std::array<uint32_t, cloud_io::num_group_ids> target_reserved = {0, 0, 0}) {
     // Reset reservations first so set_total_slots doesn't fight a
@@ -52,7 +56,7 @@ void configure(
 } // namespace
 
 TEST_CORO(ReservationPolicyTest, BasicAdmitReleaseAndAccounting) {
-    cloud_io::reservation_policy policy{4};
+    policy_t policy{4};
     configure(policy, /*total_slots=*/4);
 
     EXPECT_EQ(policy.total_capacity(), 4u);
@@ -82,7 +86,7 @@ TEST_CORO(ReservationPolicyTest, BasicAdmitReleaseAndAccounting) {
 }
 
 TEST_CORO(ReservationPolicyTest, SaturationCausesQueueing) {
-    cloud_io::reservation_policy policy{2};
+    policy_t policy{2};
     configure(policy, 2);
     ss::abort_source as;
 
@@ -107,7 +111,7 @@ TEST_CORO(ReservationPolicyTest, SaturationCausesQueueing) {
 }
 
 TEST_CORO(ReservationPolicyTest, AbortCancelsQueuedWait) {
-    cloud_io::reservation_policy policy{1};
+    policy_t policy{1};
     configure(policy, 1);
     ss::abort_source as;
 
@@ -128,7 +132,7 @@ TEST_CORO(ReservationPolicyTest, AbortCancelsQueuedWait) {
 }
 
 TEST_CORO(ReservationPolicyTest, AlreadyAbortedSourceRejectsSlowPath) {
-    cloud_io::reservation_policy policy{1};
+    policy_t policy{1};
     configure(policy, 1);
     ss::abort_source as;
 
@@ -148,7 +152,7 @@ TEST_CORO(ReservationPolicyTest, AlreadyAbortedSourceRejectsSlowPath) {
 }
 
 TEST_CORO(ReservationPolicyTest, CrossGroupDispatchWakesQueuedWaiter) {
-    cloud_io::reservation_policy policy{1};
+    policy_t policy{1};
     configure(policy, 1);
     ss::abort_source as;
 
@@ -170,7 +174,7 @@ TEST_CORO(ReservationPolicyTest, CrossGroupDispatchWakesQueuedWaiter) {
 }
 
 TEST_CORO(ReservationPolicyTest, MultiGroupFillsCapacity) {
-    cloud_io::reservation_policy policy{4};
+    policy_t policy{4};
     configure(policy, /*total_slots=*/4);
     ss::abort_source as;
 
@@ -201,7 +205,7 @@ TEST_CORO(ReservationPolicyTest, ReservationLaneSemantics) {
     // Then queue a cf waiter and verify the first pu releases (reserved)
     // do NOT dispatch cf; the slot returns to pu's reserved pool. Only
     // the shared release dispatches cf.
-    cloud_io::reservation_policy policy{6};
+    policy_t policy{6};
     configure(policy, /*total_slots=*/6, /*target_reserved=*/{2, 0, 0});
     ss::abort_source as;
 
@@ -259,7 +263,7 @@ TEST_CORO(ReservationPolicyTest, ReservationLaneSemantics) {
 // (reserved-lane in-flight is returned to the lane first, then
 // excess releases flow back to the common pool).
 TEST_CORO(ReservationPolicyTest, ReservedAndSharedSlotsCoexist) {
-    cloud_io::reservation_policy policy{6};
+    policy_t policy{6};
     configure(policy, /*total_slots=*/6, /*target_reserved=*/{2, 0, 0});
     ss::abort_source as;
 
@@ -281,7 +285,7 @@ TEST_CORO(ReservationPolicyTest, ReservedAndSharedSlotsCoexist) {
 }
 
 TEST_CORO(ReservationPolicyTest, ReclaimsIdleReservationToCommonPool) {
-    cloud_io::reservation_policy policy{6};
+    policy_t policy{6};
     configure(policy, /*total_slots=*/6, /*target_reserved=*/{2, 0, 0});
 
     auto fake_now = ss::lowres_clock::time_point{} + std::chrono::seconds{60};
@@ -317,7 +321,7 @@ TEST_CORO(
     // active and queues, under-target dispatch routes the next peer
     // release to its waiter before any peer waiter or refill — the
     // inactive group reclaims its capacity on demand.
-    cloud_io::reservation_policy policy{6};
+    policy_t policy{6};
     configure(policy, /*total_slots=*/6, /*target_reserved=*/{2, 0, 0});
     ss::abort_source as;
 
@@ -349,7 +353,7 @@ TEST_CORO(
 }
 
 TEST_CORO(ReservationPolicyTest, WorkConservingCycleReclaimThenRefill) {
-    cloud_io::reservation_policy policy{6};
+    policy_t policy{6};
     configure(policy, /*total_slots=*/6, /*target_reserved=*/{2, 0, 0});
 
     auto fake_now = ss::lowres_clock::time_point{} + std::chrono::seconds{60};
@@ -398,7 +402,7 @@ TEST_CORO(ReservationPolicyTest, WorkConservingCycleReclaimThenRefill) {
 // goes up) rather than growing the reservation lane. Only once there
 // are no queued waiters do subsequent releases refill the lane.
 TEST_CORO(ReservationPolicyTest, RefillOnlyFiresAfterDispatchNext) {
-    cloud_io::reservation_policy policy{4};
+    policy_t policy{4};
     configure(policy, /*total_slots=*/4, /*target_reserved=*/{1, 0, 0});
 
     auto fake_now = ss::lowres_clock::time_point{} + std::chrono::seconds{60};
@@ -437,7 +441,7 @@ TEST_CORO(ReservationPolicyTest, RefillOnlyFiresAfterDispatchNext) {
 // both are dispatched, subsequent releases refill the under-target
 // lanes — ratio drives the choice between them.
 TEST_CORO(ReservationPolicyTest, DispatchAndRefillAcrossUnderTargetGroups) {
-    cloud_io::reservation_policy policy{6};
+    policy_t policy{6};
     configure(policy, /*total_slots=*/6, /*target_reserved=*/{2, 2, 0});
 
     auto fake_now = ss::lowres_clock::time_point{} + std::chrono::seconds{60};

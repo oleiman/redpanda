@@ -184,6 +184,7 @@ redpanda_cc_gtest(
     ],
     deps = [
         "//src/v/cloud_io:reservation_policy",
+        "//src/v/cloud_io:scheduler_traits",
         "//src/v/cloud_io:scheduler_types",
         "//src/v/test_utils:gtest",
         "@googletest//:gtest",

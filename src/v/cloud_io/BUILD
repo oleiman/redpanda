@@ -170,6 +170,7 @@ redpanda_cc_library(
     include_prefix = "cloud_io",
     visibility = ["//visibility:public"],
     deps = [
+        ":scheduler_traits",
         ":scheduler_types",
         "//src/v/base",
         "//src/v/container:intrusive",

@@ -12,9 +12,9 @@
 #include "base/format_to.h"
 #include "base/seastarx.h"
 #include "base/vassert.h"
+#include "cloud_io/scheduler_traits.h"
 #include "cloud_io/scheduler_types.h"
 #include "container/intrusive_list_helpers.h"
-#include "ssx/semaphore.h"
 
 #include <seastar/core/abort_source.hh>
 #include <seastar/core/future.hh>
@@ -25,6 +25,7 @@
 #include <cstdint>
 #include <exception>
 #include <optional>
+#include <utility>
 
 namespace cloud_io {
 
@@ -45,14 +46,14 @@ struct reservation_waiter {
 
 /// Per-group scheduling state.
 ///
-/// The policy has two kinds of slot storage:
+/// The policy has two kinds of storage:
 ///
-///   - A per-group reservation lane (this struct's reserved_sem). Slots in
-///     this lane can only be claimed by the owning group; releases stay in
-///     this lane unless the policy reclaims them.
+///   - A per-group reservation lane (this struct's reserved_container).
+///     Capacity in this lane can only be claimed by the owning group;
+///     releases stay in this lane unless the policy reclaims them.
 ///
-///   - A single common pool of slots (reservation_policy::_shared) any group
-///     can claim from. Releases go back here unless refill diverts them
+///   - A single common pool (reservation_policy::_shared) any group can
+///     claim from. Releases go back here unless refill diverts them
 ///     into a reservation lane.
 ///
 /// Capacity moves between a group's reservation lane and the common pool
@@ -66,19 +67,30 @@ struct reservation_waiter {
 ///
 ///   - reclaim (reservation lane → common pool): an admit sweeps for
 ///     groups that have been idle past default_dwell_duration and pulls
-///     their idle reserved slots (the count on reserved_sem; not the
-///     in-flight ones) back into the common pool. The group's reservation
-///     drops to zero.
+///     their idle reserved capacity (the count on reserved_container; not
+///     the in-flight ones) back into the common pool. The group's
+///     reservation drops to zero.
 ///
 /// Reservations ebb and flow with demand: an active under-target group's
 /// lane refills toward target_reserved; an idle past-dwell group's lane
 /// is reclaimed to zero. set_target_reserved at startup pre-allocates the
 /// lane so the first admits don't pay refill latency; after that the
 /// cycle is purely demand-driven.
+///
+/// Templated on resource Traits (see scheduler_traits.h): the slot
+/// scheduler uses slot_resource_traits, which backs the lane with an
+/// ssx::semaphore counting 1-unit slots. A future bytes scheduler will
+/// use bytes_resource_traits backed by a token_bucket counting bytes-per
+/// -second budget; the policy logic stays identical, only the container
+/// primitives differ.
+template<typename Traits>
 struct reservation_group_state {
+    using container_t = typename Traits::container_t;
+    using amount_t = typename Traits::amount_t;
+
     reservation_group_state(group_id id, ss::sstring sem_name)
       : id(id)
-      , reserved_sem(0, std::move(sem_name)) {}
+      , reserved_container(Traits::make_container(0, std::move(sem_name))) {}
 
     reservation_group_state(const reservation_group_state&) = delete;
     reservation_group_state& operator=(const reservation_group_state&) = delete;
@@ -90,10 +102,10 @@ struct reservation_group_state {
     group_id id;
 
     /// The group's reservation lane.
-    ssx::semaphore reserved_sem;
+    container_t reserved_container;
 
     /// Configured cap on the reservation lane.
-    size_t target_reserved = 0;
+    amount_t target_reserved = 0;
 
     /// Ops holding a slot from this group, across both the reservation
     /// lane and the common pool.
@@ -170,10 +182,10 @@ struct reservation_group_state {
         return in_flight < target_reserved;
     }
 
-    /// The lane's runtime size: slots currently held by this group
+    /// The lane's runtime size: capacity currently held by this group
     /// (available + in-flight). Derived, not stored.
-    size_t current_reserved() const noexcept {
-        return reserved_sem.current() + reserved_in_flight;
+    amount_t current_reserved() const noexcept {
+        return Traits::available(reserved_container) + reserved_in_flight;
     }
 
     /// Currently-queued waiters. O(n); intrusive_list::size() is not
@@ -219,13 +231,16 @@ struct reservation_group_state {
 
     /// Try to claim a slot from this group's reservation lane.
     [[nodiscard]] bool try_take_reserved_slot() noexcept {
-        return target_reserved > 0 && reserved_sem.try_wait(1);
+        return target_reserved > 0
+               && Traits::try_acquire(reserved_container, Traits::unit);
     }
 
     /// Add a slot to this group's reservation lane. Used by refill
     /// when the policy routes a common-pool slot into a group below
     /// its target.
-    void grant_reserved_slot() noexcept { reserved_sem.signal(1); }
+    void grant_reserved_slot() noexcept {
+        Traits::grant(reserved_container, Traits::unit);
+    }
 
     /// Push a waiter onto the queue. The waiter's storage is owned by
     /// the caller (admit's coroutine frame).
@@ -272,7 +287,7 @@ struct reservation_group_state {
 
     /// If the group has a reserved slot in flight, return it to
     /// the lane (to a same-group waiter if one is queued, otherwise
-    /// to the lane's semaphore) and return true. Returns false if
+    /// to the lane's container) and return true. Returns false if
     /// the in-flight release should be handled as a common-pool
     /// release instead.
     bool maybe_return_reserved_slot() noexcept {
@@ -283,26 +298,37 @@ struct reservation_group_state {
         if (!waiters.empty()) {
             release_front_waiter(/*from_reserved=*/true);
         } else {
-            reserved_sem.signal(1);
+            Traits::grant(reserved_container, Traits::unit);
         }
         return true;
     }
 
-    /// Drain the idle reserved slots out of the reservation lane (i.e.
-    /// the count on reserved_sem, not the in-flight ones). Returns the
-    /// number of slots drained, which the policy signals back to the
-    /// common pool. Clears inactive_since so the dwell timer restarts on
-    /// the next idle interval.
-    size_t drain_idle_reserved() noexcept {
-        const auto to_drain = reserved_sem.current();
+    /// Drain the idle reserved capacity out of the reservation lane
+    /// (i.e. the available count on reserved_container, not the in-
+    /// flight ones). Returns the amount drained, which the policy
+    /// signals back to the common pool. Clears inactive_since so the
+    /// dwell timer restarts on the next idle interval.
+    amount_t drain_idle_reserved() noexcept {
+        const auto to_drain = Traits::available(reserved_container);
         if (to_drain > 0) {
-            reserved_sem.consume(to_drain);
+            Traits::take(reserved_container, to_drain);
         }
         inactive_since.reset();
         return to_drain;
     }
 
-    fmt::iterator format_to(fmt::iterator out) const;
+    fmt::iterator format_to(fmt::iterator out) const {
+        return fmt::format_to(
+          out,
+          "{}{{in_flight={}[reserved_in_flight={}], target_reserved={}, "
+          "current_reserved={}, waiter_count={}}}",
+          to_string_view(id),
+          in_flight,
+          reserved_in_flight,
+          target_reserved,
+          current_reserved(),
+          waiter_count());
+    }
 };
 
 } // namespace cloud_io

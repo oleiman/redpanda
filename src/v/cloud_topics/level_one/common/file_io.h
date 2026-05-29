@@ -32,6 +32,8 @@ namespace cloud_topics::l1 {
 //
 // Reads are cached locally on disk in the cloud cache before being returned.
 class file_io : public io {
+    friend class file_io_test_fixture;
+
 public:
     file_io(
       std::filesystem::path staging_dir,

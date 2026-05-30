@@ -528,7 +528,7 @@ frontend::refine_timequery_result(
     // single batch here, because the local log is correct to the granularity of
     // a batch (but not within a batch due to placeholders).
     cloud_topic_log_reader_config reader_cfg(
-      /*group=*/cloud_io::group_id::default_group,
+      /*group=*/cloud_io::group_id::consumer_fetch,
       /*start_offset=*/input.start_offset,
       /*max_offset=*/input.last_offset,
       /*first_timestamp=*/input.time,

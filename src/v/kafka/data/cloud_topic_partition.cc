@@ -38,7 +38,7 @@ namespace {
 
 cloud_topics::cloud_topic_log_reader_config
 kafka_to_cloud_topic_log_reader_config(kafka::log_reader_config cfg) {
-    return {/*group=*/cloud_io::group_id::default_group,
+    return {/*group=*/cloud_io::group_id::consumer_fetch,
             /*start_offset=*/cfg.start_offset,
             /*max_offset=*/cfg.max_offset,
             /*min_bytes=*/cfg.min_bytes,

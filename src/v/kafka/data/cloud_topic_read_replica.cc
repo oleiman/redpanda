@@ -170,7 +170,7 @@ partition_proxy::make_reader(kafka::log_reader_config cfg) {
 ss::future<storage::translating_reader> partition_proxy::make_reader(
   partition_proxy::snapshot snap, kafka::log_reader_config cfg) {
     cloud_topic_log_reader_config cloud_cfg(
-      cloud_io::group_id::default_group,
+      cloud_io::group_id::consumer_fetch,
       cfg.start_offset,
       cfg.max_offset,
       cfg.min_bytes,

@@ -50,7 +50,7 @@ std::optional<model::record_batch_reader> l1_reader_cache::get_reader(
         if (
           it->reader->is_reusable()
           && it->reader->next_read_lower_bound() == cfg.start_offset
-          && it->reader->tidp() == tidp) {
+          && it->reader->tidp() == tidp && it->reader->group() == cfg.group) {
             break;
         }
         ++it;

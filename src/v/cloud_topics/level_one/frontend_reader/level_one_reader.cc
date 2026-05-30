@@ -530,6 +530,15 @@ void level_one_log_reader_impl::reset_config(
       "reset_config: start_offset {} != next_offset {}",
       cfg.start_offset,
       _next_offset);
+    // The L1 reader cache keys on group, so reuse must come from a
+    // caller that matches the reader's lane. If this trips, a cached
+    // stream opened under one admission lane is about to be reused for
+    // a different lane.
+    vassert(
+      cfg.group == _config.group,
+      "reset_config: group {} != _config.group {}",
+      cfg.group,
+      _config.group);
     _config = cfg;
     _end_of_stream = false;
     _bytes_consumed = 0;

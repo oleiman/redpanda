@@ -9,6 +9,7 @@
  */
 #pragma once
 
+#include "cloud_io/scheduler_types.h"
 #include "cloud_topics/level_one/common/abstract_io.h"
 #include "cloud_topics/level_one/common/object.h"
 #include "cloud_topics/level_one/common/object_id.h"
@@ -106,6 +107,9 @@ public:
 
     const model::ntp& ntp() const { return _ntp; }
     const model::topic_id_partition& tidp() const { return _tidp; }
+
+    /// Scheduler admission lane this reader's cloud reads admit through.
+    cloud_io::group_id group() const { return _config.group; }
 
 private:
     struct object_info {

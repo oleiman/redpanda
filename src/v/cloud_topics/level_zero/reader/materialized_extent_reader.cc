@@ -26,13 +26,8 @@ namespace {
 
 ss::future<result<chunked_vector<materialized_extent>>> materialize_sorted_run(
   chunked_vector<extent_meta> query,
-  cloud_storage_clients::bucket_name bucket,
-  cloud_io::remote_api<>* api,
-  cloud_io::basic_cache_service_api<>* cache,
   allow_materialization_failure allow_mat_failure,
-  retry_chain_node* rtc,
-  micro_probe* probe,
-  cloud_io::group_id group) {
+  const cloud_read_ctx& ctx) {
     absl::node_hash_map<object_id, iobuf> hydrated;
     chunked_vector<materialized_extent> extents;
     for (const auto& extent : query) {
@@ -46,7 +41,13 @@ ss::future<result<chunked_vector<materialized_extent>>> materialize_sorted_run(
             back.object = payload.share(0, payload.size_bytes());
         } else {
             auto res = co_await materialize(
-              &back, bucket, api, cache, rtc, probe, group);
+              &back,
+              ctx.bucket,
+              ctx.api,
+              ctx.cache,
+              ctx.rtc,
+              ctx.probe,
+              ctx.group);
             if (!res.has_value()) {
                 if (
                   bool(allow_mat_failure)
@@ -90,15 +91,16 @@ ss::future<materialize_result> materialize_placeholders(
   retry_chain_logger& logger,
   cloud_io::group_id group) {
     micro_probe probe;
+    cloud_read_ctx ctx{
+      .bucket = bucket,
+      .api = &api,
+      .cache = &cache,
+      .rtc = &rtc,
+      .probe = &probe,
+      .group = group,
+    };
     auto extents = co_await materialize_sorted_run(
-      std::move(query),
-      bucket,
-      &api,
-      &cache,
-      allow_mat_failure,
-      &rtc,
-      &probe,
-      group);
+      std::move(query), allow_mat_failure, ctx);
     if (!extents.has_value()) {
         vlog(
           logger.warn,

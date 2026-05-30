@@ -123,13 +123,7 @@ ss::future<result<iobuf>> materialize_from_cache(
   micro_probe* probe);
 
 ss::future<result<iobuf>> materialize_from_cloud_storage(
-  std::filesystem::path cache_file_name,
-  cloud_storage_clients::bucket_name bucket,
-  cloud_io::remote_api<>* api,
-  cloud_io::basic_cache_service_api<>* cache,
-  basic_retry_chain_node<>* rtc,
-  micro_probe* probe,
-  cloud_io::group_id group);
+  std::filesystem::path cache_file_name, const cloud_read_ctx& ctx);
 
 ss::future<result<bool>> materialize(
   materialized_extent* ext,
@@ -139,6 +133,14 @@ ss::future<result<bool>> materialize(
   basic_retry_chain_node<>* rtc,
   micro_probe* probe,
   cloud_io::group_id group) {
+    cloud_read_ctx ctx{
+      .bucket = bucket,
+      .api = api,
+      .cache = cache,
+      .rtc = rtc,
+      .probe = probe,
+      .group = group,
+    };
     bool hydrated = false;
     // This iobuf contains the record batch replaced by the placeholder. It
     // might potentially contain data that belongs to other placeholder
@@ -202,7 +204,7 @@ ss::future<result<bool>> materialize(
         hydrated = true; // Indicates range read from cache
     } else {
         auto res = co_await materialize_from_cloud_storage(
-          cache_file_name, bucket, api, cache, rtc, probe, group);
+          cache_file_name, ctx);
         if (!res.has_value()) {
             co_return res.error();
         }
@@ -243,33 +245,27 @@ ss::future<result<iobuf>> materialize_from_cache(
 }
 
 ss::future<result<iobuf>> materialize_from_cloud_storage(
-  std::filesystem::path cache_file_name,
-  cloud_storage_clients::bucket_name bucket,
-  cloud_io::remote_api<>* api,
-  cloud_io::basic_cache_service_api<>* cache,
-  basic_retry_chain_node<>* rtc,
-  micro_probe* probe,
-  cloud_io::group_id group) {
+  std::filesystem::path cache_file_name, const cloud_read_ctx& ctx) {
     // Populate the cache
     iobuf payload;
     cloud_io::download_request req{
       .transfer_details = {
-        .bucket = bucket,
+        .bucket = ctx.bucket,
         .key = cloud_storage_clients::object_key(cache_file_name),
-        .parent_rtc = *rtc,
+        .parent_rtc = *ctx.rtc,
         .success_cb =
-          [probe, &payload] {
+          [probe = ctx.probe, &payload] {
               probe->num_cloud_reads++;
               probe->cloud_read_bytes += payload.size_bytes();
           },
-        .backoff_cb = [probe] { probe->num_cloud_reads++; },
+        .backoff_cb = [probe = ctx.probe] { probe->num_cloud_reads++; },
       },
       .display_str = "L0",
       .payload = payload};
 
     auto dl_result = result_from_ready_future(
       co_await ss::coroutine::as_future(
-        api->download_object(std::move(req), group)),
+        ctx.api->download_object(std::move(req), ctx.group)),
       [](std::exception_ptr e) {
           vlog(cd_log.error, "Unexpected error during L0 download: {}", e);
       });
@@ -288,7 +284,7 @@ ss::future<result<iobuf>> materialize_from_cloud_storage(
     // burning cycles.
     auto sr_guard = result_from_ready_future(
       co_await ss::coroutine::as_future(
-        cache->reserve_space(payload.size_bytes(), 1)),
+        ctx.cache->reserve_space(payload.size_bytes(), 1)),
       [](std::exception_ptr e) {
           vlog(cd_log.error, "Failed to reserve space: {}", e);
       });
@@ -303,10 +299,10 @@ ss::future<result<iobuf>> materialize_from_cloud_storage(
 
     if (sr_guard.has_value()) {
         // TODO: use proper priority class
-        probe->num_cache_writes++;
+        ctx.probe->num_cache_writes++;
         auto buf_str = make_iobuf_input_stream(payload.share());
         auto put_future = co_await ss::coroutine::as_future(
-          cache->put(cache_file_name, buf_str, sr_guard.value()));
+          ctx.cache->put(cache_file_name, buf_str, sr_guard.value()));
 
         if (put_future.failed()) {
             auto e = put_future.get_exception();
@@ -320,7 +316,7 @@ ss::future<result<iobuf>> materialize_from_cloud_storage(
               "propagated to the client but Redpanda may use more resources.",
               e);
         } else {
-            probe->cache_write_bytes += payload.size_bytes();
+            ctx.probe->cache_write_bytes += payload.size_bytes();
         }
     } else if (sr_guard.error() == errc::shutting_down) {
         co_return errc::shutting_down;

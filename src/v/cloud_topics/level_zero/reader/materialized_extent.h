@@ -29,6 +29,19 @@ namespace cloud_topics::l0 {
 
 struct micro_probe;
 
+/// Shared cloud-read context for L0 materialize helpers. Bundles the
+/// pieces that every download path needs: the bucket, the cloud_io
+/// remote and cache services, the retry chain, the probe, and the
+/// scheduler admission lane.
+struct cloud_read_ctx {
+    cloud_storage_clients::bucket_name bucket;
+    cloud_io::remote_api<>* api;
+    cloud_io::basic_cache_service_api<>* cache;
+    basic_retry_chain_node<>* rtc;
+    micro_probe* probe;
+    cloud_io::group_id group;
+};
+
 // Materialized placeholder extent
 //
 // Extent represents ctp_placeholder with the data

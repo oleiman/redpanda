@@ -275,6 +275,7 @@ redpanda_cc_library(
     deps = [
         ":types",
         "//src/v/base",
+        "//src/v/cloud_io:scheduler_types",
         "//src/v/model",
         "//src/v/utils:to_string",
     ],

@@ -53,6 +53,7 @@ std::unique_ptr<read_request<ss::lowres_clock>> make_proxy(
     dataplane_query query;
     query.output_size_estimate = req.query.output_size_estimate;
     query.meta = req.query.meta.copy();
+    query.group = req.query.group;
     auto proxy = std::make_unique<read_request<ss::lowres_clock>>(
       req.ntp, std::move(query), timeout, target_rtc, id);
     return proxy;

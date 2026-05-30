@@ -178,6 +178,7 @@ ss::future<> read_merge<Clock>::process_single_request(
         dataplane_query query{
           .output_size_estimate = req->query.output_size_estimate,
           .meta = req->query.meta.copy(),
+          .group = req->query.group,
         };
 
         auto size_estimate = query.output_size_estimate;

@@ -11,6 +11,7 @@
 #pragma once
 
 #include "base/seastarx.h"
+#include "cloud_io/scheduler_types.h"
 #include "cloud_topics/errc.h"
 #include "cloud_topics/level_zero/common/extent_meta.h"
 #include "cloud_topics/level_zero/pipeline/pipeline_stage.h"
@@ -40,6 +41,9 @@ struct dataplane_query {
     chunked_vector<extent_meta> meta;
     allow_materialization_failure allow_mat_failure
       = allow_materialization_failure::no;
+    /// cloud_io scheduler group_id for admitting the cloud reads this
+    /// query produces. Set by the caller (the public materialize API).
+    cloud_io::group_id group{cloud_io::group_id::default_group};
 };
 
 // This object is created for every fetch request.

@@ -20,6 +20,7 @@
 #include "cloud_topics/level_one/metastore/offset_interval_set.h"
 #include "compaction/key_offset_map.h"
 #include "compaction/reducer.h"
+#include "model/record_batch_reader.h"
 #include "utils/prefix_logger.h"
 
 namespace cloud_topics::l1 {
@@ -52,6 +53,12 @@ public:
 private:
     // Returns true if the compaction process has been pre-empted to stop.
     bool preempted() const;
+
+    // Build an L1 record_batch_reader over [start_offset, last_offset]
+    // tagged with the default_group admission lane. Used by both the
+    // map-building and deduplication iterations.
+    model::record_batch_reader make_l1_reader_for_range(
+      kafka::offset start_offset, kafka::offset last_offset);
 
 private:
     friend compaction_sink;

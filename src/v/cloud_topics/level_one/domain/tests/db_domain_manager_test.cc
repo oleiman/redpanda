@@ -115,6 +115,9 @@ struct domain_manager_node {
                   dm_test_log.info, "Inactive manager shutdown error: {}", ex);
             }
         }
+        // Drain any in-flight background fibers on object_io before
+        // it destructs — ~ss::gate asserts on open gates.
+        co_await object_io.stop();
     }
 
     ss::shared_ptr<stm> stm_ptr;

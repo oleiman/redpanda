@@ -12,6 +12,7 @@
 #include "cloud_topics/level_one/frontend_reader/level_one_reader_probe.h"
 #include "cloud_topics/level_one/metastore/retry.h"
 #include "cloud_topics/logger.h"
+#include "config/configuration.h"
 #include "model/fundamental.h"
 #include "model/timeout_clock.h"
 #include "ssx/future-util.h"
@@ -84,11 +85,21 @@ level_one_log_reader_impl::open_reader_at(
   l1::object_id oid,
   kafka::offset last_object_offset,
   size_t extent_position,
-  size_t extent_size) {
+  size_t extent_size,
+  const l1::footer& footer) {
+    // Compute partition-segment prefetch hint from the cached footer.
+    // The footer is in-memory (PR5 l1_footer_cache + the seek path
+    // already parsed it), so this is a cheap lookup.
+    auto prefetch_max = config::shard_local_cfg()
+                          .cloud_topics_l1_partition_prefetch_max_bytes();
+    auto hint = compute_partition_prefetch_hint(
+      footer, _tidp, extent_position, prefetch_max);
+
     l1::object_extent extent{
       .id = oid,
       .position = extent_position,
       .size = extent_size,
+      .prefetch_hint = hint,
     };
     ss::abort_source default_abort_source;
     auto* abort_source = _config.abort_source
@@ -289,6 +300,16 @@ level_one_log_reader_impl::lookup_object_for_offset(
     auto footer = co_await read_footer(
       obj.oid, obj.footer_pos, obj.object_size);
 
+    // Speculatively prefetch the partition segment of the next L1
+    // object in the lookahead buffer, exploiting spatial locality of
+    // sequential consumption. By the time the reader transitions into
+    // that object, its partition segment is already cached and the
+    // byte-range read in file_io::read_object hits step 2 without a
+    // cold S3 GET. The footer fetch is synchronous but amortized by
+    // _footer_cache; the partition-segment download runs detached in
+    // file_io's background gate.
+    co_await maybe_prefetch_next_partition_segment();
+
     co_return object_info{
       .oid = obj.oid,
       .footer = std::move(footer),
@@ -296,8 +317,83 @@ level_one_log_reader_impl::lookup_object_for_offset(
     };
 }
 
-ss::future<l1::footer> level_one_log_reader_impl::read_footer(
+ss::future<>
+level_one_log_reader_impl::maybe_prefetch_next_partition_segment() {
+    if (_lookahead_buffer.empty()) {
+        co_return;
+    }
+    auto prefetch_max = config::shard_local_cfg()
+                          .cloud_topics_l1_partition_prefetch_max_bytes();
+    if (prefetch_max == 0) {
+        co_return;
+    }
+
+    // Snapshot the identifiers up front; read_footer awaits and the
+    // buffer must not be mutated under us, but copying these is cheap
+    // and removes any doubt.
+    auto next_oid = _lookahead_buffer.front().oid;
+    auto next_footer_pos = _lookahead_buffer.front().footer_pos;
+    auto next_object_size = _lookahead_buffer.front().object_size;
+
+    auto footer_fut = co_await ss::coroutine::as_future(
+      read_footer(next_oid, next_footer_pos, next_object_size));
+    if (footer_fut.failed()) {
+        // Prefetch is best-effort: absorb the failure so it doesn't
+        // poison the in-flight consumer fetch. The next L1 will be
+        // re-fetched when the reader transitions into it.
+        auto ex = footer_fut.get_exception();
+        vlog(
+          _log.debug,
+          "Skipping next-L1 prefetch for object {}: footer fetch failed: {}",
+          next_oid,
+          ex);
+        co_return;
+    }
+    auto footer = footer_fut.get();
+
+    auto [range_begin, range_end] = footer->partitions.equal_range(_tidp);
+    if (range_begin == range_end) {
+        // Partition not present in the next L1.
+        co_return;
+    }
+    const auto& segment = range_begin->second;
+    if (segment.length == 0 || segment.length > prefetch_max) {
+        // Skip when the segment can't fit under the prefetch budget:
+        // a capped prefetch file would be shorter than the partition's
+        // remaining bytes, and read_object step 2's get_stream_range
+        // would silently truncate the consumer's read. Matches the
+        // ceiling enforced in compute_partition_prefetch_hint.
+        co_return;
+    }
+
+    _io->prefetch_partition_segment(
+      next_oid, segment.file_position, segment.length);
+}
+
+ss::future<ss::lw_shared_ptr<const l1::footer>>
+level_one_log_reader_impl::read_footer(
   l1::object_id oid, size_t footer_pos, size_t object_size) {
+    if (_cached_footer && _cached_footer->oid == oid) {
+        // Footers are immutable once an L1 object commits, so (pos,
+        // size) are uniquely determined by oid. Catch invariant
+        // violations in debug builds without paying for the check in
+        // release.
+        dassert(
+          _cached_footer->footer_pos == footer_pos
+            && _cached_footer->object_size == object_size,
+          "cached footer for {} has stale (pos {}, size {}) vs requested "
+          "(pos {}, size {})",
+          oid,
+          _cached_footer->footer_pos,
+          _cached_footer->object_size,
+          footer_pos,
+          object_size);
+        if (_probe != nullptr) {
+            _probe->register_footer_cache_hit();
+        }
+        co_return _cached_footer->footer;
+    }
+
     size_t footer_total_size = object_size - footer_pos;
     if (_probe != nullptr) {
         _probe->register_footer_read(footer_total_size);
@@ -364,7 +460,15 @@ ss::future<l1::footer> level_one_log_reader_impl::read_footer(
           object_size));
     }
 
-    co_return std::get<l1::footer>(std::move(footer_result));
+    auto wrapped = ss::make_lw_shared<const l1::footer>(
+      std::get<l1::footer>(std::move(footer_result)));
+    _cached_footer = cached_footer{
+      .oid = oid,
+      .footer_pos = footer_pos,
+      .object_size = object_size,
+      .footer = wrapped,
+    };
+    co_return wrapped;
 }
 
 ss::future<chunked_circular_buffer<model::record_batch>>
@@ -424,12 +528,12 @@ level_one_log_reader_impl::materialize_batches_from_object_offset(
     // must hold, so we start at whichever position is further into the
     // file.
     auto seek_res = [&] {
-        auto offset_seek = object.footer.file_position_before_kafka_offset(
+        auto offset_seek = object.footer->file_position_before_kafka_offset(
           _tidp, offset);
         if (!_config.first_timestamp) {
             return offset_seek;
         }
-        auto time_seek = object.footer.file_position_before_max_timestamp(
+        auto time_seek = object.footer->file_position_before_max_timestamp(
           _tidp, *_config.first_timestamp);
         if (time_seek == l1::footer::npos) {
             return offset_seek;
@@ -454,7 +558,11 @@ level_one_log_reader_impl::materialize_batches_from_object_offset(
     }
 
     auto reader_result = co_await open_reader_at(
-      object.oid, object.last_offset, seek_res.file_position, seek_res.length);
+      object.oid,
+      object.last_offset,
+      seek_res.file_position,
+      seek_res.length,
+      *object.footer);
     if (!reader_result.has_value()) {
         vlog(
           _log.warn,
@@ -546,6 +654,41 @@ bool level_one_log_reader_impl::is_over_limit_with_bytes(size_t size) const {
         return false;
     }
     return (_bytes_consumed + size) > _config.max_bytes;
+}
+
+std::optional<l1::partition_prefetch_hint> compute_partition_prefetch_hint(
+  const l1::footer& footer,
+  const model::topic_id_partition& tidp,
+  size_t seek_position,
+  size_t max_bytes) {
+    if (max_bytes == 0) {
+        return std::nullopt;
+    }
+    auto [range_begin, range_end] = footer.partitions.equal_range(tidp);
+    for (auto it = range_begin; it != range_end; ++it) {
+        const auto& p = it->second;
+        if (
+          seek_position >= p.file_position
+          && seek_position < p.file_position + p.length) {
+            // Found the segment containing seek_position. If the
+            // partition's contiguous data in this L1 object exceeds the
+            // prefetch cap, skip the prefetch entirely. A capped
+            // prefetch file would be shorter than seek_res.length
+            // (which is the full remaining partition bytes from the
+            // seek point per footer::file_position_before_kafka_offset),
+            // and file_io::read_object step 2 would issue a
+            // get_stream_range that runs past EOF — silently
+            // truncating the consumer's read and dropping records.
+            if (p.length > max_bytes) {
+                return std::nullopt;
+            }
+            return l1::partition_prefetch_hint{
+              .segment_position = p.file_position,
+              .segment_size = p.length,
+            };
+        }
+    }
+    return std::nullopt;
 }
 
 } // namespace cloud_topics

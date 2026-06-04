@@ -209,6 +209,12 @@ public:
         return underlying_->read_object(ext, as, g);
     }
 
+    void prefetch_partition_segment(
+      object_id id, size_t segment_position, size_t segment_size) override {
+        underlying_->prefetch_partition_segment(
+          id, segment_position, segment_size);
+    }
+
     ss::future<std::expected<void, errc>>
     delete_objects(chunked_vector<object_id>, ss::abort_source*) override {
         return ss::make_ready_future<std::expected<void, errc>>(

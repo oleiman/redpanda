@@ -13,8 +13,16 @@
 #include "cloud_io/cache_service.h"
 #include "cloud_io/remote.h"
 #include "cloud_topics/level_one/common/abstract_io.h"
+#include "cloud_topics/level_one/common/file_io_probe.h"
 #include "cloud_topics/level_one/common/object_id.h"
+#include "container/chunked_hash_map.h"
 #include "model/fundamental.h"
+
+#include <seastar/core/abort_source.hh>
+#include <seastar/core/gate.hh>
+#include <seastar/core/shared_future.hh>
+
+#include <optional>
 
 namespace cloud_topics::l1 {
 
@@ -26,12 +34,29 @@ namespace cloud_topics::l1 {
 //
 // Reads are cached locally on disk in the cloud cache before being returned.
 class file_io : public io {
+    friend class file_io_test_fixture;
+
 public:
+    /// `probe` is an externally-owned per-shard probe. Nullable:
+    /// secondary per-shard file_io instances (read-replica refreshers,
+    /// etc.) pass nullptr and their IO activity is not counted on the
+    /// shared probe.
     file_io(
       std::filesystem::path staging_dir,
       cloud_io::remote* remote,
       cloud_storage_clients::bucket_name bucket,
-      cloud_io::cache* cache);
+      cloud_io::cache* cache,
+      file_io_probe* probe = nullptr);
+
+    /// Drain in-flight reads and background prefetch fibers. Must be
+    /// co_awaited before destruction so the read_object defer-cleanup
+    /// never touches a destroyed map.
+    ss::future<> stop();
+
+    /// Cloud-cache disk key for an (oid, position, size) extent. Shared
+    /// between `read_object` and tests so the format stays in lockstep.
+    static std::filesystem::path cache_key(const object_extent& extent);
+
     ss::future<std::expected<std::unique_ptr<staging_file>, errc>>
     create_tmp_file() override;
 
@@ -40,6 +65,9 @@ public:
 
     ss::future<std::expected<ss::input_stream<char>, errc>> read_object(
       object_extent, ss::abort_source*, cloud_io::group_id g) override;
+
+    void prefetch_partition_segment(
+      object_id, size_t segment_position, size_t segment_size) override;
 
     ss::future<std::expected<void, errc>>
     delete_objects(chunked_vector<object_id>, ss::abort_source*) override;
@@ -55,10 +83,58 @@ private:
       std::filesystem::path,
       uint64_t content_length);
 
+    // Background prefetch of a partition's segment in an L1 object.
+    // Called via spawn_with_gate(_background_gate, ...) by
+    // prefetch_partition_segment. Resolves the corresponding
+    // _inflight_prefetches entry on completion (success or failure).
+    ss::future<> download_partition_segment(
+      std::filesystem::path prefetch_key,
+      object_id id,
+      size_t segment_position,
+      size_t segment_size);
+
     cloud_io::remote* _remote;
     cloud_storage_clients::bucket_name _bucket;
     std::filesystem::path _staging_dir;
     cloud_io::cache* _cache;
+
+    // Gates all read_object calls so destruction can wait for any
+    // suspended fibers whose defer-cleanup would otherwise touch a
+    // destroyed `_inflight_downloads`.
+    ss::gate _gate;
+
+    // If two reads on the same shard miss the cloud cache on the same
+    // extent, only one triggers a download. Subsequent reads merge
+    // into the in-flight download via the shared promise.
+    // Promise resolves to nullopt on success (merged reads can expect
+    // a warm cache); otherwise it carries the errc to propagate as if
+    // the download came from each merged read's own fiber.
+    // Loosely mirrors the L0 read_merge pattern.
+    chunked_hash_map<
+      std::filesystem::path,
+      ss::shared_promise<std::optional<errc>>>
+      _inflight_downloads;
+
+    // In-flight L1 partition-segment download dedup. When a cold byte-
+    // range miss arrives with a prefetch_hint, file_io kicks off a
+    // background download of the partition's segment in this L1 object
+    // (capped by cloud_topics_l1_partition_prefetch_max_bytes). Future
+    // read_object calls for any byte range within that segment hit the
+    // cache file via cache_service::get_stream_range. Keyed by the
+    // partition-segment cache key path.
+    chunked_hash_map<
+      std::filesystem::path,
+      ss::shared_promise<std::optional<errc>>>
+      _inflight_prefetches;
+
+    // Tracks background prefetch fibers so stop() can wait for them.
+    ss::gate _background_gate;
+    // Signals shutdown to background fibers' download/reserve_space calls.
+    ss::abort_source _background_abort;
+
+    // Non-owning. Null for secondary per-shard file_io instances whose
+    // IO activity is intentionally not counted on the shared probe.
+    file_io_probe* _probe;
 };
 
 } // namespace cloud_topics::l1

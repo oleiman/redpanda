@@ -17,6 +17,8 @@
 #include "model/record_batch_reader.h"
 #include "utils/prefix_logger.h"
 
+#include <seastar/core/shared_ptr.hh>
+
 #include <deque>
 #include <expected>
 #include <variant>
@@ -110,7 +112,7 @@ public:
 private:
     struct object_info {
         l1::object_id oid;
-        l1::footer footer;
+        ss::lw_shared_ptr<const l1::footer> footer;
         kafka::offset last_offset;
     };
 
@@ -160,8 +162,26 @@ private:
     ss::future<chunked_circular_buffer<model::record_batch>>
     read_batches(l1::object_reader& reader);
 
-    ss::future<l1::footer>
+    /// Fetch and parse the L1 object's footer. Caches the most recent
+    /// footer on the reader; subsequent calls for the same `oid` are
+    /// served from the stash (the common case for sequential read +
+    /// next-L1 prefetch within a single reader). A miss replaces the
+    /// stash. Auto-evicted when the reader closes.
+    ss::future<ss::lw_shared_ptr<const l1::footer>>
     read_footer(l1::object_id oid, size_t footer_pos, size_t object_size);
+
+    /// Fire-and-forget prefetch of the partition's segment in the next
+    /// L1 object queued in the lookahead buffer. Reads the next L1's
+    /// footer (cached after the first call) to locate this reader's
+    /// partition segment, then asks file_io to start a background
+    /// download. Subsequent read_object calls into that L1 hit the
+    /// cached partition segment via cache_service::get_stream_range.
+    /// Returns when the footer fetch resolves; the segment download
+    /// runs in file_io's background gate independent of the reader.
+    /// No-op when the lookahead buffer is empty, when the partition
+    /// has no segment in the next object, or when the partition's
+    /// contiguous segment exceeds the configured prefetch cap.
+    ss::future<> maybe_prefetch_next_partition_segment();
 
     /*
      * Returns batches starting at next offset. It will continue to advance next
@@ -184,7 +204,8 @@ private:
       l1::object_id oid,
       kafka::offset last_object_offset,
       size_t extent_position,
-      size_t extent_size);
+      size_t extent_size,
+      const l1::footer& footer);
 
     /// Close _current_stream if present, swallowing exceptions.
     ss::future<> close_current_stream();
@@ -212,6 +233,31 @@ private:
     // Consumed front-to-back as the reader advances through objects.
     // Populated with 1 entry (no prefetch) or N entries (prefetch).
     std::deque<l1::metastore::object_response> _lookahead_buffer;
+
+    // Per-reader footer stash. Single entry; replaced on miss.
+    struct cached_footer {
+        l1::object_id oid;
+        size_t footer_pos;
+        size_t object_size;
+        ss::lw_shared_ptr<const l1::footer> footer;
+    };
+    std::optional<cached_footer> _cached_footer;
 };
+
+/// Compute the partition-segment prefetch hint for a given seek
+/// position within an L1 object. Returns the partition segment
+/// that contains seek_position, capped at max_bytes from the start
+/// of that segment. Returns nullopt if the partition isn't in the
+/// footer, if seek_position is outside any segment for this
+/// partition, or if max_bytes is 0.
+///
+/// The footer.partitions is a multimap — a single topic_id_partition
+/// can have multiple non-contiguous segments in one L1 object. We
+/// pick the segment containing seek_position.
+std::optional<l1::partition_prefetch_hint> compute_partition_prefetch_hint(
+  const l1::footer& footer,
+  const model::topic_id_partition& tidp,
+  size_t seek_position,
+  size_t max_bytes);
 
 } // namespace cloud_topics

@@ -29,6 +29,10 @@ public:
     ss::future<std::expected<ss::input_stream<char>, errc>> read_object(
       object_extent, ss::abort_source*, cloud_io::group_id g) override;
 
+    // No-op in the in-memory fake; the cache layer it would warm
+    // doesn't exist here.
+    void prefetch_partition_segment(object_id, size_t, size_t) override {}
+
     ss::future<std::expected<void, errc>>
     delete_objects(chunked_vector<object_id>, ss::abort_source*) override;
 

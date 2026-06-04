@@ -46,6 +46,9 @@ redpanda_cc_library(
     hdrs = [
         "level_one_reader.h",
     ],
+    implementation_deps = [
+        "//src/v/config",
+    ],
     visibility = ["//visibility:public"],
     deps = [
         "//src/v/bytes:iostream",

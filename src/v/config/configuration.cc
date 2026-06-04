@@ -4949,6 +4949,21 @@ configuration::configuration()
       "Map the binary into hugepages",
       {.needs_restart = needs_restart::no, .visibility = visibility::tunable},
       false)
+  , cloud_topics_l1_partition_prefetch_max_bytes(
+      *this,
+      "cloud_topics_l1_partition_prefetch_max_bytes",
+      "Maximum number of bytes to prefetch per L1 cache miss. When set "
+      "to a non-zero value, file_io issues a background download of the "
+      "partition's segment within the L1 object (capped at this size), "
+      "populating a cache file served via get_stream_range to subsequent "
+      "K-fanout reads at any offset within the segment. Set to 0 to "
+      "disable prefetch (falls back to byte-range only). Recommended "
+      "default of 16 MiB covers typical partition-segment sizes (~8 MiB) "
+      "while capping the worst-case download cost for pathologically-"
+      "packed L1 objects.",
+      {.needs_restart = needs_restart::no, .visibility = visibility::tunable},
+      16_MiB,
+      {.min = 0, .max = 256_MiB})
   , development_feature_property_testing_only(
       *this,
       "development_feature_property_testing_only",

@@ -30,3 +30,18 @@ redpanda_cc_gtest(
         "@seastar",
     ],
 )
+
+redpanda_cc_gtest(
+    name = "inflight_download_map_test",
+    timeout = "short",
+    srcs = [
+        "inflight_download_map_test.cc",
+    ],
+    deps = [
+        "//src/v/cloud_topics/level_one/common:abstract_io",
+        "//src/v/cloud_topics/level_one/common:inflight_download_map",
+        "//src/v/test_utils:gtest",
+        "@googletest//:gtest",
+        "@seastar",
+    ],
+)

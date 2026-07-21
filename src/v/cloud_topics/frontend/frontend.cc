@@ -1445,7 +1445,18 @@ ss::future<result<raft::replicate_result>> frontend::replicate_at_offset(
 
     chunked_vector<model::record_batch> placeholder_batches;
 
+    // Track the write for the L0 GC epoch barrier drain: the data path below
+    // uploads L0 objects that must not be GC'd while the write is in flight.
+    // Control-only writes create no object, so acquire the token only then.
+    std::unique_ptr<inflight_write_token> token;
+    auto on_write_exit = ss::defer([&token] {
+        if (token) {
+            token->done.set_value();
+        }
+    });
+
     if (!data_batches.empty()) {
+        token = _data_plane->track_inflight_write();
         auto min_epoch = cluster_epoch(_partition->get_topic_revision_id());
 
         // Use the std::max trick from the normal produce path to reduce

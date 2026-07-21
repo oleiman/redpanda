@@ -1058,7 +1058,8 @@ partition_status build_partition_status(const partition& p) {
     auto ctp_stm = p.raft()->stm_manager()->get<cloud_topics::ctp_stm>();
     if (ctp_stm) {
         status.cloud_topic_max_gc_eligible_epoch
-          = ctp_stm->estimate_inactive_epoch();
+          = ctp_stm->get_gc_safe_epoch().transform(
+            cloud_topics::prev_cluster_epoch);
     }
     status.shard = ss::this_shard_id();
 

@@ -16,6 +16,8 @@
 #include "model/fundamental.h"
 #include "serde/envelope.h"
 
+#include <algorithm>
+
 namespace cloud_topics {
 
 /// In-memory state of the cloud-topics state machine (ctp_stm).
@@ -120,8 +122,26 @@ public:
     /// Access the size estimator directly (for testing and metrics).
     const size_estimator& get_size_estimator() const noexcept;
 
+    /// Highest epoch L0 GC may collect below for this partition.
+    ///
+    /// The barrier confirms a cluster-wide epoch and writes it here
+    /// (advance_gc_epoch); _gc_safe_epoch ratchets on that value. But the
+    /// confirmed epoch is the cluster epoch, unbounded by any one partition,
+    /// and a partition's applied window can lag it: a cluster-link mirror
+    /// write (replicate_at_offset) stamps max(topic_revision, max_seen) and is
+    /// admitted in-window without advancing max_seen, so max_applied can sit
+    /// below the confirmed epoch. GC deletes objects strictly below the
+    /// returned epoch, and a new write here always lands at an epoch >=
+    /// max_applied, so clamping to max_applied keeps GC from deleting an object
+    /// a future write on this partition would reference. Self-corrects as the
+    /// partition applies forward; the raw _gc_safe_epoch member keeps ratcheting
+    /// on the barrier's epoch. nullopt until an epoch is applied and a safe
+    /// epoch confirmed.
     std::optional<cluster_epoch> get_gc_safe_epoch() const noexcept {
-        return _gc_safe_epoch;
+        if (!_gc_safe_epoch || !_max_applied_epoch) {
+            return std::nullopt;
+        }
+        return std::min(*_gc_safe_epoch, *_max_applied_epoch);
     }
 
     /// Record a pending gc safe epoch from an advance_gc_epoch command.

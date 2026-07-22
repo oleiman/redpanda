@@ -567,6 +567,9 @@ TEST(
 
 TEST(ctp_stm_state_test, GcSafeEpochPendingUntilReconciled) {
     ct::ctp_stm_state state;
+    // max_applied ahead of the safe epoch: get_gc_safe_epoch()'s clamp is a
+    // no-op here, so this exercises promotion in isolation.
+    state.advance_epoch(ct::cluster_epoch{100}, model::offset{1});
 
     EXPECT_FALSE(state.get_gc_safe_epoch().has_value());
 
@@ -587,6 +590,8 @@ TEST(ctp_stm_state_test, GcSafeEpochPendingUntilReconciled) {
 
 TEST(ctp_stm_state_test, GcSafeEpochPendingRatchetsForward) {
     ct::ctp_stm_state state;
+    // max_applied ahead of the safe epoch: the clamp is a no-op here.
+    state.advance_epoch(ct::cluster_epoch{100}, model::offset{1});
 
     // Two commands before reconciliation catches up — latest wins.
     state.set_pending_gc_safe_epoch(ct::cluster_epoch{5}, model::offset{100});
@@ -603,6 +608,8 @@ TEST(ctp_stm_state_test, GcSafeEpochPendingRatchetsForward) {
 
 TEST(ctp_stm_state_test, GcSafeEpochNeverRegresses) {
     ct::ctp_stm_state state;
+    // max_applied ahead of the safe epoch: the clamp is a no-op here.
+    state.advance_epoch(ct::cluster_epoch{100}, model::offset{1});
 
     // Promote epoch 5.
     state.set_pending_gc_safe_epoch(ct::cluster_epoch{5}, model::offset{100});
@@ -621,6 +628,24 @@ TEST(ctp_stm_state_test, GcSafeEpochNeverRegresses) {
     state.advance_last_reconciled_offset(
       kafka::offset{300}, model::offset{300});
     EXPECT_EQ(state.get_gc_safe_epoch().value(), ct::cluster_epoch{9});
+}
+
+TEST(ctp_stm_state_test, GcSafeEpochClampedToApplied) {
+    ct::ctp_stm_state state;
+
+    // The barrier confirmed epoch 10, but this partition has applied only up
+    // to epoch 4 -- e.g. a mirror-target partition whose window lags the
+    // cluster epoch. A new write here still lands at an epoch >= max_applied,
+    // so GC must not treat 10 as safe; get_gc_safe_epoch() clamps to 4.
+    state.advance_epoch(ct::cluster_epoch{4}, model::offset{10});
+    state.set_pending_gc_safe_epoch(ct::cluster_epoch{10}, model::offset{20});
+    state.advance_last_reconciled_offset(kafka::offset{20}, model::offset{20});
+    ASSERT_TRUE(state.get_gc_safe_epoch().has_value());
+    EXPECT_EQ(state.get_gc_safe_epoch().value(), ct::cluster_epoch{4});
+
+    // Once the partition applies past the confirmed epoch, the clamp releases.
+    state.advance_epoch(ct::cluster_epoch{12}, model::offset{30});
+    EXPECT_EQ(state.get_gc_safe_epoch().value(), ct::cluster_epoch{10});
 }
 
 } // anonymous namespace

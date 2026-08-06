@@ -16,6 +16,8 @@
 #include "model/fundamental.h"
 #include "serde/envelope.h"
 
+#include <algorithm>
+
 namespace cloud_topics {
 
 /// In-memory state of the cloud-topics state machine (ctp_stm).
@@ -120,6 +122,40 @@ public:
     /// Access the size estimator directly (for testing and metrics).
     const size_estimator& get_size_estimator() const noexcept;
 
+    /// Highest epoch L0 GC may collect below for this partition.
+    ///
+    /// The barrier confirms a cluster-wide epoch and writes it here
+    /// (advance_gc_epoch); _gc_safe_epoch ratchets on that value. But the
+    /// confirmed epoch is the cluster epoch, unbounded by any one partition,
+    /// and a partition's applied window can lag it: a cluster-link mirror
+    /// write (replicate_at_offset) stamps max(topic_revision, max_seen) and is
+    /// admitted in-window without advancing max_seen, so max_applied can sit
+    /// below the confirmed epoch. GC deletes objects strictly below the
+    /// returned epoch, and a new write here always lands at an epoch >=
+    /// max_applied, so clamping to max_applied keeps GC from deleting an object
+    /// a future write on this partition would reference. Self-corrects as the
+    /// partition applies forward; the raw _gc_safe_epoch member keeps ratcheting
+    /// on the barrier's epoch. nullopt until an epoch is applied and a safe
+    /// epoch confirmed.
+    std::optional<cluster_epoch> get_gc_safe_epoch() const noexcept {
+        if (!_gc_safe_epoch || !_max_applied_epoch) {
+            return std::nullopt;
+        }
+        return std::min(*_gc_safe_epoch, *_max_applied_epoch);
+    }
+
+    /// Record a pending gc safe epoch from an advance_gc_epoch command.
+    /// The epoch is NOT promoted to _gc_safe_epoch until LRLO advances
+    /// past the command's offset, confirming all preceding data has been
+    /// reconciled to L1. Ratchets forward on epoch.
+    void set_pending_gc_safe_epoch(
+      cluster_epoch e, model::offset cmd_offset) noexcept {
+        if (!_pending_gc_safe_epoch || *_pending_gc_safe_epoch < e) {
+            _pending_gc_safe_epoch = e;
+            _pending_gc_safe_epoch_offset = cmd_offset;
+        }
+    }
+
     /// Advance LRO and it's translated log offset counterpart.
     void advance_last_reconciled_offset(
       kafka::offset new_last_reconciled_offset,
@@ -153,7 +189,8 @@ public:
           _previous_applied_epoch,
           _start_offset,
           _size_estimator,
-          _min_allowed_local_threshold);
+          _min_allowed_local_threshold,
+          _gc_safe_epoch);
     }
 
     /// Max collectible offset is defined by the LRO.
@@ -238,6 +275,14 @@ private:
     /// kafka::offset::min() means unset (no floor). Truncation is applied
     /// elsewhere.
     kafka::offset _min_allowed_local_threshold = kafka::offset::min();
+
+    std::optional<cluster_epoch> _gc_safe_epoch;
+
+    // Pending gc safe epoch from an advance_gc_epoch command. Promoted to
+    // _gc_safe_epoch when LRLO advances past the command's offset. Not
+    // persisted — recovered by the next barrier round after restart.
+    std::optional<cluster_epoch> _pending_gc_safe_epoch;
+    std::optional<model::offset> _pending_gc_safe_epoch_offset;
 };
 
 }; // namespace cloud_topics

@@ -683,6 +683,10 @@ ss::future<result<raft::replicate_result>> do_upload_and_replicate(
   chunked_vector<model::record_batch> cache_batches,
   raft::replicate_options opts) {
     const auto& ntp = partition->ntp();
+
+    auto token = api->track_inflight_write();
+    auto on_write_exit = ss::defer([&token] { token->done.set_value(); });
+
     // The default errc that will cause the client to retry the operation
     constexpr auto default_errc = raft::errc::timeout;
     auto timeout = opts.timeout.value_or(0ms);
@@ -1000,6 +1004,9 @@ ss::future<std::expected<kafka::offset, std::error_code>> frontend::replicate(
       "Unexpected invalid min epoch {} for {}",
       min_epoch,
       ntp());
+
+    auto token = _data_plane->track_inflight_write();
+    auto on_write_exit = ss::defer([&token] { token->done.set_value(); });
 
     auto staged = co_await _data_plane->stage_write(std::move(batches));
     if (!staged.has_value()) {
@@ -1462,7 +1469,18 @@ ss::future<result<raft::replicate_result>> frontend::replicate_at_offset(
 
     chunked_vector<model::record_batch> placeholder_batches;
 
+    // Track the write for the L0 GC epoch barrier drain: the data path below
+    // uploads L0 objects that must not be GC'd while the write is in flight.
+    // Control-only writes create no object, so acquire the token only then.
+    std::unique_ptr<inflight_write_token> token;
+    auto on_write_exit = ss::defer([&token] {
+        if (token) {
+            token->done.set_value();
+        }
+    });
+
     if (!data_batches.empty()) {
+        token = _data_plane->track_inflight_write();
         auto min_epoch = cluster_epoch(_partition->get_topic_revision_id());
 
         // Use the std::max trick from the normal produce path to reduce

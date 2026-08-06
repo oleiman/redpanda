@@ -38,12 +38,17 @@ class api;
 
 namespace cloud_topics {
 class data_plane_api;
+class inflight_write_tracker;
 class cloud_topics_manager;
 template<class>
 class level_zero_gc_t;
 class housekeeper_manager;
 class level_zero_notifier;
 class topic_manifest_upload_manager;
+
+namespace l0::gc {
+class epoch_barrier;
+} // namespace l0::gc
 
 namespace l1 {
 class flush_loop_manager;
@@ -93,6 +98,7 @@ public:
     ss::sharded<level_zero_gc_t<ss::lowres_clock>>* get_level_zero_gc();
     cluster_services& get_local_cluster_services();
     ss::sharded<level_zero_notifier>* get_sharded_l0_notifier();
+    ss::sharded<l0::gc::epoch_barrier>* get_epoch_barrier();
 
     // TODO: add 'get_control_plane_api' etc
 
@@ -106,6 +112,7 @@ private:
     ss::sharded<level_one_reader_probe> _l1_reader_probe;
     ss::sharded<l1::file_io_probe> _l1_file_io_probe;
     ss::sharded<l1_reader_cache> _l1_reader_cache;
+    std::unique_ptr<inflight_write_tracker> tracker;
     std::unique_ptr<data_plane_api> data_plane;
     ss::sharded<state_accessors> state;
     ss::sharded<l1::file_io> l1_io;
@@ -117,6 +124,7 @@ private:
     ss::sharded<l1::flush_loop_manager> flush_loop_manager;
     ss::sharded<cloud_topics_manager> manager;
     ss::sharded<level_zero_gc_t<ss::lowres_clock>> l0_gc;
+    ss::sharded<l0::gc::epoch_barrier> epoch_barrier;
     ss::sharded<housekeeper_manager> housekeeper_manager;
     ss::sharded<level_zero_notifier> l0_notifier;
     ss::sharded<topic_manifest_upload_manager> topic_manifest_upload_mgr;

@@ -104,6 +104,10 @@ public:
     /// Return inactive epoch of the CTP
     std::optional<cluster_epoch> estimate_inactive_epoch() const noexcept;
 
+    std::optional<cluster_epoch> get_gc_safe_epoch() const {
+        return _state.get_gc_safe_epoch();
+    }
+
     /// Sync with the STM
     ///
     /// \brief The method is syncing the STM  to minimize races.
@@ -133,6 +137,8 @@ private:
     void apply_advance_epoch(model::record, model::offset base_offset);
     void apply_reset_state(model::record);
     void apply_set_min_allowed_local_threshold(model::record);
+    void
+    apply_advance_gc_epoch(model::record record, model::offset base_offset);
 
     ss::future<raft::local_snapshot_applied>
     apply_local_snapshot(raft::stm_snapshot_header, iobuf&&) override;

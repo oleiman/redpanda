@@ -104,6 +104,46 @@ class Reader:
         len = self.read_int32()
         return self.stream.read(len)
 
+    def read_unsigned_varint(self):
+        shift = 0
+        result = 0
+        while True:
+            i = ord(self.stream.read(1))
+            result |= (i & 0x7F) << shift
+            if not i & 128:
+                return result
+            shift += 7
+
+    def read_kafka_flex_string(self):
+        # Kafka's flexible encodings prefix a length of n + 1, so that 0 can
+        # mean null.
+        n = self.read_unsigned_varint() - 1
+        if n < 0:
+            return None
+        return self.stream.read(n).decode("utf-8")
+
+    def read_kafka_flex_bytes(self):
+        n = self.read_unsigned_varint() - 1
+        if n < 0:
+            return None
+        return self.stream.read(n)
+
+    def read_kafka_flex_array(self, type_read):
+        n = self.read_unsigned_varint() - 1
+        if n < 0:
+            return None
+        return [type_read(self) for _ in range(n)]
+
+    def read_kafka_tags(self):
+        # A tag count, then each field as tag id, payload size, payload. Slicing
+        # the payload out by its declared size keeps an unrecognized tag from
+        # desynchronizing the fields after it.
+        tags = {}
+        for _ in range(self.read_unsigned_varint()):
+            tag = self.read_unsigned_varint()
+            tags[tag] = self.stream.read(self.read_unsigned_varint())
+        return tags
+
     def read_optional(self, type_read):
         present = self.read_int8()
         if present == 0:

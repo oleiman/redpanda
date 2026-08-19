@@ -70,25 +70,105 @@ class TxRecordParser:
         return "unknown"
 
 
+def kafka_tag_reader(payload):
+    return Reader(BytesIO(payload), endianness=Endianness.BIG_ENDIAN)
+
+
+def hex_tags(tags):
+    return {tag: payload.hex() for tag, payload in tags.items()}
+
+
+def decode_topic_partitions(rdr):
+    ret = {}
+    ret["topic_id"] = rdr.read_uuid()
+    ret["partitions"] = rdr.read_kafka_flex_array(lambda r: r.read_int32())
+    tags = rdr.read_kafka_tags()
+    epochs = tags.pop(0, None)
+    if epochs is not None:
+        ret["assignment_epochs"] = kafka_tag_reader(epochs).read_kafka_flex_array(
+            lambda r: r.read_int32()
+        )
+    if tags:
+        ret["unknown_tags"] = hex_tags(tags)
+    return ret
+
+
+def decode_classic_protocol(rdr):
+    ret = {}
+    ret["name"] = rdr.read_kafka_flex_string()
+    ret["metadata"] = base64.b64encode(rdr.read_kafka_flex_bytes()).decode("utf-8")
+    tags = rdr.read_kafka_tags()
+    if tags:
+        ret["unknown_tags"] = hex_tags(tags)
+    return ret
+
+
+def decode_classic_member_metadata(rdr):
+    # A leading zero varint marks the struct absent.
+    if rdr.read_unsigned_varint() == 0:
+        return None
+    ret = {}
+    ret["session_timeout"] = rdr.read_int32()
+    ret["supported_protocols"] = rdr.read_kafka_flex_array(decode_classic_protocol)
+    tags = rdr.read_kafka_tags()
+    if tags:
+        ret["unknown_tags"] = hex_tags(tags)
+    return ret
+
+
+# `consumer_group_*` are the KIP-848 protocol's records, keyed by the version
+# their key carries. See kafka::group_metadata_type in
+# src/v/kafka/server/group_metadata.h.
+CONSUMER_GROUP_KEY_TYPES = {
+    3: "consumer_group_metadata",
+    5: "consumer_group_member_metadata",
+    6: "consumer_group_target_assignment_metadata",
+    7: "consumer_group_target_assignment_member",
+    8: "consumer_group_current_member_assignment",
+}
+
+# The key types that name a member after the group.
+MEMBER_KEY_TYPES = {
+    "consumer_group_member_metadata",
+    "consumer_group_target_assignment_member",
+    "consumer_group_current_member_assignment",
+}
+
+# kafka::consumer_group_member_state
+MEMBER_STATES = {
+    0: "stable",
+    1: "unrevoked_partitions",
+    2: "unreleased_partitions",
+    127: "unknown",
+}
+
+
 class NonTxRecordParser:
     def __init__(self, record) -> None:
         self.r = record
 
     def parse(self):
         key = self.decode_key()
-        if key["type"] == "group_metadata":
-            if self.r.value:
-                v_rdr = Reader(BytesIO(self.r.value), endianness=Endianness.BIG_ENDIAN)
-                val = self.decode_metadata(v_rdr)
-            else:
-                val = "tombstone"
-        elif key["type"] == "offset_commit":
-            if self.r.value:
-                v_rdr = Reader(BytesIO(self.r.value), endianness=Endianness.BIG_ENDIAN)
-                val = self.decode_offset_commit(v_rdr)
-            else:
-                val = "tombstone"
-        return (key, val)
+        return (key, self.decode_value(key["type"]))
+
+    def decode_value(self, key_type):
+        if not self.r.value:
+            return "tombstone"
+        decoders = {
+            "group_metadata": self.decode_metadata,
+            "offset_commit": self.decode_offset_commit,
+            "consumer_group_metadata": self.decode_consumer_group_metadata,
+            "consumer_group_member_metadata": self.decode_consumer_group_member_metadata,
+            "consumer_group_target_assignment_metadata": self.decode_target_assignment_metadata,
+            "consumer_group_target_assignment_member": self.decode_target_assignment_member,
+            "consumer_group_current_member_assignment": self.decode_current_member_assignment,
+        }
+        decode = decoders.get(key_type)
+        if decode is None:
+            # Keep the record in the dump, so one unreadable type does not cost
+            # the whole segment.
+            return {"raw": self.r.value.hex()}
+        return decode(Reader(BytesIO(self.r.value), endianness=Endianness.BIG_ENDIAN))
 
     def decode_key_type(self, v):
         if v == 0 or v == 1:
@@ -96,7 +176,87 @@ class NonTxRecordParser:
         elif v == 2:
             return "group_metadata"
 
-        return "unknown"
+        return CONSUMER_GROUP_KEY_TYPES.get(v, "unknown")
+
+    def decode_consumer_group_metadata(self, rdr):
+        ret = {}
+        ret["version"] = rdr.read_int16()
+        ret["epoch"] = rdr.read_int32()
+        tags = rdr.read_kafka_tags()
+        metadata_hash = tags.pop(0, None)
+        # Tag 0 is the subscription-metadata hash, which is not written when 0.
+        ret["metadata_hash"] = (
+            kafka_tag_reader(metadata_hash).read_int64()
+            if metadata_hash is not None
+            else 0
+        )
+        if tags:
+            ret["unknown_tags"] = hex_tags(tags)
+        return ret
+
+    def decode_consumer_group_member_metadata(self, rdr):
+        ret = {}
+        ret["version"] = rdr.read_int16()
+        ret["instance_id"] = rdr.read_kafka_flex_string()
+        ret["rack_id"] = rdr.read_kafka_flex_string()
+        ret["client_id"] = rdr.read_kafka_flex_string()
+        ret["client_host"] = rdr.read_kafka_flex_string()
+        ret["subscribed_topic_names"] = rdr.read_kafka_flex_array(
+            lambda r: r.read_kafka_flex_string()
+        )
+        ret["subscribed_topic_regex"] = rdr.read_kafka_flex_string()
+        ret["rebalance_timeout"] = rdr.read_int32()
+        ret["server_assignor"] = rdr.read_kafka_flex_string()
+        tags = rdr.read_kafka_tags()
+        classic_metadata = tags.pop(0, None)
+        # Tag 0 holds the classic-protocol metadata of a converted member. An
+        # omitted tag means the default, which is present and empty.
+        if classic_metadata is not None:
+            ret["classic_metadata"] = decode_classic_member_metadata(
+                kafka_tag_reader(classic_metadata)
+            )
+        if tags:
+            ret["unknown_tags"] = hex_tags(tags)
+        return ret
+
+    def decode_target_assignment_metadata(self, rdr):
+        ret = {}
+        ret["version"] = rdr.read_int16()
+        ret["assignment_epoch"] = rdr.read_int32()
+        tags = rdr.read_kafka_tags()
+        timestamp = tags.pop(0, None)
+        # Tag 0 is the assignment timestamp, which is not written when 0.
+        ret["assignment_timestamp"] = (
+            kafka_tag_reader(timestamp).read_int64() if timestamp is not None else 0
+        )
+        if tags:
+            ret["unknown_tags"] = hex_tags(tags)
+        return ret
+
+    def decode_target_assignment_member(self, rdr):
+        ret = {}
+        ret["version"] = rdr.read_int16()
+        ret["topic_partitions"] = rdr.read_kafka_flex_array(decode_topic_partitions)
+        tags = rdr.read_kafka_tags()
+        if tags:
+            ret["unknown_tags"] = hex_tags(tags)
+        return ret
+
+    def decode_current_member_assignment(self, rdr):
+        ret = {}
+        ret["version"] = rdr.read_int16()
+        ret["member_epoch"] = rdr.read_int32()
+        ret["previous_member_epoch"] = rdr.read_int32()
+        state = rdr.read_int8()
+        ret["state"] = MEMBER_STATES.get(state, state)
+        ret["assigned_partitions"] = rdr.read_kafka_flex_array(decode_topic_partitions)
+        ret["partitions_pending_revocation"] = rdr.read_kafka_flex_array(
+            decode_topic_partitions
+        )
+        tags = rdr.read_kafka_tags()
+        if tags:
+            ret["unknown_tags"] = hex_tags(tags)
+        return ret
 
     def decode_member_proto(self, rdr):
         ret = {}
@@ -134,10 +294,17 @@ class NonTxRecordParser:
         ret = {}
         v = key_rdr.read_int16()
         ret["type"] = self.decode_key_type(v)
+        if ret["type"] == "unknown":
+            # Report the version, so a dump names what it could not read.
+            ret["version"] = v
+            ret["raw"] = self.r.key.hex()
+            return ret
         ret["group_id"] = key_rdr.read_kafka_string()
         if ret["type"] == "offset_commit":
             ret["topic"] = key_rdr.read_kafka_string()
             ret["partition"] = key_rdr.read_int32()
+        elif ret["type"] in MEMBER_KEY_TYPES:
+            ret["member_id"] = key_rdr.read_kafka_string()
 
         return ret
 
